@@ -1,7 +1,10 @@
 use rand::Rng;
+extern crate clipboard;
+
+use clipboard::ClipboardContext;
+use clipboard::ClipboardProvider;
 
 pub fn generate() -> String {
-    // Define character set
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
     let up_case = "ABCDEFGHIJKLMNOPQRSTUVXYZ".to_string();
     let numbers = "0123456789".to_string();
@@ -11,7 +14,6 @@ pub fn generate() -> String {
 
     for _ in 0..=14 {
         let char_group = random_index(4);
-
         password = match char_group {
             0 => append(&password, &low_case),
             1 => append(&password, &up_case),
@@ -20,8 +22,13 @@ pub fn generate() -> String {
             _ => password,
         }
     }
-
+    copy_to_clipboard(&password);
     password
+}
+
+fn copy_to_clipboard(value: &String) {
+    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+    ctx.set_contents(String::from(value)).unwrap();
 }
 
 fn random_index(range: usize) -> usize {
