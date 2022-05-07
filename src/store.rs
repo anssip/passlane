@@ -1,17 +1,23 @@
 use crate::password::Credentials;
+use crate::password::{decrypt, encrypt};
+use crate::ui::ask;
 use csv::WriterBuilder;
-use std::env;
+use pwhash::bcrypt;
+use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub fn save(_master_pwd: &String, creds: &Credentials) {
-    let home = match env::home_dir() {
+fn home_dir() -> PathBuf {
+    match dirs::home_dir() {
         Some(path) => path,
         None => PathBuf::from("~"),
-    };
+    }
+}
 
-    let file_path = PathBuf::from(home).join(".genpass");
+pub fn save(master_password: &String, creds: &Credentials) {
+    let file_path = PathBuf::from(home_dir()).join(".genpass");
     println!("path {:?}", file_path);
     let exists = Path::new(&file_path).exists();
     println!("exists? {}", exists);
@@ -24,5 +30,29 @@ pub fn save(_master_pwd: &String, creds: &Credentials) {
         .unwrap();
 
     let mut wtr = WriterBuilder::new().has_headers(false).from_writer(file);
-    wtr.serialize(creds).expect("Unable to store credentials");
+    wtr.serialize(creds.encrypt(master_password))
+        .expect("Unable to store credentials");
+}
+
+pub fn verify_master_password(master_pwd: &String) -> bool {
+    let file_path = PathBuf::from(home_dir()).join(".genpass_pwd");
+    let exists = Path::new(&file_path).exists();
+    if !exists {
+        let retyped = ask("Re-enter master password:");
+        if master_pwd.eq(&retyped) {
+            let mut file = File::create(file_path).expect("Cannot create master password file");
+            let content = bcrypt::hash(master_pwd).unwrap();
+            file.write_all(content.as_bytes())
+                .expect("Unable write to master password file");
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        let mut file = File::open(file_path).expect("Cannot open master password file");
+        let mut file_content = String::new();
+        file.read_to_string(&mut file_content)
+            .expect("Unable to read master password file");
+        return bcrypt::verify(master_pwd, &file_content);
+    }
 }

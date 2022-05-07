@@ -1,4 +1,6 @@
 extern crate clipboard;
+#[macro_use]
+extern crate magic_crypt;
 
 use clap::Parser;
 use clipboard::ClipboardContext;
@@ -24,10 +26,11 @@ fn main() {
     let args = Args::parse();
     if args.save {
         let master_pwd = ui::ask("Master password:");
+        if !store::verify_master_password(&master_pwd) {
+            return println!("Master password: no match");
+        }
         let mut creds = ui::ask_credentials();
         creds.password = password;
-        println!("{} {} {}", creds.username, creds.service, creds.password);
-        // TODO: save to file
         store::save(&master_pwd, &creds);
     }
 }
