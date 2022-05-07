@@ -1,8 +1,13 @@
 use rand::Rng;
-extern crate clipboard;
+use serde::Deserialize;
+use serde::Serialize;
 
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+    pub service: String,
+}
 
 pub fn generate() -> String {
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
@@ -22,13 +27,7 @@ pub fn generate() -> String {
             _ => password,
         }
     }
-    copy_to_clipboard(&password);
     password
-}
-
-fn copy_to_clipboard(value: &String) {
-    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-    ctx.set_contents(String::from(value)).unwrap();
 }
 
 fn random_index(range: usize) -> usize {
