@@ -14,3 +14,4 @@ serde = { version = "1.0.137", features = ["derive"] }
 magic-crypt = "3.1.10"
 dirs = "4.0.0"
 pwhash = "1.0.0"
+regex = "1.5.5"

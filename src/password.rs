@@ -18,6 +18,13 @@ impl Credentials {
             service: String::from(&self.service),
         }
     }
+    pub fn decrypt(&self, key: &String) -> Credentials {
+        Credentials {
+            password: decrypt(key, &self.password),
+            username: String::from(&self.username),
+            service: String::from(&self.service),
+        }
+    }
 }
 
 pub fn generate() -> String {
@@ -56,12 +63,12 @@ fn append(to: &String, charset: &String) -> String {
     result
 }
 
-pub fn encrypt(key: &String, value: &String) -> String {
+fn encrypt(key: &String, value: &String) -> String {
     let mc = new_magic_crypt!(key, 256);
     mc.encrypt_str_to_base64(value)
 }
 
-pub fn decrypt(key: &String, value: &String) -> String {
+fn decrypt(key: &String, value: &String) -> String {
     let mc = new_magic_crypt!(key, 256);
     mc.decrypt_base64_to_string(value).unwrap()
 }

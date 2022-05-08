@@ -23,15 +23,26 @@ struct Args {
 }
 
 fn main() {
+    let args = Args::parse();
+    if !args.grep.eq("") {
+        let master_pwd = ui::ask("Master password:");
+        let matches = store::grep(&master_pwd, &args.grep);
+        if matches.len() == 1 {
+            copy_to_clipboard(&matches[0].password);
+            println!("Found 1 match. Password copied to clipboard");
+        }
+        if matches.len() > 1 {
+            println!("Found {} matches:", matches.len());
+            for creds in &matches {
+                // TODO: implement proper display for Credentials
+                println!("{:?}", creds);
+            }
+        }
+        return;
+    }
     let password = password::generate();
     copy_to_clipboard(&password);
     println!("Password - also copied to clipboard: {}", password);
-
-    let args = Args::parse();
-    if !args.grep.eq("") {
-        println!("grep");
-        return;
-    }
     if args.save {
         let master_pwd = ui::ask("Master password:");
         if !store::verify_master_password(&master_pwd) {

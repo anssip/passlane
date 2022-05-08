@@ -1,8 +1,9 @@
 use crate::password::Credentials;
-use crate::password::{decrypt, encrypt};
 use crate::ui::ask;
+use csv::ReaderBuilder;
 use csv::WriterBuilder;
 use pwhash::bcrypt;
+use regex::Regex;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -16,8 +17,12 @@ fn home_dir() -> PathBuf {
     }
 }
 
+fn password_file_path() -> PathBuf {
+    PathBuf::from(home_dir()).join(".genpass")
+}
+
 pub fn save(master_password: &String, creds: &Credentials) {
-    let file_path = PathBuf::from(home_dir()).join(".genpass");
+    let file_path = password_file_path();
     println!("path {:?}", file_path);
     let exists = Path::new(&file_path).exists();
     println!("exists? {}", exists);
@@ -29,7 +34,7 @@ pub fn save(master_password: &String, creds: &Credentials) {
         .open(file_path)
         .unwrap();
 
-    let mut wtr = WriterBuilder::new().has_headers(false).from_writer(file);
+    let mut wtr = WriterBuilder::new().has_headers(!exists).from_writer(file);
     wtr.serialize(creds.encrypt(master_password))
         .expect("Unable to store credentials");
 }
@@ -65,6 +70,22 @@ fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> bool {
     bcrypt::verify(master_pwd, &file_content)
 }
 
-pub fn grep(search: &String) -> Vec<String> {
-    return Vec::new();
+pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
+    let path = password_file_path();
+    println!("path {:?}", path);
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .expect("Unable to open password file");
+
+    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
+    let mut matches = Vec::new();
+    for result in reader.deserialize() {
+        let creds: Credentials = result.expect("unable to deserialize password");
+        let re = Regex::new(search).unwrap();
+        if re.is_match(&creds.service) {
+            matches.push(creds.decrypt(master_password));
+        }
+    }
+    matches
 }
