@@ -48,8 +48,7 @@ fn main() {
         if !store::verify_master_password(&master_pwd) {
             return println!("Master password: no match");
         }
-        let mut creds = ui::ask_credentials();
-        creds.password = password;
+        let creds = ui::ask_credentials(password);
         store::save(&master_pwd, &creds);
     }
 }

@@ -13,12 +13,12 @@ pub fn ask(question: &str) -> String {
     buffer.trim().to_string()
 }
 
-pub fn ask_credentials() -> Credentials {
+pub fn ask_credentials(password: String) -> Credentials {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
     Credentials {
         service,
         username,
-        password: String::from(""),
+        password,
     }
 }
