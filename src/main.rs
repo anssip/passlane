@@ -34,8 +34,7 @@ fn main() {
         if matches.len() > 1 {
             println!("Found {} matches:", matches.len());
             for creds in &matches {
-                // TODO: implement proper display for Credentials
-                println!("{:?}", creds);
+                println!("{:}", creds);
             }
         }
         return;

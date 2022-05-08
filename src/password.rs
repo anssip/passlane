@@ -1,3 +1,5 @@
+use core::fmt::Display;
+use core::fmt::Formatter;
 use magic_crypt::MagicCryptTrait;
 use rand::Rng;
 use serde::Deserialize;
@@ -24,6 +26,12 @@ impl Credentials {
             username: String::from(&self.username),
             service: String::from(&self.service),
         }
+    }
+}
+
+impl Display for Credentials {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}: username: {}", self.service, self.username)
     }
 }
 
