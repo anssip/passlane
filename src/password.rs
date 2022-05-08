@@ -13,19 +13,18 @@ pub struct Credentials {
 }
 
 impl Credentials {
-    pub fn encrypt(&self, key: &String) -> Credentials {
+    fn clone_with_password(&self, password: String) -> Credentials {
         Credentials {
-            password: encrypt(key, &self.password),
+            password: password,
             username: String::from(&self.username),
             service: String::from(&self.service),
         }
     }
+    pub fn encrypt(&self, key: &String) -> Credentials {
+        self.clone_with_password(encrypt(key, &self.password))
+    }
     pub fn decrypt(&self, key: &String) -> Credentials {
-        Credentials {
-            password: decrypt(key, &self.password),
-            username: String::from(&self.username),
-            service: String::from(&self.service),
-        }
+        self.clone_with_password(decrypt(key, &self.password))
     }
 }
 
