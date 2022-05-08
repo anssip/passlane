@@ -37,22 +37,34 @@ pub fn save(master_password: &String, creds: &Credentials) {
 pub fn verify_master_password(master_pwd: &String) -> bool {
     let file_path = PathBuf::from(home_dir()).join(".genpass_pwd");
     let exists = Path::new(&file_path).exists();
-    if !exists {
-        let retyped = ask("Re-enter master password:");
-        if master_pwd.eq(&retyped) {
-            let mut file = File::create(file_path).expect("Cannot create master password file");
-            let content = bcrypt::hash(master_pwd).unwrap();
-            file.write_all(content.as_bytes())
-                .expect("Unable write to master password file");
-            return true;
-        } else {
-            return false;
-        }
+    if exists {
+        verify_with_saved(file_path, master_pwd)
     } else {
-        let mut file = File::open(file_path).expect("Cannot open master password file");
-        let mut file_content = String::new();
-        file.read_to_string(&mut file_content)
-            .expect("Unable to read master password file");
-        return bcrypt::verify(master_pwd, &file_content);
+        save_master_password(file_path, master_pwd)
     }
+}
+
+fn save_master_password(file_path: PathBuf, master_pwd: &String) -> bool {
+    let retyped = ask("Re-enter master password:");
+    if master_pwd.eq(&retyped) {
+        let mut file = File::create(file_path).expect("Cannot create master password file");
+        let content = bcrypt::hash(master_pwd).unwrap();
+        file.write_all(content.as_bytes())
+            .expect("Unable write to master password file");
+        true
+    } else {
+        false
+    }
+}
+
+fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> bool {
+    let mut file = File::open(file_path).expect("Cannot open master password file");
+    let mut file_content = String::new();
+    file.read_to_string(&mut file_content)
+        .expect("Unable to read master password file");
+    bcrypt::verify(master_pwd, &file_content)
+}
+
+pub fn grep(search: &String) -> Vec<String> {
+    return Vec::new();
 }

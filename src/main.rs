@@ -16,6 +16,10 @@ struct Args {
     /// Save the last generated password
     #[clap(short, long)]
     save: bool,
+
+    /// Grep passwords by service
+    #[clap(short, long, default_value = "")]
+    grep: String,
 }
 
 fn main() {
@@ -24,6 +28,10 @@ fn main() {
     println!("Password - also copied to clipboard: {}", password);
 
     let args = Args::parse();
+    if !args.grep.eq("") {
+        println!("grep");
+        return;
+    }
     if args.save {
         let master_pwd = ui::ask("Master password:");
         if !store::verify_master_password(&master_pwd) {
