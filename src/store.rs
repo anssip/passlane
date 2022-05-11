@@ -4,6 +4,7 @@ use csv::ReaderBuilder;
 use csv::WriterBuilder;
 use pwhash::bcrypt;
 use regex::Regex;
+use std::fs::create_dir;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -17,12 +18,17 @@ fn home_dir() -> PathBuf {
     }
 }
 
-fn password_file_path() -> PathBuf {
-    PathBuf::from(home_dir()).join(".genpass")
+fn dir_path() -> PathBuf {
+    let dir_path = PathBuf::from(home_dir()).join(".genpass");
+    let exists = Path::new(&dir_path).exists();
+    if !exists {
+        create_dir(&dir_path).expect("Unable to create .genpass dir");
+    }
+    dir_path
 }
 
 pub fn save(master_password: &String, creds: &Credentials) {
-    let file_path = password_file_path();
+    let file_path = PathBuf::from(dir_path()).join(".store");
     println!("path {:?}", file_path);
     let exists = Path::new(&file_path).exists();
     println!("exists? {}", exists);
@@ -40,7 +46,7 @@ pub fn save(master_password: &String, creds: &Credentials) {
 }
 
 pub fn verify_master_password(master_pwd: &String) -> bool {
-    let file_path = PathBuf::from(home_dir()).join(".genpass_pwd");
+    let file_path = PathBuf::from(dir_path()).join(".master_pwd");
     let exists = Path::new(&file_path).exists();
     if exists {
         verify_with_saved(file_path, master_pwd)
@@ -71,7 +77,7 @@ fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> bool {
 }
 
 pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
-    let path = password_file_path();
+    let path = PathBuf::from(dir_path()).join(".store");
     println!("path {:?}", path);
     let file = OpenOptions::new()
         .read(true)

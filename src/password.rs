@@ -55,6 +55,14 @@ pub fn generate() -> String {
     password
 }
 
+pub fn validate_password(value: &String) -> bool {
+    if value.len() != 15 {
+        return false;
+    }
+    // TODO: improve to check that all character classes are present
+    true
+}
+
 fn random_index(range: usize) -> usize {
     let mut rng = rand::thread_rng();
     rng.gen_range(0..range.try_into().unwrap())

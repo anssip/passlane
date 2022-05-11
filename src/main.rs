@@ -5,6 +5,7 @@ extern crate magic_crypt;
 use clap::Parser;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
+use std::env;
 
 mod password;
 mod store;
@@ -39,20 +40,42 @@ fn main() {
         }
         return;
     }
-    let password = password::generate();
-    copy_to_clipboard(&password);
-    println!("Password - also copied to clipboard: {}", password);
+    if env::args().len() == 1 {
+        let password = password::generate();
+        copy_to_clipboard(&password);
+        println!("Password - also copied to clipboard: {}", password);
+    }
     if args.save {
+        println!("Storing latest generated password from clipboard.");
         let master_pwd = ui::ask("Master password:");
         if !store::verify_master_password(&master_pwd) {
             return println!("Master password: no match");
         }
-        let creds = ui::ask_credentials(password);
-        store::save(&master_pwd, &creds);
+        match password_from_clipboard() {
+            Ok(password) => {
+                let creds = ui::ask_credentials(password);
+                store::save(&master_pwd, &creds);
+            }
+            Err(message) => {
+                println!("Failed: {}", message);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
 fn copy_to_clipboard(value: &String) {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     ctx.set_contents(String::from(value)).unwrap();
+}
+
+fn password_from_clipboard() -> Result<String, String> {
+    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+    let value = ctx
+        .get_contents()
+        .expect("Unable to retrieve value from clipboard");
+    if !password::validate_password(&value) {
+        return Err(String::from("Unable to retrieve value from clipboard"));
+    }
+    Result::Ok(value)
 }
