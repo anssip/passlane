@@ -7,6 +7,7 @@ use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
 use std::env;
 
+mod keychain;
 mod password;
 mod store;
 mod ui;
@@ -55,6 +56,7 @@ fn main() {
             Ok(password) => {
                 let creds = ui::ask_credentials(password);
                 store::save(&master_pwd, &creds);
+                keychain::save(&creds).expect("Unable to store credentials to keychain");
             }
             Err(message) => {
                 println!("Failed: {}", message);
