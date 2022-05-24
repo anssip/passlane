@@ -28,5 +28,4 @@ _or alternatively_
 
 ## TODO
 
-- ability to change master pass
 - delete passwords (should also remove from keychain)

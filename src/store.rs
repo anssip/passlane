@@ -5,6 +5,7 @@ use csv::WriterBuilder;
 use pwhash::bcrypt;
 use regex::Regex;
 use std::fs::create_dir;
+use std::fs::rename;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -45,53 +46,85 @@ pub fn save(master_password: &String, creds: &Credentials) {
         .expect("Unable to store credentials");
 }
 
-pub fn verify_master_password(master_pwd: &String) -> bool {
-    let file_path = PathBuf::from(dir_path()).join(".master_pwd");
+fn master_password_file_path() -> PathBuf {
+    PathBuf::from(dir_path()).join(".master_pwd")
+}
+
+pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result<bool, String> {
+    let file_path = master_password_file_path();
     let exists = Path::new(&file_path).exists();
     if exists {
-        verify_with_saved(file_path, master_pwd)
+        return verify_with_saved(file_path, master_pwd);
+    }
+    if store_if_new {
+        let retyped = ask("Re-enter master password:");
+        if master_pwd.eq(&retyped) {
+            save_master_password(file_path, master_pwd)
+        } else {
+            Err(String::from("Passwords did not match"))
+        }
     } else {
-        save_master_password(file_path, master_pwd)
+        Result::Ok(true)
     }
 }
 
-fn save_master_password(file_path: PathBuf, master_pwd: &String) -> bool {
-    let retyped = ask("Re-enter master password:");
-    if master_pwd.eq(&retyped) {
-        let mut file = File::create(file_path).expect("Cannot create master password file");
-        let content = bcrypt::hash(master_pwd).unwrap();
-        file.write_all(content.as_bytes())
-            .expect("Unable write to master password file");
-        true
-    } else {
-        false
-    }
+fn save_master_password(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
+    let mut file = File::create(file_path).expect("Cannot create master password file");
+    let content = bcrypt::hash(master_pwd).unwrap();
+    file.write_all(content.as_bytes())
+        .expect("Unable write to master password file");
+    Result::Ok(true)
 }
 
-fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> bool {
+fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
     let mut file = File::open(file_path).expect("Cannot open master password file");
     let mut file_content = String::new();
     file.read_to_string(&mut file_content)
         .expect("Unable to read master password file");
-    bcrypt::verify(master_pwd, &file_content)
+    if bcrypt::verify(master_pwd, &file_content) {
+        Result::Ok(true)
+    } else {
+        Err(String::from("Incorrect password"))
+    }
+}
+
+fn open_password_file(writable: bool) -> File {
+    let path = PathBuf::from(dir_path()).join(".store");
+    OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .open(path)
+        .expect("Unable to open password file")
 }
 
 pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
-    let path = PathBuf::from(dir_path()).join(".store");
-    println!("path {:?}", path);
-    let file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .expect("Unable to open password file");
-
+    let file = open_password_file(false);
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
     let mut matches = Vec::new();
     for result in reader.deserialize() {
-        let creds: Credentials = result.expect("unable to deserialize password");
+        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
         let re = Regex::new(search).unwrap();
         if re.is_match(&creds.service) {
             matches.push(creds.decrypt(master_password));
         }
     }
     matches
+}
+
+pub fn update_master_password(old_password: &String, new_password: &String) -> bool {
+    let file = open_password_file(false);
+    let path = PathBuf::from(dir_path()).join(".store_new");
+    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
+    let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
+
+    for result in reader.deserialize() {
+        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
+        wtr.serialize(creds.decrypt(old_password).encrypt(new_password))
+            .expect("Unable to store credentials to temp file");
+    }
+    save_master_password(master_password_file_path(), new_password)
+        .expect("Failed to save master password");
+    rename(dir_path().join(".store_new"), dir_path().join(".store"))
+        .expect("Unable to rename password file");
+    true
 }

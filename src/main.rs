@@ -22,12 +22,16 @@ struct Args {
     /// Grep passwords by service
     #[clap(short, long, default_value = "")]
     grep: String,
+
+    /// Update master password
+    #[clap(short, long)]
+    master_pwd: bool,
 }
 
 fn main() {
     let args = Args::parse();
     if !args.grep.eq("") {
-        let master_pwd = ui::ask("Master password:");
+        let master_pwd = ui::ask_master_password();
         let matches = store::grep(&master_pwd, &args.grep);
         if matches.len() == 1 {
             copy_to_clipboard(&matches[0].password);
@@ -45,13 +49,11 @@ fn main() {
         let password = password::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
+        return;
     }
     if args.save {
         println!("Storing latest generated password from clipboard.");
-        let master_pwd = ui::ask("Master password:");
-        if !store::verify_master_password(&master_pwd) {
-            return println!("Master password: no match");
-        }
+        let master_pwd = ui::ask_master_password();
         match password_from_clipboard() {
             Ok(password) => {
                 let creds = ui::ask_credentials(password);
@@ -63,6 +65,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        return;
+    }
+    if args.master_pwd {
+        let old_pwd = ui::ask_master_password();
+        let new_pwd = ui::ask_new_password();
+        store::update_master_password(&old_pwd, &new_pwd);
     }
 }
 

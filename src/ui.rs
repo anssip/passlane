@@ -2,6 +2,7 @@ use std::io;
 use std::io::Write;
 
 use crate::password::Credentials;
+use crate::store;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -20,5 +21,27 @@ pub fn ask_credentials(password: String) -> Credentials {
         service,
         username,
         password,
+    }
+}
+
+pub fn ask_new_password() -> String {
+    let pwd = ask("Enter new master password");
+    let pwd2 = ask("Re-enter new master password");
+    if pwd.eq(&pwd2) {
+        pwd
+    } else {
+        println!("Passwords did not match");
+        std::process::exit(1);
+    }
+}
+
+pub fn ask_master_password() -> String {
+    let master_pwd = ask("Please enter master password:");
+    match store::verify_master_password(&master_pwd, true) {
+        Ok(_) => master_pwd,
+        Err(message) => {
+            println!("{}", message);
+            std::process::exit(1);
+        }
     }
 }
