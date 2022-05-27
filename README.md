@@ -10,7 +10,7 @@ A lightning-fast password generator and manager written in Rust
 - Save previously generated password from clipboard
 - Syncs the generated password to Mac's keychain
 
-Typical flow:
+## Typical flow:
 
 - Sign up to a new service in the web browser
 - Hit `CMD` + `space` and run `genpass` --> saves the password to the clipboard
@@ -29,3 +29,5 @@ _or alternatively_
 ## TODO
 
 - delete passwords (should also remove from keychain)
+- import from CSV
+- online sync?
