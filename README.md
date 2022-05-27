@@ -12,10 +12,14 @@ A lightning-fast password generator and manager written in Rust
 
 ## Typical flow:
 
+### Generate new password
+
 - Sign up to a new service in the web browser
 - Hit `CMD` + `space` and run `genpass` --> saves the password to the clipboard
 - Use the generated password from clipboard
 - Afte successful signup: Open terminal and run `genpass -s` to save the password
+
+### Using saved credentials
 
 Later on when logging in to foobar.com:
 
