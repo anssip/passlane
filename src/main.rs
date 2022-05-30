@@ -18,14 +18,15 @@ struct Args {
     /// Save the last generated password
     #[clap(short, long)]
     save: bool,
-
     /// Grep passwords by service
     #[clap(short, long, default_value = "")]
     grep: String,
-
     /// Update master password
     #[clap(short, long)]
     master_pwd: bool,
+    /// Import credentials from a CSV file
+    #[clap(short, long, default_value = "")]
+    csv: String,
 }
 
 fn main() {
@@ -71,6 +72,14 @@ fn main() {
         let old_pwd = ui::ask_master_password();
         let new_pwd = ui::ask_new_password();
         store::update_master_password(&old_pwd, &new_pwd);
+        return;
+    }
+    if !args.csv.eq("") {
+        let master_pwd = ui::ask_master_password();
+        match store::import_csv(&args.csv, &master_pwd) {
+            Err(message) => println!("Failed: {}", message),
+            Ok(count) => println!("Imported {} entries", count),
+        }
     }
 }
 

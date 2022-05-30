@@ -29,6 +29,8 @@ fn dir_path() -> PathBuf {
 }
 
 pub fn save(master_password: &String, creds: &Credentials) {
+    // TODO: extract function: opening of store file
+    // TODO: extract function: checking existend of store file
     let file_path = PathBuf::from(dir_path()).join(".store");
     println!("path {:?}", file_path);
     let exists = Path::new(&file_path).exists();
@@ -88,17 +90,21 @@ fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, St
     }
 }
 
-fn open_password_file(writable: bool) -> File {
+fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
     let path = PathBuf::from(dir_path()).join(".store");
-    OpenOptions::new()
+    let exists = path.exists();
+    let file = OpenOptions::new()
         .read(true)
         .write(writable)
-        .open(path)
-        .expect("Unable to open password file")
+        .append(writable)
+        .open(&path)
+        .expect("Unable to open password file");
+    (file, path, exists)
 }
 
 pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
-    let file = open_password_file(false);
+    let file;
+    (file, ..) = open_password_file(false);
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
     let mut matches = Vec::new();
     for result in reader.deserialize() {
@@ -112,7 +118,8 @@ pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
 }
 
 pub fn update_master_password(old_password: &String, new_password: &String) -> bool {
-    let file = open_password_file(false);
+    let file;
+    (file, ..) = open_password_file(false);
     let path = PathBuf::from(dir_path()).join(".store_new");
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
     let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
@@ -127,4 +134,29 @@ pub fn update_master_password(old_password: &String, new_password: &String) -> b
     rename(dir_path().join(".store_new"), dir_path().join(".store"))
         .expect("Unable to rename password file");
     true
+}
+
+pub fn import_csv(file_path: &String, master_password: &String) -> Result<i64, String> {
+    let path = PathBuf::from(file_path);
+    let in_file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .expect("Unable to open input file");
+
+    let out_file;
+    let exists;
+    (out_file, _, exists) = open_password_file(true);
+    let mut wtr = WriterBuilder::new()
+        .has_headers(!exists)
+        .from_writer(out_file);
+
+    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
+    let mut count = 0;
+    for result in reader.deserialize() {
+        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
+        wtr.serialize(creds.encrypt(master_password))
+            .expect("Unable to store credentials");
+        count += 1;
+    }
+    Result::Ok(count)
 }
