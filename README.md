@@ -34,7 +34,15 @@ _or alternatively_
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and oftentimes expensive commercial services.
 
-First you need to export the credentials to a CSV file and import the file into passlane:
+First, make sure that the CSV file has a header line (1st line) with following column titles:
+
+- username
+- password
+- service
+
+The `service` field is the URL or name of the service. When importing from Dashlane, the only necessary preparation is to rename `url` to `service`.
+
+To export the credentials to a CSV file and import the file into passlane:
 
 ```bash
 passlane --csv <path_to_csv_file>
