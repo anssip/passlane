@@ -1,6 +1,6 @@
-# genpass
+# Passlane
 
-A lightning-fast password generator and manager written in Rust
+A lightning-fast password generator for the command line
 
 ## Features
 
@@ -15,29 +15,29 @@ A lightning-fast password generator and manager written in Rust
 ### Generate new password
 
 - Sign up to a new service in the web browser
-- Hit `CMD` + `space` and run `genpass` --> saves the password to the clipboard
+- Hit `CMD` + `space` and run `passlane` --> saves the password to the clipboard
 - Use the generated password from clipboard
-- Afte successful signup: Open terminal and run `genpass -s` to save the password
+- Afte successful signup: Open terminal and run `passlane -s` to save the password
 
 ### Using saved credentials
 
 Later on when logging in to foobar.com:
 
-- Hit `CMD` + `space` and run `genpass -g foobard.com` --> copies foobar.com's password to clipboard
+- Hit `CMD` + `space` and run `passlane -g foobard.com` --> copies foobar.com's password to clipboard
 - Use th password from clipboard to login
 
 _or alternatively_
 
-- Let MacOS propose the saved password. It knows it because genpass also saves to the keychain.
+- Let MacOS propose the saved password. It knows it because passlane also saves to the keychain.
 
 ### Migrating from 1Password, LastPass, Dashlane etc.
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and oftentimes expensive commercial services.
 
-First you need to export the credentials to a CSV file and import the file into genpass:
+First you need to export the credentials to a CSV file and import the file into passlane:
 
 ```bash
-genpass --csv <path_to_csv_file>
+passlane --csv <path_to_csv_file>
 ```
 
 Here are links to instructions for doing the CSV export:

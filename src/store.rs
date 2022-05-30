@@ -20,10 +20,10 @@ fn home_dir() -> PathBuf {
 }
 
 fn dir_path() -> PathBuf {
-    let dir_path = PathBuf::from(home_dir()).join(".genpass");
+    let dir_path = PathBuf::from(home_dir()).join(".passlane");
     let exists = Path::new(&dir_path).exists();
     if !exists {
-        create_dir(&dir_path).expect("Unable to create .genpass dir");
+        create_dir(&dir_path).expect("Unable to create .passlane dir");
     }
     dir_path
 }

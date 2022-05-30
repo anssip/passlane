@@ -1,5 +1,5 @@
 [package]
-name = "genpass"
+name = "passlane"
 version = "0.1.0"
 edition = "2021"
 
