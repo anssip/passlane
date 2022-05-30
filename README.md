@@ -48,8 +48,7 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
-[] delete passwords (should also remove from keychain)
-[x] import from CSV
-[] sync with Keychain
-
-- online sync?
+- [] delete passwords (should also remove from keychain)
+- [x] import from CSV
+- [] separate CLI option to sync to Keychain
+- [] online sync?
