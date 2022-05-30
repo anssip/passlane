@@ -29,8 +29,6 @@ fn dir_path() -> PathBuf {
 }
 
 pub fn save(master_password: &String, creds: &Credentials) {
-    // TODO: extract function: opening of store file
-    // TODO: extract function: checking existend of store file
     let file_path = PathBuf::from(dir_path()).join(".store");
     println!("path {:?}", file_path);
     let exists = Path::new(&file_path).exists();
@@ -97,6 +95,7 @@ fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
         .read(true)
         .write(writable)
         .append(writable)
+        .create_new(!exists)
         .open(&path)
         .expect("Unable to open password file");
     (file, path, exists)
