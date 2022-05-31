@@ -27,6 +27,10 @@ struct Args {
     /// Import credentials from a CSV file
     #[clap(short, long, default_value = "")]
     csv: String,
+    /// Sync credentials to Keychain. Syncs all store credentials when specified as the only option.
+    /// When used together with --save, syncs only the password in question.
+    #[clap(short, long)]
+    keychain: bool,
 }
 
 fn main() {
@@ -59,7 +63,9 @@ fn main() {
             Ok(password) => {
                 let creds = ui::ask_credentials(password);
                 store::save(&master_pwd, &creds);
-                keychain::save(&creds).expect("Unable to store credentials to keychain");
+                if args.keychain {
+                    keychain::save(&creds).expect("Unable to store credentials to keychain");
+                }
             }
             Err(message) => {
                 println!("Failed: {}", message);
@@ -79,6 +85,14 @@ fn main() {
         match store::import_csv(&args.csv, &master_pwd) {
             Err(message) => println!("Failed: {}", message),
             Ok(count) => println!("Imported {} entries", count),
+        }
+    }
+    if args.keychain {
+        let master_pwd = ui::ask_master_password();
+        let creds = store::get_all_credentials();
+        match keychain::save_all(&creds, &master_pwd) {
+            Ok(len) => println!("Synced {} entries", len),
+            Err(message) => println!("Failed to sync: {}", message),
         }
     }
 }

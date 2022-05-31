@@ -30,6 +30,22 @@ _or alternatively_
 
 - Let MacOS propose the saved password. It knows it because passlane also saves to the keychain.
 
+### Syncing with the system Keychain
+
+Passlane uses the [keyring crate](https://crates.io/crates/keyring) to sync credentials to the operating system's keychain. Syncing should work on Linux, iOS, macOS, and Windows.
+
+Use option `-s` together with `-k` to save the last generated password to the passlane storage file _and_ to the keychain:
+
+```
+passlane -s -k
+```
+
+To sync all passlane stored options to the Kychain use the `-k` option alone:
+
+```
+passlane -s -k
+```
+
 ### Migrating from 1Password, LastPass, Dashlane etc.
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and oftentimes expensive commercial services.
@@ -58,5 +74,5 @@ Here are links to instructions for doing the CSV export:
 
 - [] delete passwords (should also remove from keychain)
 - [x] import from CSV
-- [] separate CLI option to sync to Keychain
+- [s] separate CLI option to sync to Keychain
 - [] online sync?

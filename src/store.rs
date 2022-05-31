@@ -101,21 +101,6 @@ fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
     (file, path, exists)
 }
 
-pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
-    let file;
-    (file, ..) = open_password_file(false);
-    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
-    let mut matches = Vec::new();
-    for result in reader.deserialize() {
-        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
-        let re = Regex::new(search).unwrap();
-        if re.is_match(&creds.service) {
-            matches.push(creds.decrypt(master_password));
-        }
-    }
-    matches
-}
-
 pub fn update_master_password(old_password: &String, new_password: &String) -> bool {
     let file;
     (file, ..) = open_password_file(false);
@@ -158,4 +143,27 @@ pub fn import_csv(file_path: &String, master_password: &String) -> Result<i64, S
         count += 1;
     }
     Result::Ok(count)
+}
+
+pub fn get_all_credentials() -> Vec<Credentials> {
+    let file;
+    (file, ..) = open_password_file(false);
+    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
+    let mut credentials = Vec::new();
+    for result in reader.deserialize() {
+        credentials.push(result.unwrap())
+    }
+    credentials
+}
+
+pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
+    let creds = get_all_credentials();
+    let mut matches = Vec::new();
+    for credential in creds {
+        let re = Regex::new(search).unwrap();
+        if re.is_match(&credential.service) {
+            matches.push(credential.decrypt(master_password));
+        }
+    }
+    matches
 }
