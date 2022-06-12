@@ -5,10 +5,10 @@ A lightning-fast password generator for the command line
 ## Features
 
 - Generate passwords
-- Works seamlessly with Mac's spotlight search when generating passwords
 - Places the generated password into the clipboard
 - Save previously generated password from the clipboard
-- Syncs the generated password to Mac's keychain
+- Syncs the generated password to OS specific keychains, including Mac's iCloud Keychain
+- Import passwords from CSV files
 
 ## Usage
 
