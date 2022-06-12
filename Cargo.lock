@@ -865,7 +865,7 @@ checksum = "427c3892f9e783d91cc128285287e70a59e206ca452770ece88a76f7a3eddd72"
 
 [[package]]
 name = "passlane"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "clipboard",
