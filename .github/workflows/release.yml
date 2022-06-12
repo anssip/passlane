@@ -25,12 +25,31 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu
     steps:
       - uses: actions/checkout@v3
       - run: rustup update stable
       - run: sudo apt-get install -y libxcb-shape0-dev
       - run: sudo apt-get install -y libxcb-xfixes0-dev
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          # (required)
+          bin: passlane
+          # (optional) On which platform to distribute the `.tar.gz` file.
+          # [default value: unix]
+          # [possible values: all, unix, windows, none]
+          tar: unix
+          # (optional) On which platform to distribute the `.zip` file.
+          # [default value: windows]
+          # [possible values: all, unix, windows, none]
+          zip: windows
+        env:
+          # (required)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: windows, macos
+    steps:
+      - uses: actions/checkout@v3
+      - run: rustup update stable
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required)
