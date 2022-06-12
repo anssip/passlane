@@ -10,7 +10,32 @@ A lightning-fast password generator for the command line
 - Save previously generated password from the clipboard
 - Syncs the generated password to Mac's keychain
 
-## Usage scenarios
+## Usage
+
+```bash
+passlane --help
+
+    Finished dev [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/passlane -help`
+passlane 0.1.0
+Anssi Piirainen <anssip@email.com>
+A password manager for the command line. Syncs with the Keychain.
+
+USAGE:
+    passlane [OPTIONS]
+
+OPTIONS:
+    -c, --csv <CSV>      Import credentials from a CSV file
+    -g, --grep <GREP>    Grep passwords by service
+    -h, --help           Print help information
+    -k, --keychain       Sync credentials to Keychain. Syncs all store credentials when specified as
+                         the only option. When used together with --save, syncs only the password in
+                         question
+    -m, --master-pwd     Update master password
+    -s, --save           Save the last generated password
+    -v, --verbose        Verobose: show password values when grep option finds several matches
+    -V, --version        Print version information
+```
 
 ### Generate a new password
 
@@ -74,7 +99,7 @@ Here are links to instructions for doing the CSV export:
 
 - [] describe options briefly in README?
 - [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
-- [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input).
+- [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)
 - [x] import from CSV
 - [x] separate CLI option to sync to keychain
 - [x] possibility to show passwords when multiple search matches
