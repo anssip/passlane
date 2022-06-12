@@ -10,6 +10,13 @@ A lightning-fast password generator for the command line
 - Syncs the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
 
+## Installation
+
+1. Download the [latest release](https://github.com/anssip/passlane/releases)
+2. Unpack the archive
+3. Place the unarchived binary `passlane` to your $PATH
+4. Enjoy!
+
 ## Usage
 
 ```bash
