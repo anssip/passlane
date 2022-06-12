@@ -19,14 +19,14 @@ struct Args {
     #[clap(short, long)]
     save: bool,
     /// Grep passwords by service
-    #[clap(short, long, default_value = "")]
-    grep: String,
+    #[clap(short, long)]
+    grep: Option<String>,
     /// Update master password
     #[clap(short, long)]
     master_pwd: bool,
     /// Import credentials from a CSV file
-    #[clap(short, long, default_value = "")]
-    csv: String,
+    #[clap(short, long)]
+    csv: Option<String>,
     /// Sync credentials to Keychain. Syncs all store credentials when specified as the only option.
     /// When used together with --save, syncs only the password in question.
     #[clap(short, long)]
@@ -38,28 +38,41 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    if !args.grep.eq("") {
-        let master_pwd = ui::ask_master_password();
-        let matches = store::grep(&master_pwd, &args.grep);
-        if matches.len() == 0 {
-            println!("No matches found");
-        }
-        if matches.len() == 1 {
-            copy_to_clipboard(&matches[0].password);
-            println!("Found 1 match. Password copied to clipboard");
-        }
-        if matches.len() > 1 {
-            println!("Found {} matches:", matches.len());
-            for creds in &matches {
-                print!("{:}", creds);
-                if args.verbose {
-                    println!(", password: {}", creds.password);
-                } else {
-                    println!("");
+    match args.grep {
+        Some(value) => {
+            let master_pwd = ui::ask_master_password();
+            let matches = store::grep(&master_pwd, &value);
+            if matches.len() == 0 {
+                println!("No matches found");
+            }
+            if matches.len() == 1 {
+                copy_to_clipboard(&matches[0].password);
+                println!("Found 1 match. Password copied to clipboard");
+            }
+            if matches.len() > 1 {
+                println!("Found {} matches:", matches.len());
+                for creds in &matches {
+                    print!("{:}", creds);
+                    if args.verbose {
+                        println!(", password: {}", creds.password);
+                    } else {
+                        println!("");
+                    }
                 }
             }
+            std::process::exit(0)
         }
-        return;
+        None => (),
+    }
+    match args.csv {
+        Some(value) => {
+            let master_pwd = ui::ask_master_password();
+            match store::import_csv(&value, &master_pwd) {
+                Err(message) => println!("Failed: {}", message),
+                Ok(count) => println!("Imported {} entries", count),
+            }
+        }
+        None => (),
     }
     if env::args().len() == 1 {
         let password = password::generate();
@@ -95,13 +108,6 @@ fn main() {
         let new_pwd = ui::ask_new_password();
         store::update_master_password(&old_pwd, &new_pwd);
         return;
-    }
-    if !args.csv.eq("") {
-        let master_pwd = ui::ask_master_password();
-        match store::import_csv(&args.csv, &master_pwd) {
-            Err(message) => println!("Failed: {}", message),
-            Ok(count) => println!("Imported {} entries", count),
-        }
     }
     if args.keychain {
         let master_pwd = ui::ask_master_password();
