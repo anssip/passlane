@@ -72,7 +72,11 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
+- [] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
+- [] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input).
 - [] delete passwords (should also remove from keychain)
 - [x] import from CSV
 - [x] separate CLI option to sync to keychain
 - [] online sync?
+- [] possibility to show passwords when multiple search matches
+- [] possibility to save password by entering them, not just from clipboard

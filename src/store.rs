@@ -1,5 +1,5 @@
 use crate::password::Credentials;
-use crate::ui::ask;
+use crate::ui::ask_password;
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
 use pwhash::bcrypt;
@@ -57,7 +57,7 @@ pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result
         return verify_with_saved(file_path, master_pwd);
     }
     if store_if_new {
-        let retyped = ask("Re-enter master password:");
+        let retyped = ask_password("Re-enter master password: ");
         if master_pwd.eq(&retyped) {
             save_master_password(file_path, master_pwd)
         } else {
