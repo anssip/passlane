@@ -31,6 +31,9 @@ struct Args {
     /// When used together with --save, syncs only the password in question.
     #[clap(short, long)]
     keychain: bool,
+    /// Verobose: show password values when grep option finds several matches
+    #[clap(short, long)]
+    verbose: bool,
 }
 
 fn main() {
@@ -45,7 +48,12 @@ fn main() {
         if matches.len() > 1 {
             println!("Found {} matches:", matches.len());
             for creds in &matches {
-                println!("{:}", creds);
+                print!("{:}", creds);
+                if args.verbose {
+                    println!(", password: {}", creds.password);
+                } else {
+                    println!("");
+                }
             }
         }
         return;

@@ -30,7 +30,7 @@ impl Credentials {
 
 impl Display for Credentials {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{}: username: {}", self.service, self.username)
+        write!(f, "{} - username: {}", self.service, self.username)
     }
 }
 
