@@ -66,7 +66,7 @@ passlane -s -k
 To sync all Passlane stored options to the keychain use the `-k` option alone:
 
 ```
-passlane -s -k
+passlane -k
 ```
 
 ### Migrating from 1Password, LastPass, Dashlane etc.
@@ -95,7 +95,6 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
-- [] describe options briefly in README?
 - [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
 - [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)
 - [x] import from CSV
