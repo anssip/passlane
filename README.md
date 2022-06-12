@@ -10,7 +10,7 @@ A lightning-fast password generator for the command line
 - Save previously generated password from the clipboard
 - Syncs the generated password to Mac's keychain
 
-## Usage
+## Usage scenarios
 
 ### Generate a new password
 
@@ -72,11 +72,11 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
-- [] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
+- [] describe options briefly in README?
+- [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
 - [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input).
-- [] delete passwords (should also remove from keychain)
 - [x] import from CSV
 - [x] separate CLI option to sync to keychain
-- [] online sync?
 - [x] possibility to show passwords when multiple search matches
-- [] possibility to save password by entering them, not just from clipboard
+- [] delete passwords
+- [] online sync?

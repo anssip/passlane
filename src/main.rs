@@ -41,6 +41,9 @@ fn main() {
     if !args.grep.eq("") {
         let master_pwd = ui::ask_master_password();
         let matches = store::grep(&master_pwd, &args.grep);
+        if matches.len() == 0 {
+            println!("No matches found");
+        }
         if matches.len() == 1 {
             copy_to_clipboard(&matches[0].password);
             println!("Found 1 match. Password copied to clipboard");
@@ -65,19 +68,24 @@ fn main() {
         return;
     }
     if args.save {
-        println!("Storing latest generated password from clipboard.");
         let master_pwd = ui::ask_master_password();
+        let save = |creds| {
+            store::save(&master_pwd, &creds);
+            if args.keychain {
+                keychain::save(&creds).expect("Unable to store credentials to keychain");
+            }
+        };
         match password_from_clipboard() {
             Ok(password) => {
                 let creds = ui::ask_credentials(password);
-                store::save(&master_pwd, &creds);
-                if args.keychain {
-                    keychain::save(&creds).expect("Unable to store credentials to keychain");
-                }
+                save(creds);
             }
-            Err(message) => {
-                println!("Failed: {}", message);
-                std::process::exit(1);
+            Err(_) => {
+                println!("Unable to find a generated password in keychain - ");
+                let password = ui::ask_password("Enter password: ");
+                let creds = ui::ask_credentials(password);
+                save(creds);
+                println!("Saved.");
             }
         }
         return;
