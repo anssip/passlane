@@ -47,7 +47,14 @@ fn main() {
             }
             if matches.len() == 1 {
                 copy_to_clipboard(&matches[0].password);
-                println!("Found 1 match. Password copied to clipboard");
+                if args.verbose {
+                    println!(
+                        "Found 1 match: {} -- also copied to clipboard",
+                        matches[0].password
+                    );
+                } else {
+                    println!("Password copied to clipboard",);
+                }
             }
             if matches.len() > 1 {
                 println!("Found {} matches:", matches.len());
