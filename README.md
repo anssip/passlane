@@ -15,8 +15,6 @@ A lightning-fast password generator for the command line
 ```bash
 passlane --help
 
-    Finished dev [unoptimized + debuginfo] target(s) in 0.03s
-     Running `target/debug/passlane -help`
 passlane 0.1.0
 Anssi Piirainen <anssip@email.com>
 A password manager for the command line. Syncs with the Keychain.
