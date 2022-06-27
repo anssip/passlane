@@ -1,13 +1,13 @@
 # Passlane
 
-A lightning-fast password generator for the command line
+A lightning-fast password manager for the command line
 
 ## Features
 
 - Generate passwords
-- Places the generated password into the clipboard
+- Place the generated password into the clipboard
 - Save previously generated password from the clipboard
-- Syncs the generated password to OS specific keychains, including Mac's iCloud Keychain
+- Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
 
 ## Installation
@@ -22,7 +22,7 @@ A lightning-fast password generator for the command line
 ```bash
 passlane --help
 
-passlane 0.1.0
+passlane 0.1.3
 Anssi Piirainen <anssip@email.com>
 A password manager for the command line. Syncs with the Keychain.
 
@@ -45,7 +45,7 @@ OPTIONS:
 ### Generate a new password
 
 - Sign up for a new service in the web browser
-- Hit `CMD` + `space` and run `passlane` --> saves the password to the clipboard
+- Run `passlane` --> gnerates and saves a new password to the clipboard
 - Use the generated password from the clipboard
 - After successful signup: Open terminal and run `passlane -s` to save the password
 
@@ -53,8 +53,8 @@ OPTIONS:
 
 Later on, when logging in to foobar.com:
 
-- Hit `CMD` + `space` and run `passlane -g foobard.com` --> copies foobar.com's password to clipboard
-- Use th password from clipboard to login
+- Run `passlane -g foobard.com` --> copies foobar.com's password to clipboard.
+- Use the password from clipboard to login
 
 _or alternatively_
 
