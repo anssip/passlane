@@ -56,6 +56,26 @@ Later on, when logging in to foobar.com:
 - Run `passlane -g foobard.com` --> copies foobar.com's password to clipboard.
 - Use the password from clipboard to login
 
+```bash
+$ passlane -g google.com
+Please enter master password:
+Found 9 matches:
++---+-----------------------------------------------------+------------------------------------+
+|   | Service                                             | Username/email                     |
++==============================================================================================+
+| 0 | https://accounts.google.com/signin/v2/challenge/pwd | jack@megacorp.com                  |
+|---+-----------------------------------------------------+------------------------------------|
+| 1 | https://accounts.google.com/signin/v2/challenge/pwd | jack1p@gmail.com                   |
+|---+-----------------------------------------------------+------------------------------------|
+| 2 | https://accounts.google.com/signin/v2/challenge/pwd | jck@hey.com                        |
+|---+-----------------------------------------------------+------------------------------------|
+| 3 | https://accounts.google.com/signin/v2/challenge/pwd | jackrussel@gmail.com               |
+|---+-----------------------------------------------------+------------------------------------|
+To copy one of these passwords to clipboard, please enter a row number from the table above,
+or press q to exit: 3
+Password from index 3 copied to clipboard!
+```
+
 _or alternatively_
 
 - Let MacOS propose the saved password. It knows it because Passlane also syncs to the keychain.
@@ -103,8 +123,7 @@ Here are links to instructions for doing the CSV export:
 ## TODO
 
 - [] delete passwords
-- [] show grep results in a table
-- [] bug - `(base) ➜ practical_microservices passlane -s Please enter master password: thread 'main' panicked at 'Unable to retrieve value from clipboard: "pasteboard#readObjectsForClasses:options: returned empty"', src/main.rs:138:10 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace`
+- [x] show grep results in a table, copy password to clipboard by row index
 
 - [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
 - [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)

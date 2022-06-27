@@ -45,25 +45,24 @@ fn main() {
             if matches.len() == 0 {
                 println!("No matches found");
             }
-            if matches.len() == 1 {
-                copy_to_clipboard(&matches[0].password);
-                if args.verbose {
-                    println!(
-                        "Found 1 match: {} -- also copied to clipboard",
-                        matches[0].password
-                    );
-                } else {
-                    println!("Password copied to clipboard",);
-                }
-            }
-            if matches.len() > 1 {
+            if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
-                for creds in &matches {
-                    print!("{:}", creds);
-                    if args.verbose {
-                        println!(", password: {}", creds.password);
-                    } else {
-                        println!("");
+                ui::show_as_table(&matches, args.verbose);
+                if matches.len() == 1 {
+                    copy_to_clipboard(&matches[0].password);
+                    println!("Password copied to clipboard!",);
+                } else {
+                    match ui::ask_index(
+                        "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
+                        &matches,
+                    ) {
+                        Ok(index) => {
+                            copy_to_clipboard(&matches[index].password);
+                            println!("Password from index {} copied to clipboard!", index);
+                        }
+                        Err(message) => {
+                            println!("{}", message);
+                        }
                     }
                 }
             }
