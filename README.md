@@ -102,10 +102,13 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
+- [] delete passwords
+- [] show grep results in a table
+- [] bug - `(base) ➜ practical_microservices passlane -s Please enter master password: thread 'main' panicked at 'Unable to retrieve value from clipboard: "pasteboard#readObjectsForClasses:options: returned empty"', src/main.rs:138:10 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace`
+
 - [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
 - [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)
 - [x] import from CSV
 - [x] separate CLI option to sync to keychain
 - [x] possibility to show passwords when multiple search matches
-- [] delete passwords
 - [] online sync?
