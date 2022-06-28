@@ -92,6 +92,9 @@ pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize
     if answer == "q" {
         return Err(String::from("Quitting"));
     }
+    if answer == "a" {
+        return Ok(usize::MAX);
+    }
     return match answer.parse::<i16>() {
         Ok(num) => {
             if num > 0 && num < credentials.len().try_into().unwrap() {

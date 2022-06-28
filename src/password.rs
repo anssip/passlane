@@ -34,6 +34,22 @@ impl Display for Credentials {
     }
 }
 
+impl PartialEq for Credentials {
+    fn eq(&self, other: &Self) -> bool {
+        self.username == other.username && self.service == other.service
+    }
+}
+
+impl Clone for Credentials {
+    fn clone(&self) -> Self {
+        Credentials {
+            password: String::from(&self.password),
+            username: String::from(&self.username),
+            service: String::from(&self.service),
+        }
+    }
+}
+
 pub fn generate() -> String {
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
     let up_case = "ABCDEFGHIJKLMNOPQRSTUVXYZ".to_string();

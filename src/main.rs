@@ -2,6 +2,7 @@ extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
 
+use crate::password::Credentials;
 use clap::Parser;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -21,6 +22,10 @@ struct Args {
     /// Grep passwords by service
     #[clap(short, long)]
     grep: Option<String>,
+    /// Delete passwords by service. Use together with --keychain to
+    /// also delete from the keychain.
+    #[clap(short, long)]
+    delete: Option<String>,
     /// Update master password
     #[clap(short, long)]
     master_pwd: bool,
@@ -38,13 +43,18 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    let find_matches = |master_pwd: &String, grep_value: &String| -> Vec<Credentials> {
+        let matches = store::grep(&master_pwd, &grep_value);
+        if matches.len() == 0 {
+            println!("No matches found");
+        }
+        return matches
+    };
+
     match args.grep {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
-            let matches = store::grep(&master_pwd, &value);
-            if matches.len() == 0 {
-                println!("No matches found");
-            }
+            let matches = find_matches(&master_pwd, &value);
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, args.verbose);
@@ -70,6 +80,49 @@ fn main() {
         }
         None => (),
     }
+    match args.delete {
+        Some(value) => {
+            let master_pwd = ui::ask_master_password();
+            let matches = find_matches(&master_pwd, &value);
+            if matches.len() == 0 {
+                return
+            }
+            if matches.len() == 1 {
+                store::delete(&&vec![matches[0].clone()]);
+                if args.keychain {
+                    keychain::delete(&matches[0]);
+                }
+            }
+            if matches.len() > 1 {
+                ui::show_as_table(&matches, args.verbose);
+                match ui::ask_index(
+                    "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
+                    &matches,
+                ) {
+                    Ok(index) => {
+                        if index == usize::MAX {
+                            store::delete(&matches);
+                            if args.keychain {
+                                keychain::delete_all(&matches);
+                            }
+                            println!("Deleted all {} matches!", matches.len());
+                            
+                        } else {
+                            store::delete(&vec![matches[index].clone()]);
+                            if args.keychain {
+                                keychain::delete(&matches[index]);
+                            }            
+                            println!("Deleted credentials of row {}!", index);
+                        }
+                    }
+                    Err(message) => {
+                        println!("{}", message);
+                    }
+                }
+            }
+        }
+        None => ()
+    }
     match args.csv {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
@@ -84,7 +137,6 @@ fn main() {
         let password = password::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
-        return;
     }
     if args.save {
         let master_pwd = ui::ask_master_password();
@@ -115,7 +167,7 @@ fn main() {
         store::update_master_password(&old_pwd, &new_pwd);
         return;
     }
-    if args.keychain {
+    if args.keychain && (env::args().len() == 2 || args.save) {
         let master_pwd = ui::ask_master_password();
         let creds = store::get_all_credentials();
         match keychain::save_all(&creds, &master_pwd) {

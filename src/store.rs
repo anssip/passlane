@@ -120,6 +120,31 @@ pub fn update_master_password(old_password: &String, new_password: &String) -> b
     true
 }
 
+// TODO: refactor to two differvent functions: delete and delete_all
+pub fn delete(credentials_to_delete: &Vec<Credentials>) {
+    let creds = get_all_credentials();
+    let mut new_entries = Vec::new();
+    for credential in &creds {
+        match credentials_to_delete.into_iter().find(|c| credential.eq(c)) {
+            None => {
+                new_entries.push(credential);
+            }
+            Some(_) => (), // drop this
+        }
+    }
+    if new_entries.len() < creds.len() {
+        let path = PathBuf::from(dir_path()).join(".store_new");
+        let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
+
+        for creds in new_entries {
+            wtr.serialize(creds)
+                .expect("Unable to store credentials to temp file");
+        }
+        rename(dir_path().join(".store_new"), dir_path().join(".store"))
+            .expect("Unable to rename password file");
+    }
+}
+
 pub fn import_csv(file_path: &String, master_password: &String) -> Result<i64, String> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new()

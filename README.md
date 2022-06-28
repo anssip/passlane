@@ -20,9 +20,8 @@ A lightning-fast password manager for the command line
 ## Usage
 
 ```bash
-passlane --help
-
-passlane 0.1.3
+(base) ➜  temp passlane -h
+passlane 0.1.4
 Anssi Piirainen <anssip@email.com>
 A password manager for the command line. Syncs with the Keychain.
 
@@ -30,16 +29,18 @@ USAGE:
     passlane [OPTIONS]
 
 OPTIONS:
-    -c, --csv <CSV>      Import credentials from a CSV file
-    -g, --grep <GREP>    Grep passwords by service
-    -h, --help           Print help information
-    -k, --keychain       Sync credentials to Keychain. Syncs all store credentials when specified as
-                         the only option. When used together with --save, syncs only the password in
-                         question
-    -m, --master-pwd     Update master password
-    -s, --save           Save the last generated password
-    -v, --verbose        Verobose: show password values when grep option finds several matches
-    -V, --version        Print version information
+    -c, --csv <CSV>          Import credentials from a CSV file
+    -d, --delete <DELETE>    Delete passwords by service. Use together with --keychain to
+                             also delete from the keychain.
+    -g, --grep <GREP>        Grep passwords by service
+    -h, --help               Print help information
+    -k, --keychain           Sync credentials to Keychain. Syncs all store credentials when
+                             specified as the only option. When used together with --save, syncs
+                             only the password in question
+    -m, --master-pwd         Update master password
+    -s, --save               Save the last generated password
+    -v, --verbose            Verobose: show password values when grep option finds several matches
+    -V, --version            Print version information
 ```
 
 ### Generate a new password
@@ -122,7 +123,9 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
-- [] delete passwords
+- [] online sync service?
+- [] web UI for the online service
+- [x] delete passwords
 - [x] show grep results in a table, copy password to clipboard by row index
 
 - [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
@@ -130,4 +133,3 @@ Here are links to instructions for doing the CSV export:
 - [x] import from CSV
 - [x] separate CLI option to sync to keychain
 - [x] possibility to show passwords when multiple search matches
-- [] online sync?
