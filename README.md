@@ -2,6 +2,8 @@
 
 A lightning-fast password manager for the command line
 
+![Screenshot](https://i.imgur.com/jCVJiLT.png)
+
 ## Features
 
 - Generate passwords
