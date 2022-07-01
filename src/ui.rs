@@ -4,6 +4,7 @@ use std::io::Write;
 
 use crate::password::Credentials;
 use crate::store;
+use std::cmp::min;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -70,14 +71,14 @@ pub fn show_as_table(credentials: &Vec<Credentials>, show_password: bool) {
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&creds.service)),
+                Cell::new(String::from(&creds.service[..min(creds.service.len(), 60)])),
                 Cell::new(String::from(&creds.username)),
                 Cell::new(String::from(&creds.password)),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&creds.service)),
+                Cell::new(String::from(&creds.service[..min(creds.service.len(), 60)])),
                 Cell::new(String::from(&creds.username)),
             ]
         };
@@ -97,7 +98,7 @@ pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize
     }
     return match answer.parse::<i16>() {
         Ok(num) => {
-            if num > 0 && num < credentials.len().try_into().unwrap() {
+            if num >= 0 && num < credentials.len().try_into().unwrap() {
                 Ok(num.try_into().unwrap())
             } else {
                 Err(String::from("Invalid index"))
