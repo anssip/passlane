@@ -26,3 +26,13 @@ regex = "1.5.5"
 keyring = "1.1.2"
 rpassword = "6.0.1"
 comfy-table = "6.0.0"
+async-oauth2 = "0.4.0"
+reqwest = "0.11.10"
+tokio = { version = "1.17.0", features = ["full"] }
+hyper = { version = "0.14.18", features = ["server", "http1"] }
+serde_urlencoded = "0.7.1"
+futures = "0.3.21"
+tower-service = "0.3.1"
+log = "0.4.16"
+anyhow = "1.0.56"
+webbrowser = "0.7.1"

@@ -125,7 +125,8 @@ Here are links to instructions for doing the CSV export:
 
 ## TODO
 
-- [] online sync service?
+- [] online sync service
+- [] log crate?
 - [] web UI for the online service
 - [x] delete passwords
 - [x] show grep results in a table, copy password to clipboard by row index

@@ -7,11 +7,13 @@ use clap::Parser;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
 use std::env;
+use oauth2::Token;
 
 mod keychain;
 mod password;
 mod store;
 mod ui;
+mod vault;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -39,9 +41,13 @@ struct Args {
     /// Verobose: show password values when grep option finds several matches
     #[clap(short, long)]
     verbose: bool,
+    /// Login to passlanevault.com
+    #[clap(short, long)]
+    login: bool
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     let find_matches = |master_pwd: &String, grep_value: &String| -> Vec<Credentials> {
         let matches = store::grep(&master_pwd, &grep_value);
@@ -173,6 +179,18 @@ fn main() {
         match keychain::save_all(&creds, &master_pwd) {
             Ok(len) => println!("Synced {} entries", len),
             Err(message) => println!("Failed to sync: {}", message),
+        }
+    }
+    if args.login {
+        let token = vault::login().await;
+        println!("Token: {:?}", token);
+        match token {
+            Ok(value) => {
+                println!("Token: {}", value.access_token().to_string());
+            }
+            Err(message) => {
+                println!("Failed to login: {}", message)
+            }
         }
     }
 }

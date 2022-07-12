@@ -4,7 +4,9 @@ use std::io::Write;
 
 use crate::password::Credentials;
 use crate::store;
+use anyhow::bail;
 use std::cmp::min;
+use webbrowser;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -106,4 +108,12 @@ pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize
         }
         Err(_) => Err(String::from("Invalid index")),
     };
+}
+
+pub fn open_browser(url: &str, prompt: &str) -> Result<bool, anyhow::Error> {
+    if ask(prompt) == "q" {
+        bail!("Aborted")
+    } else {
+        Ok(webbrowser::open(url).is_ok())
+    }
 }
