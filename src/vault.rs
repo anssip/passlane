@@ -20,6 +20,15 @@ pub struct ReceivedCode {
 }
 pub struct Server {
     channel: Option<oneshot::Sender<ReceivedCode>>,
+    document: Vec<u8>,
+}
+
+async fn file_send(filename: &str) -> anyhow::Result<Vec<u8>> {
+    if let Ok(contents) = tokio::fs::read(filename).await {
+        let body = contents.into();
+        return Ok(body);
+    }
+    bail!("file not found")
 }
 
 impl Service<Request<Body>> for Server {
@@ -31,6 +40,7 @@ impl Service<Request<Body>> for Server {
         Poll::Ready(Ok(()))
     }
 
+    // Handle the request
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         if let Ok(code) =
             serde_urlencoded::from_str::<ReceivedCode>(req.uri().query().unwrap_or(""))
@@ -39,8 +49,8 @@ impl Service<Request<Body>> for Server {
                 let _ = channel.send(code);
             }
         }
-
-        Box::pin(future::ok(Response::new(Body::empty())))
+        Box::pin(future::ok(Response::new(Body::from(self.document.clone()))))
+        // Box::pin(future::ok(Response::new(Body::from("<h1>Success!</h1>"))))
     }
 }
 
@@ -65,11 +75,11 @@ pub async fn login() -> Result<oauth2::StandardToken, anyhow::Error> {
     )? {
         bail!("Failed to open login page in browser");
     }
-
     let received: ReceivedCode = listen_for_code(8080).await?;
     if received.state != state {
         panic!("CSRF token mismatch :(");
     }
+
     let token = client
         .exchange_code(received.code)
         .with_client(&reqwest_client)
@@ -86,13 +96,13 @@ async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
     let addr: SocketAddr = str::parse(&bind)?;
 
     let (tx, rx) = oneshot::channel::<ReceivedCode>();
-
     let mut channel = Some(tx);
-
+    let document = file_send("resources/auth_success.html").await?;
     let server_future = server::Server::bind(&addr).serve(service::make_service_fn(move |_| {
         let channel = channel.take().expect("channel is not available");
         let mut server = Server {
             channel: Some(channel),
+            document: document.clone(),
         };
         let service = service::service_fn(move |req| server.call(req));
 
