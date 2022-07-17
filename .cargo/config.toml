@@ -1,0 +1,8 @@
+[env]
+AUTH_SECRET='94e35948692a4feb66dd3ac0b56f54abf959cfb0c825175b9072658940778416'
+AUTH_CLIENT_SECRET='KgQydSL4Nr3F9ZTAKdg8Z6Pa9TIY1ih-HemjeyIInqIBBUlx7AcngsLI4kj3aNeh'
+
+AUTH_CLIENT_ID="fZILwNkyzH09Vc4n1VQ0SsDWenMZlOBY"
+AUTH_AUTHORIZE_URL="https://passlane.eu.auth0.com/authorize"
+AUTH_TOKEN_URL="https://passlane.eu.auth0.com/oauth/token"
+AUTH_REDIRECT_URL="http://localhost:8080/api/auth/redirect"

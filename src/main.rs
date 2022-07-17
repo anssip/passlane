@@ -12,6 +12,7 @@ mod keychain;
 mod password;
 mod store;
 mod ui;
+mod auth;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -39,9 +40,13 @@ struct Args {
     /// Verobose: show password values when grep option finds several matches
     #[clap(short, long)]
     verbose: bool,
+    /// Login to passlanevault.com
+    #[clap(short, long)]
+    login: bool
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     let find_matches = |master_pwd: &String, grep_value: &String| -> Vec<Credentials> {
         let matches = store::grep(&master_pwd, &grep_value);
@@ -174,6 +179,10 @@ fn main() {
             Ok(len) => println!("Synced {} entries", len),
             Err(message) => println!("Failed to sync: {}", message),
         }
+    }
+    if args.login {
+        let token = auth::login().await;
+        println!("Token: {}", token.unwrap());
     }
 }
 
