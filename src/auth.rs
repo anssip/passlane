@@ -15,8 +15,8 @@ use anyhow::bail;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl,
-    Scope, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
+    RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 
 #[derive(Deserialize)]
@@ -69,17 +69,25 @@ pub async fn login() -> Result<String, anyhow::Error> {
         AuthUrl::new(env::var("AUTH_AUTHORIZE_URL")?)?,
         Some(TokenUrl::new(env::var("AUTH_TOKEN_URL")?)?),
     )
-    .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?);
+    .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?)
+    .set_auth_type(AuthType::RequestBody);
 
     // Generate a PKCE challenge.
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
+    let csrf_token = CsrfToken::new_random_len(256);
+
     // Generate the full authorization URL.
     let (auth_url, csrf_state) = client
-        .authorize_url(CsrfToken::new_random)
+        .authorize_url(|| csrf_token)
         // Set the desired scopes.
-        .add_scope(Scope::new("read".to_string()))
-        .add_scope(Scope::new("write".to_string()))
+        .add_scope(Scope::new("openid".to_string()))
+        .add_scope(Scope::new("email".to_string()))
+        .add_scope(Scope::new("profile".to_string()))
+        .add_extra_param(
+            "audience".to_string(),
+            "https://passlane.eu.auth0.com/api/v2/",
+        )
         // Set the PKCE code challenge.
         .set_pkce_challenge(pkce_challenge)
         .url();
@@ -92,7 +100,7 @@ pub async fn login() -> Result<String, anyhow::Error> {
     }
     let received: ReceivedCode = listen_for_code(8080).await?;
     if received.state.secret() != csrf_state.secret() {
-        panic!("CSRF token mismatch :(");
+        bail!("CSRF token mismatch :(");
     }
     // Now you can trade it for an access token.
     let token_result = client
