@@ -1,4 +1,5 @@
 use crate::ui;
+use core::time::Duration;
 use futures::{
     channel::oneshot,
     prelude::*,
@@ -18,6 +19,12 @@ use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
     RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
+
+pub struct AccessTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_in: Option<Duration>,
+}
 
 #[derive(Deserialize)]
 pub struct ReceivedCode {
@@ -56,13 +63,10 @@ impl Service<Request<Body>> for Server {
             }
         }
         Box::pin(future::ok(Response::new(Body::from(self.document.clone()))))
-        // Box::pin(future::ok(Response::new(Body::from("<h1>Success!</h1>"))))
     }
 }
 
-pub async fn login() -> Result<String, anyhow::Error> {
-    // Create an OAuth2 client by specifying the client ID, client secret, authorization URL and
-    // token URL.
+pub async fn login() -> Result<AccessTokens, anyhow::Error> {
     let client = BasicClient::new(
         ClientId::new(env::var("AUTH_CLIENT_ID")?),
         Some(ClientSecret::new(env::var("AUTH_CLIENT_SECRET")?)),
@@ -72,7 +76,6 @@ pub async fn login() -> Result<String, anyhow::Error> {
     .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?)
     .set_auth_type(AuthType::RequestBody);
 
-    // Generate a PKCE challenge.
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
     let csrf_token = CsrfToken::new_random_len(256);
@@ -80,7 +83,6 @@ pub async fn login() -> Result<String, anyhow::Error> {
     // Generate the full authorization URL.
     let (auth_url, csrf_state) = client
         .authorize_url(|| csrf_token)
-        // Set the desired scopes.
         .add_scope(Scope::new("openid".to_string()))
         .add_scope(Scope::new("email".to_string()))
         .add_scope(Scope::new("profile".to_string()))
@@ -88,7 +90,6 @@ pub async fn login() -> Result<String, anyhow::Error> {
             "audience".to_string(),
             "https://passlane.eu.auth0.com/api/v2/",
         )
-        // Set the PKCE code challenge.
         .set_pkce_challenge(pkce_challenge)
         .url();
 
@@ -102,14 +103,20 @@ pub async fn login() -> Result<String, anyhow::Error> {
     if received.state.secret() != csrf_state.secret() {
         bail!("CSRF token mismatch :(");
     }
-    // Now you can trade it for an access token.
     let token_result = client
         .exchange_code(AuthorizationCode::new(received.code.secret().to_string()))
-        // Set the PKCE code verifier.
         .set_pkce_verifier(pkce_verifier)
         .request_async(async_http_client)
         .await?;
-    Ok(String::from(token_result.access_token().secret()))
+    Ok(AccessTokens {
+        access_token: String::from(token_result.access_token().secret()),
+        refresh_token: if let Some(token) = token_result.refresh_token() {
+            Some(String::from(token.secret()))
+        } else {
+            None
+        },
+        expires_in: token_result.expires_in(),
+    })
 }
 
 async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {

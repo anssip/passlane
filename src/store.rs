@@ -1,5 +1,9 @@
+use crate::auth::AccessTokens;
 use crate::password::Credentials;
 use crate::ui::ask_password;
+use anyhow;
+use anyhow::bail;
+use core::time::Duration;
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
 use pwhash::bcrypt;
@@ -11,6 +15,7 @@ use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 fn home_dir() -> PathBuf {
     match dirs::home_dir() {
@@ -26,6 +31,12 @@ fn dir_path() -> PathBuf {
         create_dir(&dir_path).expect("Unable to create .passlane dir");
     }
     dir_path
+}
+
+fn access_token_path() -> PathBuf {
+    let path = dir_path();
+    let path = path.join(".access_token");
+    path
 }
 
 pub fn save(master_password: &String, creds: &Credentials) {
@@ -191,4 +202,69 @@ pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
         }
     }
     matches
+}
+
+pub fn store_access_token(token: AccessTokens) -> anyhow::Result<bool> {
+    let path = access_token_path();
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .append(false)
+        .create_new(!path.exists())
+        .open(&path)
+        .expect("Unable to open access token file");
+
+    let contents = format!(
+        "{},{},{}",
+        token.access_token,
+        if let Some(value) = token.refresh_token {
+            value
+        } else {
+            String::from("")
+        },
+        if let Some(duration) = token.expires_in {
+            duration.as_secs()
+        } else {
+            0
+        }
+    );
+    file.write_all(contents.as_bytes())?;
+    Ok(true)
+}
+
+pub fn has_logged_in() -> bool {
+    access_token_path().exists()
+}
+
+pub fn get_access_token() -> anyhow::Result<AccessTokens> {
+    let path = access_token_path();
+    if !path.exists() {
+        bail!("Please login first with: passlane -l");
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create_new(false)
+        .open(&path)?;
+
+    let mut file_content = String::new();
+    file.read_to_string(&mut file_content)?;
+
+    let parts: Vec<&str> = file_content.split(",").collect();
+    let expires = u64::from_str(parts[2])?;
+    Ok(AccessTokens {
+        access_token: String::from(parts[0]),
+        refresh_token: if parts[1] != "" {
+            Some(String::from(parts[1]))
+        } else {
+            None
+        },
+        expires_in: if expires > 0 {
+            Some(Duration::new(expires, 0))
+        } else {
+            None
+        },
+    })
 }

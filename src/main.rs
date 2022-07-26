@@ -53,7 +53,7 @@ async fn main() {
     match args.grep {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value).await;
+            let matches = find_matches(&master_pwd, &value).await.unwrap();
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, args.verbose);
@@ -82,7 +82,7 @@ async fn main() {
     match args.delete {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value).await;
+            let matches = find_matches(&master_pwd, &value).await.unwrap();
             if matches.len() == 0 {
                 return
             }
@@ -175,8 +175,11 @@ async fn main() {
         }
     }
     if args.login {
-        let token = auth::login().await;
-        println!("Token: {}", token.unwrap());
+        let token = auth::login().await.unwrap();
+        match store::store_access_token(token) {
+            Ok(_) => println!("Logged in successfully. Online vaults in use."),
+            Err(message) => println!("Login failed: {}", message)
+        } 
     }
 }
 
@@ -196,13 +199,15 @@ fn password_from_clipboard() -> Result<String, String> {
     Result::Ok(value)
 }
 
-async fn find_matches(master_pwd: &String, grep_value: &String) -> Vec<Credentials> {
-    let access_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IlFkZEhsRURSd3B0SXk3MVYxajBETiJ9.eyJodHRwczovL3Bhc3NsYW5ldmF1bHQuY29tL2VtYWlsIjoiYW5zc2lwQGdtYWlsLmNvbSIsImlzcyI6Imh0dHBzOi8vcGFzc2xhbmUuZXUuYXV0aDAuY29tLyIsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAyMjE4MTIyMTAxNTA1OTQyNDMyIiwiYXVkIjpbImh0dHBzOi8vcGFzc2xhbmUuZXUuYXV0aDAuY29tL2FwaS92Mi8iLCJodHRwczovL3Bhc3NsYW5lLmV1LmF1dGgwLmNvbS91c2VyaW5mbyJdLCJpYXQiOjE2NTg3NTkxNzQsImV4cCI6MTY1ODg0NTU3NCwiYXpwIjoiZlpJTHdOa3l6SDA5VmM0bjFWUTBTc0RXZW5NWmxPQlkiLCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIn0.cd3AySWk2t20hc_U0ijfWZf6Zhn8gUqAiJhAzIh3w-LcE-3CTWooDDwPoYzFd2t1jx0bd8yboiZDuyPQ44mvbsY_4yOGbr0XS-Cc6wF8lvFV4oUYUfdyuLZPJ4dfOyKH1Zs82fkxADFGdF82bQ7K741gpytRPuqw0Qwl4eUJ4gA0IFpuoI_FAB-lyR-GmhLbfgYQnayDPLlNaoVgQD-U3iMU4ugh5T5xCv2Ed9PqWgfGyuRtSG3dGtuuv4SGh7bje-1eJH_Pnr07v2LXzIT8BjMq-xupeDc2Sn4WcI1q3tKR3NQ27BqZMbksn2Cqok9Wh8CjiWyHs1FG1wrdjqG6NA";
-    // TODO: check if logged in and use corresponding store
-    let matches = online_vault::grep(&access_token, &master_pwd, &grep_value).await;
-    // let matches = store::grep(&master_pwd, &grep_value);
+async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Result<Vec<Credentials>> {
+    let matches = if store::has_logged_in() { 
+        let token = store::get_access_token()?;
+        online_vault::grep(&token.access_token, &master_pwd, &grep_value).await
+    } else {
+        store::grep(master_pwd, grep_value)
+    };
     if matches.len() == 0 {
         println!("No matches found");
     }
-    return matches
+    Ok(matches)
 }
