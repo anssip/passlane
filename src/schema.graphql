@@ -1,0 +1,63 @@
+scalar Date
+
+type User {
+  id: Int!
+  authUserId: String!
+  firstName: String!
+  lastName: String!
+  email: String!
+  vaults: [Vault!]!
+  created: Date!
+  modified: Date
+}
+
+type Vault {
+  id: Int!
+  personal: Boolean!
+  name: String!
+  users: [User]!
+  credentials(masterPassword: String!, grep: String): [Credentials]
+}
+
+type Credentials {
+  id: Int!
+  service: String!
+  username: String!
+  password: String!
+  created: Date!
+  modified: Date
+}
+
+input CredentialsIn {
+  service: String!
+  username: String!
+  passwordEncrypted: String!
+}
+
+input UserIn {
+  username: String!
+  authUserId: String!
+  firstName: String
+  lastName: String
+  email: String!
+}
+
+input AddCredentialsIn {
+  vaultId: Int
+  credentials: CredentialsIn!
+}
+
+input AddCredentialsGroupIn {
+  vaultId: Int
+  credentials: [CredentialsIn!]!
+}
+
+type Mutation {
+  addCredentials(input: AddCredentialsIn!): Credentials!
+  addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
+  addUser(user: UserIn!): User!
+}
+
+type Query {
+  me: User!
+}

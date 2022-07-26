@@ -13,6 +13,8 @@ mod password;
 mod store;
 mod ui;
 mod auth;
+mod online_vault;
+mod graphql;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -48,18 +50,10 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let find_matches = |master_pwd: &String, grep_value: &String| -> Vec<Credentials> {
-        let matches = store::grep(&master_pwd, &grep_value);
-        if matches.len() == 0 {
-            println!("No matches found");
-        }
-        return matches
-    };
-
     match args.grep {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value);
+            let matches = find_matches(&master_pwd, &value).await;
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, args.verbose);
@@ -88,7 +82,7 @@ async fn main() {
     match args.delete {
         Some(value) => {
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value);
+            let matches = find_matches(&master_pwd, &value).await;
             if matches.len() == 0 {
                 return
             }
@@ -200,4 +194,15 @@ fn password_from_clipboard() -> Result<String, String> {
         return Err(String::from("Unable to retrieve value from clipboard"));
     }
     Result::Ok(value)
+}
+
+async fn find_matches(master_pwd: &String, grep_value: &String) -> Vec<Credentials> {
+    let access_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IlFkZEhsRURSd3B0SXk3MVYxajBETiJ9.eyJodHRwczovL3Bhc3NsYW5ldmF1bHQuY29tL2VtYWlsIjoiYW5zc2lwQGdtYWlsLmNvbSIsImlzcyI6Imh0dHBzOi8vcGFzc2xhbmUuZXUuYXV0aDAuY29tLyIsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAyMjE4MTIyMTAxNTA1OTQyNDMyIiwiYXVkIjpbImh0dHBzOi8vcGFzc2xhbmUuZXUuYXV0aDAuY29tL2FwaS92Mi8iLCJodHRwczovL3Bhc3NsYW5lLmV1LmF1dGgwLmNvbS91c2VyaW5mbyJdLCJpYXQiOjE2NTg3NTkxNzQsImV4cCI6MTY1ODg0NTU3NCwiYXpwIjoiZlpJTHdOa3l6SDA5VmM0bjFWUTBTc0RXZW5NWmxPQlkiLCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIn0.cd3AySWk2t20hc_U0ijfWZf6Zhn8gUqAiJhAzIh3w-LcE-3CTWooDDwPoYzFd2t1jx0bd8yboiZDuyPQ44mvbsY_4yOGbr0XS-Cc6wF8lvFV4oUYUfdyuLZPJ4dfOyKH1Zs82fkxADFGdF82bQ7K741gpytRPuqw0Qwl4eUJ4gA0IFpuoI_FAB-lyR-GmhLbfgYQnayDPLlNaoVgQD-U3iMU4ugh5T5xCv2Ed9PqWgfGyuRtSG3dGtuuv4SGh7bje-1eJH_Pnr07v2LXzIT8BjMq-xupeDc2Sn4WcI1q3tKR3NQ27BqZMbksn2Cqok9Wh8CjiWyHs1FG1wrdjqG6NA";
+    // TODO: check if logged in and use corresponding store
+    let matches = online_vault::grep(&access_token, &master_pwd, &grep_value).await;
+    // let matches = store::grep(&master_pwd, &grep_value);
+    if matches.len() == 0 {
+        println!("No matches found");
+    }
+    return matches
 }

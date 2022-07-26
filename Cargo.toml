@@ -27,7 +27,6 @@ keyring = "1.1.2"
 rpassword = "6.0.1"
 comfy-table = "6.0.0"
 oauth2 = "4.2.3"
-reqwest = "0.11.10"
 tokio = { version = "1.17.0", features = ["full"] }
 hyper = { version = "0.14.18", features = ["server", "http1"] }
 serde_urlencoded = "0.7.1"
@@ -36,3 +35,5 @@ tower-service = "0.3.1"
 log = "0.4.16"
 anyhow = "1.0.56"
 webbrowser = "0.7.1"
+reqwest = "0.11.11"
+cynic = { version = "1.0.0", features = ["reqwest"] }
