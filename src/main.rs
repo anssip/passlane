@@ -1,6 +1,7 @@
 extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
+use anyhow::bail;
 
 use crate::password::Credentials;
 use clap::Parser;
@@ -44,7 +45,10 @@ struct Args {
     verbose: bool,
     /// Login to passlanevault.com
     #[clap(short, long)]
-    login: bool
+    login: bool,
+    /// Push all local credentials to the Online Vault
+    #[clap(short, long)]
+    push: bool
 }
 
 #[tokio::main]
@@ -176,10 +180,22 @@ async fn main() {
     }
     if args.login {
         let token = auth::login().await.unwrap();
+        let first_login = !store::has_logged_in();
         match store::store_access_token(token) {
-            Ok(_) => println!("Logged in successfully. Online vaults in use."),
+            Ok(_) => { 
+                println!("Logged in successfully. Online vaults in use.");
+                if first_login {
+                    println!("You can push all your locally stored credentials to the Online Vault with: passlane --push");
+                }
+            },
             Err(message) => println!("Login failed: {}", message)
         } 
+    }
+    if args.push {
+        match push_credentials().await {
+            Ok(num) => println!("Pushed {} credentials online", num),
+            Err(message) => println!("Push failed: {}", message)
+        }       
     }
 }
 
@@ -201,8 +217,9 @@ fn password_from_clipboard() -> Result<String, String> {
 
 async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() { 
+        // TODO: handle token expiration
         let token = store::get_access_token()?;
-        online_vault::grep(&token.access_token, &master_pwd, &grep_value).await
+        online_vault::grep(&token.access_token, &master_pwd, &grep_value).await?
     } else {
         store::grep(master_pwd, grep_value)
     };
@@ -210,4 +227,14 @@ async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Resul
         println!("No matches found");
     }
     Ok(matches)
+}
+
+async fn push_credentials() -> anyhow::Result<i32> {
+    if ! store::has_logged_in() {
+        bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
+    }
+    let token = store::get_access_token()?;
+    // TODO: check token expiration
+    let credentials = store::get_all_credentials();
+    online_vault::push_credentials(&token.access_token, &credentials, None).await
 }

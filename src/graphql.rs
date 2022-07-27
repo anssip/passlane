@@ -1,3 +1,8 @@
+use cynic::http::ReqwestExt;
+use reqwest::header;
+
+const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
+
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod queries {
     use super::schema;
@@ -48,6 +53,37 @@ pub mod queries {
 
     #[derive(cynic::Scalar, Debug, Clone)]
     pub struct Date(pub String);
+
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct AddGredentialsGroupMutationVariables {
+        pub input: AddCredentialsGroupIn,
+    }
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "AddGredentialsGroupMutationVariables"
+    )]
+    pub struct AddGredentialsGroupMutation {
+        #[arguments(input = AddCredentialsGroupIn {
+            credentials: args.input.credentials.clone(),
+            vault_id: args.input.vault_id
+        })]
+        pub add_credentials_group: i32,
+    }
+
+    #[derive(cynic::InputObject, Debug)]
+    pub struct AddCredentialsGroupIn {
+        pub credentials: Vec<CredentialsIn>,
+        pub vault_id: Option<i32>,
+    }
+
+    #[derive(cynic::InputObject, Debug, Clone)]
+    #[cynic(rename_all = "camelCase")]
+    pub struct CredentialsIn {
+        pub password_encrypted: String,
+        pub service: String,
+        pub username: String,
+    }
 }
 
 mod schema {
@@ -59,12 +95,10 @@ pub async fn run_me_query(
     master_password: &str,
     grep: &str,
 ) -> cynic::GraphQlResponse<queries::MeQuery> {
-    use cynic::http::ReqwestExt;
-    use reqwest::header;
     let operation = build_me_query(master_password, grep);
 
     reqwest::Client::new()
-        .post("https://passlanevault.fly.dev/api/graphql")
+        .post(API_ENDPOINT)
         .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
         .run_graphql(operation)
         .await
@@ -80,5 +114,35 @@ fn build_me_query(
     queries::MeQuery::build(queries::CredentialsQueryVariables {
         master_password: master_password.into(),
         grep: Some(grep.into()),
+    })
+}
+
+pub async fn run_add_credentials_group_mutation(
+    access_token: &str,
+    credentials: Vec<queries::CredentialsIn>,
+    vault_id: Option<i32>,
+) -> cynic::GraphQlResponse<queries::AddGredentialsGroupMutation> {
+    let operation = build_add_credentials_group_mutation(credentials, vault_id);
+
+    reqwest::Client::new()
+        .post(API_ENDPOINT)
+        .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_add_credentials_group_mutation(
+    credentials: Vec<queries::CredentialsIn>,
+    vault_id: Option<i32>,
+) -> cynic::Operation<'static, queries::AddGredentialsGroupMutation> {
+    use cynic::MutationBuilder;
+    use queries::{AddGredentialsGroupMutation, AddGredentialsGroupMutationVariables};
+
+    AddGredentialsGroupMutation::build(&AddGredentialsGroupMutationVariables {
+        input: queries::AddCredentialsGroupIn {
+            credentials: credentials,
+            vault_id: vault_id,
+        },
     })
 }

@@ -101,5 +101,6 @@ fn encrypt(key: &String, value: &String) -> String {
 
 fn decrypt(key: &String, value: &String) -> String {
     let mc = new_magic_crypt!(key, 256);
-    mc.decrypt_base64_to_string(value).unwrap()
+    mc.decrypt_base64_to_string(value)
+        .expect("Unable to decrypt credentials. Invalid password?")
 }

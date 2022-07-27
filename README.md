@@ -126,10 +126,10 @@ Here are links to instructions for doing the CSV export:
 ## TODO
 
 - [] online sync service?
-
-  - save access token after login
-  - use saved access token with GraphQL client
-  - convert to one Credentials type
+- --save option to save online
+- access_token expiration handling
+- --delete to delete from the online vault
+- multiple vaults support
 
 - [] web UI for the online service
 - [x] delete passwords
