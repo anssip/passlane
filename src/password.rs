@@ -104,3 +104,10 @@ fn decrypt(key: &String, value: &String) -> String {
     mc.decrypt_base64_to_string(value)
         .expect("Unable to decrypt credentials. Invalid password?")
 }
+
+pub fn encrypt_all(key: &str, credentials: &Vec<Credentials>) -> Vec<Credentials> {
+    credentials
+        .into_iter()
+        .map(|c| c.encrypt(&key.into()))
+        .collect()
+}

@@ -1,6 +1,7 @@
 extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
+use crate::auth::AccessTokens;
 use anyhow::bail;
 
 use crate::password::Credentials;
@@ -16,6 +17,7 @@ mod ui;
 mod auth;
 mod online_vault;
 mod graphql;
+use log::{info, debug};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -53,6 +55,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
     let args = Args::parse();
     match args.grep {
         Some(value) => {
@@ -128,11 +131,10 @@ async fn main() {
     }
     match args.csv {
         Some(value) => {
-            let master_pwd = ui::ask_master_password();
-            match store::import_csv(&value, &master_pwd) {
-                Err(message) => println!("Failed: {}", message),
-                Ok(count) => println!("Imported {} entries", count),
-            }
+            match import_csv(&value).await {
+                Ok(count) => { println!("Imported {} credentials.", count)},
+                Err(message) => { println!("{}", message) }
+            };
         }
         None => (),
     }
@@ -143,23 +145,21 @@ async fn main() {
     }
     if args.save {
         let master_pwd = ui::ask_master_password();
-        let save = |creds| {
-            store::save(&master_pwd, &creds);
-            if args.keychain {
-                keychain::save(&creds).expect("Unable to store credentials to keychain");
+        let handle_result = |r: anyhow::Result<()>| {
+            match r {
+                Ok(_) => (),
+                Err(message) => { println!("{}", message) }
             }
         };
         match password_from_clipboard() {
             Ok(password) => {
                 let creds = ui::ask_credentials(password);
-                save(creds);
+                handle_result(save(&master_pwd, &creds, args.keychain).await);
             }
             Err(_) => {
-                println!("Unable to find a generated password in keychain - ");
-                let password = ui::ask_password("Enter password: ");
+                let password = ui::ask_password("Enter password to save: ");
                 let creds = ui::ask_credentials(password);
-                save(creds);
-                println!("Saved.");
+                handle_result(save(&master_pwd, &creds, args.keychain).await);
             }
         }
         return;
@@ -199,6 +199,7 @@ async fn main() {
     }
 }
 
+
 fn copy_to_clipboard(value: &String) {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     ctx.set_contents(String::from(value)).unwrap();
@@ -217,10 +218,11 @@ fn password_from_clipboard() -> Result<String, String> {
 
 async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() { 
-        // TODO: handle token expiration
-        let token = store::get_access_token()?;
+        info!("searching from online vault");
+        let token = get_access_token()?;
         online_vault::grep(&token.access_token, &master_pwd, &grep_value).await?
     } else {
+        info!("searching from local file");
         store::grep(master_pwd, grep_value)
     };
     if matches.len() == 0 {
@@ -229,12 +231,60 @@ async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Resul
     Ok(matches)
 }
 
-async fn push_credentials() -> anyhow::Result<i32> {
+fn get_access_token() -> anyhow::Result<AccessTokens>{
+    debug!("get_access_token()");
     if ! store::has_logged_in() {
         bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
     }
     let token = store::get_access_token()?;
-    // TODO: check token expiration
+    debug!("Token expired? {}", token.is_expired());
+    debug!("Token {}", token);
+    // TODO: renew token if expired!
+    Ok(token)
+
+}
+
+async fn push_credentials() -> anyhow::Result<i32> {
+    let token = get_access_token()?;
     let credentials = store::get_all_credentials();
     online_vault::push_credentials(&token.access_token, &credentials, None).await
+}
+
+async fn push_one_credential(master_pwd: &String, credentials: &Credentials) -> anyhow::Result<i32> {
+    let token = get_access_token()?;
+    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None).await
+}
+
+async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyhow::Result<()> {
+    if store::has_logged_in() {
+        info!("saving to online vault");
+        push_one_credential(master_pwd, &creds).await?;
+    } else {
+        info!("saving to local file");
+        store::save(master_pwd, creds);
+    }
+    if keychain {
+        keychain::save(&creds).expect("Unable to store credentials to keychain");
+    }
+    println!("Saved.");
+    Ok(())
+}
+
+async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
+    let token = get_access_token()?;
+    let credentials = store::read_from_csv(file_path)?;
+    online_vault::push_credentials(&token.access_token, &password::encrypt_all(master_pwd, &credentials), None).await?;
+    let num_imported = credentials.len();
+    Ok(num_imported.try_into().unwrap())
+}
+
+async fn import_csv(file_path: &str) -> anyhow::Result<i64>{
+    let master_pwd = ui::ask_master_password();
+    if store::has_logged_in() {
+        info!("importing to the online vault");
+        push_from_csv(&master_pwd, file_path).await
+    } else {
+        info!("importing to local file");
+        store::import_csv(file_path, &master_pwd)
+    }
 }

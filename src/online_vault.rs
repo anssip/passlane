@@ -64,6 +64,16 @@ pub async fn push_credentials(
         Some(AddGredentialsGroupMutation {
             add_credentials_group,
         }) => Ok(add_credentials_group),
-        None => bail!("Something went wrong and no credentials added"),
+        None => bail!("Something went wrong and no credentials were pushed"),
     }
+}
+
+pub async fn push_one_credential(
+    access_token: &str,
+    credentials: &CredentialsModel,
+    vault_id: Option<i32>,
+) -> anyhow::Result<i32> {
+    let vec = &mut Vec::new();
+    vec.push(credentials.clone());
+    push_credentials(access_token, &vec, vault_id).await
 }

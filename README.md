@@ -126,9 +126,10 @@ Here are links to instructions for doing the CSV export:
 ## TODO
 
 - [] online sync service?
+- access_token expiration handling: add created Instant to AccessTokens
 - --save option to save online
-- access_token expiration handling
 - --delete to delete from the online vault
+- --csv to push to online vault, if user has a vault
 - multiple vaults support
 
 - [] web UI for the online service

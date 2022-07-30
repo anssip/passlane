@@ -1,5 +1,11 @@
 use crate::ui;
-use core::time::Duration;
+use chrono::DateTime;
+use chrono::Duration;
+use chrono::Local;
+use chrono::NaiveDateTime;
+use chrono::Utc;
+use core::fmt::Display;
+use core::fmt::Formatter;
 use futures::{
     channel::oneshot,
     prelude::*,
@@ -9,21 +15,64 @@ use hyper::{body::Body, server, service, Request, Response};
 use serde::Deserialize;
 use std::env;
 use std::net::SocketAddr;
+use std::time::UNIX_EPOCH;
 use tower_service::Service;
 
 use anyhow;
 use anyhow::bail;
+use log::error;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
     RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
+use std::time::SystemTime;
 
 pub struct AccessTokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_in: Option<Duration>,
+    pub created_timestamp: String,
+}
+
+impl AccessTokens {
+    fn seconds_since_creation(&self) -> i64 {
+        match self.created_timestamp.parse::<i64>() {
+            Ok(ts) => {
+                let naive = NaiveDateTime::from_timestamp(ts, 0);
+                let created_datetime: DateTime<Utc> = DateTime::from_utc(naive, Utc);
+                let now = Local::now();
+                now.signed_duration_since(created_datetime).num_seconds()
+            }
+            Err(err) => {
+                error!("failed to parse access_token timestamp: {}", err);
+                0
+            }
+        }
+    }
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires) = self.expires_in {
+            self.seconds_since_creation() > expires.num_seconds()
+        } else {
+            false
+        }
+    }
+}
+
+impl Display for AccessTokens {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "AccessTokens:: seconds since created {} - expires after {} seconds",
+            self.seconds_since_creation(),
+            if let Some(expires_in_duration) = self.expires_in {
+                expires_in_duration.num_seconds() - self.seconds_since_creation()
+            } else {
+                -1
+            }
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -86,6 +135,7 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
         .add_scope(Scope::new("openid".to_string()))
         .add_scope(Scope::new("email".to_string()))
         .add_scope(Scope::new("profile".to_string()))
+        .add_scope(Scope::new("offline_access".to_string()))
         .add_extra_param(
             "audience".to_string(),
             "https://passlane.eu.auth0.com/api/v2/",
@@ -108,6 +158,9 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
         .set_pkce_verifier(pkce_verifier)
         .request_async(async_http_client)
         .await?;
+
+    let timestamp = SystemTime::now();
+    let since_the_epoch = timestamp.duration_since(UNIX_EPOCH)?;
     Ok(AccessTokens {
         access_token: String::from(token_result.access_token().secret()),
         refresh_token: if let Some(token) = token_result.refresh_token() {
@@ -115,7 +168,12 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
         } else {
             None
         },
-        expires_in: token_result.expires_in(),
+        expires_in: if let Some(duration) = token_result.expires_in() {
+            Some(Duration::from_std(duration)?)
+        } else {
+            None
+        },
+        created_timestamp: format!("{}", since_the_epoch.as_secs()),
     })
 }
 

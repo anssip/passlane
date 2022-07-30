@@ -3,9 +3,10 @@ use crate::password::Credentials;
 use crate::ui::ask_password;
 use anyhow;
 use anyhow::bail;
-use core::time::Duration;
+use chrono::Duration;
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
+use log::{debug, info};
 use pwhash::bcrypt;
 use regex::Regex;
 use std::fs::create_dir;
@@ -156,13 +157,18 @@ pub fn delete(credentials_to_delete: &Vec<Credentials>) {
     }
 }
 
-pub fn import_csv(file_path: &String, master_password: &String) -> Result<i64, String> {
+pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credentials>> {
     let path = PathBuf::from(file_path);
-    let in_file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .expect("Unable to open input file");
+    let in_file = OpenOptions::new().read(true).open(path)?;
+    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
+    let credentials = &mut Vec::new();
+    for result in reader.deserialize() {
+        credentials.push(result?);
+    }
+    Ok(credentials.clone())
+}
 
+pub fn import_csv(file_path: &str, master_password: &String) -> anyhow::Result<i64> {
     let out_file;
     let exists;
     (out_file, _, exists) = open_password_file(true);
@@ -170,13 +176,16 @@ pub fn import_csv(file_path: &String, master_password: &String) -> Result<i64, S
         .has_headers(!exists)
         .from_writer(out_file);
 
-    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
     let mut count = 0;
-    for result in reader.deserialize() {
-        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
-        wtr.serialize(creds.encrypt(master_password))
-            .expect("Unable to store credentials");
-        count += 1;
+    match read_from_csv(file_path) {
+        Ok(credentials) => {
+            for creds in credentials {
+                wtr.serialize(creds.encrypt(master_password))
+                    .expect("Unable to store credentials");
+                count += 1;
+            }
+        }
+        Err(message) => bail!(format!("Failed to read CSV: {}", message)),
     }
     Result::Ok(count)
 }
@@ -215,8 +224,9 @@ pub fn store_access_token(token: AccessTokens) -> anyhow::Result<bool> {
         .open(&path)
         .expect("Unable to open access token file");
 
+    debug!("storing token with timestamp {}", token.created_timestamp);
     let contents = format!(
-        "{},{},{}",
+        "{},{},{},{},",
         token.access_token,
         if let Some(value) = token.refresh_token {
             value
@@ -224,10 +234,11 @@ pub fn store_access_token(token: AccessTokens) -> anyhow::Result<bool> {
             String::from("")
         },
         if let Some(duration) = token.expires_in {
-            duration.as_secs()
+            duration.num_seconds()
         } else {
             0
-        }
+        },
+        token.created_timestamp
     );
     file.write_all(contents.as_bytes())?;
     Ok(true)
@@ -253,7 +264,8 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
     file.read_to_string(&mut file_content)?;
 
     let parts: Vec<&str> = file_content.split(",").collect();
-    let expires = u64::from_str(parts[2])?;
+    let expires = i64::from_str(parts[2])?;
+    debug!("created_timestamp: {}", parts[3]);
     Ok(AccessTokens {
         access_token: String::from(parts[0]),
         refresh_token: if parts[1] != "" {
@@ -262,9 +274,10 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
             None
         },
         expires_in: if expires > 0 {
-            Some(Duration::new(expires, 0))
+            Some(Duration::seconds(expires))
         } else {
             None
         },
+        created_timestamp: parts[3].into(),
     })
 }
