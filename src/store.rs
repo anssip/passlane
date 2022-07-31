@@ -213,7 +213,7 @@ pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
     matches
 }
 
-pub fn store_access_token(token: AccessTokens) -> anyhow::Result<bool> {
+pub fn store_access_token(token: &AccessTokens) -> anyhow::Result<bool> {
     let path = access_token_path();
 
     let mut file = OpenOptions::new()
@@ -225,13 +225,14 @@ pub fn store_access_token(token: AccessTokens) -> anyhow::Result<bool> {
         .expect("Unable to open access token file");
 
     debug!("storing token with timestamp {}", token.created_timestamp);
+    let empty = String::from("");
     let contents = format!(
         "{},{},{},{},",
         token.access_token,
-        if let Some(value) = token.refresh_token {
+        if let Some(value) = &token.refresh_token {
             value
         } else {
-            String::from("")
+            &empty
         },
         if let Some(duration) = token.expires_in {
             duration.num_seconds()

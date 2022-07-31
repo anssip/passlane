@@ -135,7 +135,7 @@ fn create_access_tokens(
     token_response: StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>,
 ) -> AccessTokens {
     let timestamp = SystemTime::now();
-    let since_the_epoch = timestamp.duration_since(UNIX_EPOCH)?;
+    let since_the_epoch = timestamp.duration_since(UNIX_EPOCH).unwrap();
     AccessTokens {
         access_token: String::from(token_response.access_token().secret()),
         refresh_token: if let Some(token) = token_response.refresh_token() {

@@ -3,67 +3,116 @@ extern crate clipboard;
 extern crate magic_crypt;
 use crate::auth::AccessTokens;
 use anyhow::bail;
+use clap::{arg, ArgAction, Command};
 
 use crate::password::Credentials;
-use clap::Parser;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
 use std::env;
 
+mod auth;
+mod graphql;
 mod keychain;
+mod online_vault;
 mod password;
 mod store;
 mod ui;
-mod auth;
-mod online_vault;
-mod graphql;
-use log::{info, debug, warn};
+use log::{debug, info, warn};
 
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-struct Args {
-    /// Save the last generated password
-    #[clap(short, long)]
-    save: bool,
-    /// Grep passwords by service
-    #[clap(short, long)]
-    grep: Option<String>,
-    /// Delete passwords by service. Use together with --keychain to
-    /// also delete from the keychain.
-    #[clap(short, long)]
-    delete: Option<String>,
-    /// Update master password
-    #[clap(short, long)]
-    master_pwd: bool,
-    /// Import credentials from a CSV file
-    #[clap(short, long)]
-    csv: Option<String>,
-    /// Sync credentials to Keychain. Syncs all store credentials when specified as the only option.
-    /// When used together with --save, syncs only the password in question.
-    #[clap(short, long)]
-    keychain: bool,
-    /// Verobose: show password values when grep option finds several matches
-    #[clap(short, long)]
-    verbose: bool,
-    /// Login to passlanevault.com
-    #[clap(short, long)]
-    login: bool,
-    /// Push all local credentials to the Online Vault
-    #[clap(short, long)]
-    push: bool
+fn cli() -> Command<'static> {
+    Command::new("passlane")
+        .about("A password manager and a CLI client for the online Passlane Vault")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .allow_external_subcommands(true)
+        .subcommand(
+            Command::new("login")
+                .about("Login to passlanevault.com")
+        )
+        .subcommand(
+            Command::new("push")
+                .about("Pushes all local credentials to the online vault")
+        )
+        .subcommand(
+            Command::new("add")
+                .about("Adds a new credential to the vault")
+                .arg(arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue))
+            )
+            .subcommand(
+                Command::new("delete")
+                .about("Deletes one or more credentials by searching with the specified regular expression")
+                .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete."))
+                .arg_required_else_help(true)
+            )
+            .subcommand(
+                Command::new("show")
+                .about("Shows one or more credentials by searching with the specified regular expression")
+                .arg(arg!(<REGEXP> "The regular expression used to search services to show.").required(true))
+                .arg(arg!(
+                    -v --verbose "Verbosely display the passwords when grep option finds several matches."
+                ).action(ArgAction::SetTrue))
+                .arg_required_else_help(true)
+        )
+}
+
+fn push_args() -> Vec<clap::Arg<'static>> {
+    vec![arg!(-v - -verbose).required(false)]
 }
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let args = Args::parse();
-    match args.grep {
-        Some(value) => {
+    let matches = cli().get_matches();
+
+    match matches.subcommand() {
+        Some(("login", _)) => match login().await {
+            Ok(is_first_login) => {
+                println!("Logged in successfully. Online vaults in use.");
+                if is_first_login {
+                    println!("You can push all your locally stored credentials to the Online Vault with: passlane --push");
+                }
+            }
+            Err(message) => println!("Login failed: {}", message),
+        },
+        Some(("push", _)) => match push_credentials().await {
+            Ok(num) => println!("Pushed {} credentials online", num),
+            Err(message) => println!("Push failed: {}", message),
+        },
+        Some(("add", sub_matches)) => {
+            let keychain = *sub_matches
+                .get_one::<bool>("keychain")
+                .expect("defaulted to false by clap");
+            debug!("adding to keychain? {}", keychain);
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value).await.unwrap();
+            let handle_result = |r: anyhow::Result<()>| match r {
+                Ok(_) => (),
+                Err(message) => {
+                    println!("{}", message)
+                }
+            };
+            match password_from_clipboard() {
+                Ok(password) => {
+                    let creds = ui::ask_credentials(password);
+                    handle_result(save(&master_pwd, &creds, keychain).await);
+                }
+                Err(_) => {
+                    let password = ui::ask_password("Enter password to save: ");
+                    let creds = ui::ask_credentials(password);
+                    handle_result(save(&master_pwd, &creds, keychain).await);
+                }
+            }
+        }
+        Some(("show", sub_matches)) => {
+            let grep = sub_matches.value_of("REGEXP").expect("required");
+            let verbose = *sub_matches
+                .get_one::<bool>("verbose")
+                .expect("defaulted to false by clap");
+
+            let master_pwd = ui::ask_master_password();
+            let matches = find_matches(&master_pwd, &grep.into()).await.unwrap();
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
-                ui::show_as_table(&matches, args.verbose);
+                ui::show_as_table(&matches, verbose);
                 if matches.len() == 1 {
                     copy_to_clipboard(&matches[0].password);
                     println!("Password copied to clipboard!",);
@@ -82,121 +131,10 @@ async fn main() {
                     }
                 }
             }
-            std::process::exit(0)
         }
-        None => (),
-    }
-    match args.delete {
-        Some(value) => {
-            let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &value).await.unwrap();
-            if matches.len() == 0 {
-                return
-            }
-            if matches.len() == 1 {
-                store::delete(&&vec![matches[0].clone()]);
-                if args.keychain {
-                    keychain::delete(&matches[0]);
-                }
-            }
-            if matches.len() > 1 {
-                ui::show_as_table(&matches, args.verbose);
-                match ui::ask_index(
-                    "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
-                    &matches,
-                ) {
-                    Ok(index) => {
-                        if index == usize::MAX {
-                            store::delete(&matches);
-                            if args.keychain {
-                                keychain::delete_all(&matches);
-                            }
-                            println!("Deleted all {} matches!", matches.len());
-                            
-                        } else {
-                            store::delete(&vec![matches[index].clone()]);
-                            if args.keychain {
-                                keychain::delete(&matches[index]);
-                            }            
-                            println!("Deleted credentials of row {}!", index);
-                        }
-                    }
-                    Err(message) => {
-                        println!("{}", message);
-                    }
-                }
-            }
-        }
-        None => ()
-    }
-    match args.csv {
-        Some(value) => {
-            match import_csv(&value).await {
-                Ok(count) => { println!("Imported {} credentials.", count)},
-                Err(message) => { println!("{}", message) }
-            };
-        }
-        None => (),
-    }
-    if env::args().len() == 1 {
-        let password = password::generate();
-        copy_to_clipboard(&password);
-        println!("Password - also copied to clipboard: {}", password);
-    }
-    if args.save {
-        let master_pwd = ui::ask_master_password();
-        let handle_result = |r: anyhow::Result<()>| {
-            match r {
-                Ok(_) => (),
-                Err(message) => { println!("{}", message) }
-            }
-        };
-        match password_from_clipboard() {
-            Ok(password) => {
-                let creds = ui::ask_credentials(password);
-                handle_result(save(&master_pwd, &creds, args.keychain).await);
-            }
-            Err(_) => {
-                let password = ui::ask_password("Enter password to save: ");
-                let creds = ui::ask_credentials(password);
-                handle_result(save(&master_pwd, &creds, args.keychain).await);
-            }
-        }
-        return;
-    }
-    if args.master_pwd {
-        let old_pwd = ui::ask_master_password();
-        let new_pwd = ui::ask_new_password();
-        store::update_master_password(&old_pwd, &new_pwd);
-        return;
-    }
-    if args.keychain && (env::args().len() == 2 || args.save) {
-        let master_pwd = ui::ask_master_password();
-        let creds = store::get_all_credentials();
-        match keychain::save_all(&creds, &master_pwd) {
-            Ok(len) => println!("Synced {} entries", len),
-            Err(message) => println!("Failed to sync: {}", message),
-        }
-    }
-    if args.login {
-        match login().await {
-            Ok(is_first_login) => { 
-                println!("Logged in successfully. Online vaults in use.");
-                if is_first_login {
-                    println!("You can push all your locally stored credentials to the Online Vault with: passlane --push");
-                }
-            },
-            Err(message) => println!("Login failed: {}", message)
-        } 
-    }
-    if args.push {
-        match push_credentials().await {
-            Ok(num) => println!("Pushed {} credentials online", num),
-            Err(message) => println!("Push failed: {}", message)
-        }       
+        _ => unreachable!(),
     }
 }
-
 
 fn copy_to_clipboard(value: &String) {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
@@ -214,8 +152,11 @@ fn password_from_clipboard() -> Result<String, String> {
     Result::Ok(value)
 }
 
-async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Result<Vec<Credentials>> {
-    let matches = if store::has_logged_in() { 
+async fn find_matches(
+    master_pwd: &String,
+    grep_value: &String,
+) -> anyhow::Result<Vec<Credentials>> {
+    let matches = if store::has_logged_in() {
         info!("searching from online vault");
         let token = get_access_token().await?;
         online_vault::grep(&token.access_token, &master_pwd, &grep_value).await?
@@ -229,9 +170,9 @@ async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Resul
     Ok(matches)
 }
 
-async fn get_access_token() -> anyhow::Result<AccessTokens>{
+async fn get_access_token() -> anyhow::Result<AccessTokens> {
     debug!("get_access_token()");
-    if ! store::has_logged_in() {
+    if !store::has_logged_in() {
         bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
     }
     let token = store::get_access_token()?;
@@ -239,16 +180,20 @@ async fn get_access_token() -> anyhow::Result<AccessTokens>{
     debug!("Token {}", token);
     if token.is_expired() {
         match auth::exchange_refresh_token(token).await {
-            Ok(access_token) => { Ok(access_token) },
+            Ok(token) => {
+                store::store_access_token(&token)?;
+                Ok(token)
+            }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                auth::login().await
+                let token = auth::login().await?;
+                store::store_access_token(&token)?;
+                Ok(token)
             }
         }
     } else {
         Ok(token)
     }
-
 }
 
 async fn push_credentials() -> anyhow::Result<i32> {
@@ -257,9 +202,13 @@ async fn push_credentials() -> anyhow::Result<i32> {
     online_vault::push_credentials(&token.access_token, &credentials, None).await
 }
 
-async fn push_one_credential(master_pwd: &String, credentials: &Credentials) -> anyhow::Result<i32> {
+async fn push_one_credential(
+    master_pwd: &String,
+    credentials: &Credentials,
+) -> anyhow::Result<i32> {
     let token = get_access_token().await?;
-    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None).await
+    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None)
+        .await
 }
 
 async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyhow::Result<()> {
@@ -270,7 +219,7 @@ async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyho
         info!("saving to local file");
         store::save(master_pwd, creds);
     }
-    if keychain {
+    if *keychain {
         keychain::save(&creds).expect("Unable to store credentials to keychain");
     }
     println!("Saved.");
@@ -280,12 +229,17 @@ async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyho
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
     let token = get_access_token().await?;
     let credentials = store::read_from_csv(file_path)?;
-    online_vault::push_credentials(&token.access_token, &password::encrypt_all(master_pwd, &credentials), None).await?;
+    online_vault::push_credentials(
+        &token.access_token,
+        &password::encrypt_all(master_pwd, &credentials),
+        None,
+    )
+    .await?;
     let num_imported = credentials.len();
     Ok(num_imported.try_into().unwrap())
 }
 
-async fn import_csv(file_path: &str) -> anyhow::Result<i64>{
+async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
     let master_pwd = ui::ask_master_password();
     if store::has_logged_in() {
         info!("importing to the online vault");
@@ -299,6 +253,6 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64>{
 async fn login() -> anyhow::Result<bool> {
     let token = auth::login().await?;
     let first_login = !store::has_logged_in();
-    store::store_access_token(token)?;
+    store::store_access_token(&token)?;
     Ok(first_login)
 }
