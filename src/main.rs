@@ -17,7 +17,7 @@ mod ui;
 mod auth;
 mod online_vault;
 mod graphql;
-use log::{info, debug};
+use log::{info, debug, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -179,12 +179,10 @@ async fn main() {
         }
     }
     if args.login {
-        let token = auth::login().await.unwrap();
-        let first_login = !store::has_logged_in();
-        match store::store_access_token(token) {
-            Ok(_) => { 
+        match login().await {
+            Ok(is_first_login) => { 
                 println!("Logged in successfully. Online vaults in use.");
-                if first_login {
+                if is_first_login {
                     println!("You can push all your locally stored credentials to the Online Vault with: passlane --push");
                 }
             },
@@ -219,7 +217,7 @@ fn password_from_clipboard() -> Result<String, String> {
 async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() { 
         info!("searching from online vault");
-        let token = get_access_token()?;
+        let token = get_access_token().await?;
         online_vault::grep(&token.access_token, &master_pwd, &grep_value).await?
     } else {
         info!("searching from local file");
@@ -231,7 +229,7 @@ async fn find_matches(master_pwd: &String, grep_value: &String) -> anyhow::Resul
     Ok(matches)
 }
 
-fn get_access_token() -> anyhow::Result<AccessTokens>{
+async fn get_access_token() -> anyhow::Result<AccessTokens>{
     debug!("get_access_token()");
     if ! store::has_logged_in() {
         bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
@@ -239,19 +237,28 @@ fn get_access_token() -> anyhow::Result<AccessTokens>{
     let token = store::get_access_token()?;
     debug!("Token expired? {}", token.is_expired());
     debug!("Token {}", token);
-    // TODO: renew token if expired!
-    Ok(token)
+    if token.is_expired() {
+        match auth::exchange_refresh_token(token).await {
+            Ok(access_token) => { Ok(access_token) },
+            Err(err) => {
+                warn!("failed to refresh access token: {}", err);
+                auth::login().await
+            }
+        }
+    } else {
+        Ok(token)
+    }
 
 }
 
 async fn push_credentials() -> anyhow::Result<i32> {
-    let token = get_access_token()?;
+    let token = get_access_token().await?;
     let credentials = store::get_all_credentials();
     online_vault::push_credentials(&token.access_token, &credentials, None).await
 }
 
 async fn push_one_credential(master_pwd: &String, credentials: &Credentials) -> anyhow::Result<i32> {
-    let token = get_access_token()?;
+    let token = get_access_token().await?;
     online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None).await
 }
 
@@ -271,7 +278,7 @@ async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyho
 }
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
-    let token = get_access_token()?;
+    let token = get_access_token().await?;
     let credentials = store::read_from_csv(file_path)?;
     online_vault::push_credentials(&token.access_token, &password::encrypt_all(master_pwd, &credentials), None).await?;
     let num_imported = credentials.len();
@@ -287,4 +294,11 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64>{
         info!("importing to local file");
         store::import_csv(file_path, &master_pwd)
     }
+}
+
+async fn login() -> anyhow::Result<bool> {
+    let token = auth::login().await?;
+    let first_login = !store::has_logged_in();
+    store::store_access_token(token)?;
+    Ok(first_login)
 }

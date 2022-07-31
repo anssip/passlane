@@ -12,6 +12,10 @@ use futures::{
     task::{Context, Poll},
 };
 use hyper::{body::Body, server, service, Request, Response};
+use oauth2::basic::BasicTokenType;
+use oauth2::EmptyExtraTokenFields;
+use oauth2::RefreshToken;
+use oauth2::StandardTokenResponse;
 use serde::Deserialize;
 use std::env;
 use std::net::SocketAddr;
@@ -115,7 +119,7 @@ impl Service<Request<Body>> for Server {
     }
 }
 
-pub async fn login() -> Result<AccessTokens, anyhow::Error> {
+fn new_client() -> anyhow::Result<BasicClient> {
     let client = BasicClient::new(
         ClientId::new(env::var("AUTH_CLIENT_ID")?),
         Some(ClientSecret::new(env::var("AUTH_CLIENT_SECRET")?)),
@@ -124,9 +128,36 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
     )
     .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?)
     .set_auth_type(AuthType::RequestBody);
+    Ok(client)
+}
 
+fn create_access_tokens(
+    token_response: StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>,
+) -> AccessTokens {
+    let timestamp = SystemTime::now();
+    let since_the_epoch = timestamp.duration_since(UNIX_EPOCH)?;
+    AccessTokens {
+        access_token: String::from(token_response.access_token().secret()),
+        refresh_token: if let Some(token) = token_response.refresh_token() {
+            Some(String::from(token.secret()))
+        } else {
+            None
+        },
+        expires_in: if let Some(duration) = token_response.expires_in() {
+            Some(
+                Duration::from_std(duration)
+                    .expect("Oauth returned expiration value larger than life"),
+            )
+        } else {
+            None
+        },
+        created_timestamp: format!("{}", since_the_epoch.as_secs()),
+    }
+}
+
+pub async fn login() -> Result<AccessTokens, anyhow::Error> {
+    let client = new_client()?;
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-
     let csrf_token = CsrfToken::new_random_len(256);
 
     // Generate the full authorization URL.
@@ -159,22 +190,7 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
         .request_async(async_http_client)
         .await?;
 
-    let timestamp = SystemTime::now();
-    let since_the_epoch = timestamp.duration_since(UNIX_EPOCH)?;
-    Ok(AccessTokens {
-        access_token: String::from(token_result.access_token().secret()),
-        refresh_token: if let Some(token) = token_result.refresh_token() {
-            Some(String::from(token.secret()))
-        } else {
-            None
-        },
-        expires_in: if let Some(duration) = token_result.expires_in() {
-            Some(Duration::from_std(duration)?)
-        } else {
-            None
-        },
-        created_timestamp: format!("{}", since_the_epoch.as_secs()),
-    })
+    Ok(create_access_tokens(token_result))
 }
 
 async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
@@ -203,5 +219,18 @@ async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
     futures::select! {
         _ = server_future => panic!("server exited for some reason"),
         received = rx => Ok(received?),
+    }
+}
+
+pub async fn exchange_refresh_token(token: AccessTokens) -> anyhow::Result<AccessTokens> {
+    let client = new_client()?;
+    if let Some(refresh_token) = token.refresh_token {
+        let token_result = client
+            .exchange_refresh_token(&RefreshToken::new(refresh_token))
+            .request_async(async_http_client)
+            .await?;
+        Ok(create_access_tokens(token_result))
+    } else {
+        bail!("no refresh token available")
     }
 }
