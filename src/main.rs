@@ -2,7 +2,7 @@ extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
 use crate::auth::AccessTokens;
-use anyhow::bail;
+use anyhow::{bail, Context };
 use clap::{arg, ArgAction, Command};
 
 use crate::password::Credentials;
@@ -36,16 +36,17 @@ fn cli() -> Command<'static> {
         .subcommand(
             Command::new("add")
                 .about("Adds a new credential to the vault")
-                .arg(arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue))
-            )
-            .subcommand(
-                Command::new("delete")
+                .arg(keychain_arg())
+        )
+        .subcommand(
+            Command::new("delete")
                 .about("Deletes one or more credentials by searching with the specified regular expression")
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete."))
+                .arg(keychain_arg())
                 .arg_required_else_help(true)
-            )
-            .subcommand(
-                Command::new("show")
+        )
+        .subcommand(
+            Command::new("show")
                 .about("Shows one or more credentials by searching with the specified regular expression")
                 .arg(arg!(<REGEXP> "The regular expression used to search services to show.").required(true))
                 .arg(arg!(
@@ -53,14 +54,15 @@ fn cli() -> Command<'static> {
                 ).action(ArgAction::SetTrue))
                 .arg_required_else_help(true)
         )
+        // TODO: csv
 }
 
-fn push_args() -> Vec<clap::Arg<'static>> {
-    vec![arg!(-v - -verbose).required(false)]
+fn keychain_arg() -> clap::Arg<'static> {
+    arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue)
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let matches = cli().get_matches();
 
@@ -82,26 +84,20 @@ async fn main() {
             let keychain = *sub_matches
                 .get_one::<bool>("keychain")
                 .expect("defaulted to false by clap");
-            debug!("adding to keychain? {}", keychain);
             let master_pwd = ui::ask_master_password();
-            let handle_result = |r: anyhow::Result<()>| match r {
-                Ok(_) => (),
-                Err(message) => {
-                    println!("{}", message)
-                }
-            };
+            debug!("adding to keychain? {}", keychain);
             match password_from_clipboard() {
                 Ok(password) => {
                     let creds = ui::ask_credentials(password);
-                    handle_result(save(&master_pwd, &creds, keychain).await);
+                    save(&master_pwd, &creds, keychain).await.context("failed to save")?;
                 }
                 Err(_) => {
                     let password = ui::ask_password("Enter password to save: ");
                     let creds = ui::ask_credentials(password);
-                    handle_result(save(&master_pwd, &creds, keychain).await);
+                    save(&master_pwd, &creds, keychain).await.context("failed to save")?;
                 }
             }
-        }
+        },
         Some(("show", sub_matches)) => {
             let grep = sub_matches.value_of("REGEXP").expect("required");
             let verbose = *sub_matches
@@ -109,7 +105,7 @@ async fn main() {
                 .expect("defaulted to false by clap");
 
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &grep.into()).await.unwrap();
+            let matches = find_matches(&master_pwd, &grep).await.unwrap();
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, verbose);
@@ -131,9 +127,18 @@ async fn main() {
                     }
                 }
             }
+        },
+        Some(("delete", sub_matches)) => {
+            let grep = sub_matches.value_of("REGEXP").expect("required");
+            let keychain = *sub_matches
+                .get_one::<bool>("keychain")
+                .expect("defaulted to false by clap");
+        
+            delete(grep, keychain).await.context("failed to delete")?;
         }
         _ => unreachable!(),
     }
+    Ok(())
 }
 
 fn copy_to_clipboard(value: &String) {
@@ -153,8 +158,8 @@ fn password_from_clipboard() -> Result<String, String> {
 }
 
 async fn find_matches(
-    master_pwd: &String,
-    grep_value: &String,
+    master_pwd: &str,
+    grep_value: &str,
 ) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() {
         info!("searching from online vault");
@@ -219,7 +224,7 @@ async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyho
         info!("saving to local file");
         store::save(master_pwd, creds);
     }
-    if *keychain {
+    if keychain {
         keychain::save(&creds).expect("Unable to store credentials to keychain");
     }
     println!("Saved.");
@@ -255,4 +260,49 @@ async fn login() -> anyhow::Result<bool> {
     let first_login = !store::has_logged_in();
     store::store_access_token(&token)?;
     Ok(first_login)
+}
+
+async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
+    debug!("also deleting from keychain? {}", delete_from_keychain);
+    let master_pwd = ui::ask_master_password();
+    let matches = find_matches(&master_pwd, grep).await?;
+
+    if matches.len() == 0 {
+        debug!("no matches found to delete");
+        return Ok(());
+    }
+    if matches.len() == 1 {
+        store::delete(&&vec![matches[0].clone()]);
+        if delete_from_keychain {
+            keychain::delete(&matches[0]);
+        }
+    }
+    if matches.len() > 1 {
+        ui::show_as_table(&matches, false);
+        match ui::ask_index(
+            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
+            &matches,
+        ) {
+            Ok(index) => {
+                if index == usize::MAX {
+                    store::delete(&matches);
+                    if delete_from_keychain {
+                        keychain::delete_all(&matches);
+                    }
+                    println!("Deleted all {} matches!", matches.len());
+                    
+                } else {
+                    store::delete(&vec![matches[index].clone()]);
+                    if delete_from_keychain {
+                        keychain::delete(&matches[index]);
+                    }            
+                    println!("Deleted credentials of row {}!", index);
+                }
+            }
+            Err(message) => {
+                println!("{}", message);
+            }
+        }
+    }
+    Ok(())
 }

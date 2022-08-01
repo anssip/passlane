@@ -201,13 +201,13 @@ pub fn get_all_credentials() -> Vec<Credentials> {
     credentials
 }
 
-pub fn grep(master_password: &String, search: &String) -> Vec<Credentials> {
+pub fn grep(master_password: &str, search: &str) -> Vec<Credentials> {
     let creds = get_all_credentials();
     let mut matches = Vec::new();
     for credential in creds {
         let re = Regex::new(search).unwrap();
         if re.is_match(&credential.service) {
-            matches.push(credential.decrypt(master_password));
+            matches.push(credential.decrypt(&String::from(master_password)));
         }
     }
     matches
@@ -254,7 +254,6 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
     if !path.exists() {
         bail!("Please login first with: passlane -l");
     }
-
     let mut file = OpenOptions::new()
         .read(true)
         .write(false)
