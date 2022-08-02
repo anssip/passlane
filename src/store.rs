@@ -6,7 +6,7 @@ use anyhow::bail;
 use chrono::Duration;
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
-use log::{debug, info};
+use log::debug;
 use pwhash::bcrypt;
 use regex::Regex;
 use std::fs::create_dir;

@@ -8,7 +8,6 @@ use clap::{arg, ArgAction, Command};
 use crate::password::Credentials;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
-use std::env;
 
 mod auth;
 mod graphql;
@@ -18,44 +17,59 @@ mod password;
 mod store;
 mod ui;
 use log::{debug, info, warn};
+use std::env;
+use std::io;
 
 fn cli() -> Command<'static> {
     Command::new("passlane")
         .about("A password manager and a CLI client for the online Passlane Vault")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
+        .subcommand_required(false)
+        .arg_required_else_help(false)
         .allow_external_subcommands(true)
         .subcommand(
             Command::new("login")
                 .about("Login to passlanevault.com")
         )
         .subcommand(
+            Command::new("password")
+                .about("Change the master password.")
+        )
+        .subcommand(
             Command::new("push")
-                .about("Pushes all local credentials to the online vault")
+                .about("Pushes all local credentials to the online vault.")
         )
         .subcommand(
             Command::new("add")
-                .about("Adds a new credential to the vault")
+                .about("Adds a new credential to the vault.")
                 .arg(keychain_arg())
         )
         .subcommand(
+            Command::new("csv")
+                .about("Imports credentials from a CSV file.")
+                .arg(arg!(<FILE_PATH> "The the CSV file to import."))
+        )
+        .subcommand(
+            Command::new("keychain-push")
+                .about("Pushes all credentials to the OS specific keychain.")
+        )
+        .subcommand(
             Command::new("delete")
-                .about("Deletes one or more credentials by searching with the specified regular expression")
+                .about("Deletes one or more credentials by searching with the specified regular expression.")
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete."))
                 .arg(keychain_arg())
                 .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("show")
-                .about("Shows one or more credentials by searching with the specified regular expression")
+                .about("Shows one or more credentials by searching with the specified regular expression.")
                 .arg(arg!(<REGEXP> "The regular expression used to search services to show.").required(true))
                 .arg(arg!(
                     -v --verbose "Verbosely display the passwords when grep option finds several matches."
                 ).action(ArgAction::SetTrue))
                 .arg_required_else_help(true)
         )
-        // TODO: csv
 }
+ 
 
 fn keychain_arg() -> clap::Arg<'static> {
     arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue)
@@ -135,8 +149,38 @@ async fn main() -> anyhow::Result<()> {
                 .expect("defaulted to false by clap");
         
             delete(grep, keychain).await.context("failed to delete")?;
-        }
-        _ => unreachable!(),
+        },
+        Some(("csv", sub_matches)) => {
+            let file_path = sub_matches.value_of("FILE_PATH").expect("required");
+
+            match import_csv(&file_path).await {
+                Err(message) => println!("Failed to import: {}", message),
+                Ok(count) => println!("Imported {} entries", count),
+            }
+        },
+        Some(("password", _)) => {
+            let old_pwd = ui::ask_master_password();
+            let new_pwd = ui::ask_new_password();
+            store::update_master_password(&old_pwd, &new_pwd);
+        },
+        Some(("keychain-push", _)) => {
+            let master_pwd = ui::ask_master_password();
+            let creds = store::get_all_credentials();
+            match keychain::save_all(&creds, &master_pwd) {
+                Ok(len) => println!("Synced {} entries", len),
+                Err(message) => println!("Failed to sync: {}", message),
+            }
+        },
+        _ => {
+            if env::args().len() == 1 { 
+                let password = password::generate();
+                copy_to_clipboard(&password);
+                println!("Password - also copied to clipboard: {}", password);
+            } else {
+                let mut out = io::stdout();
+                cli().write_help(&mut out).expect("failed to write to stdout");
+            }
+        },
     }
     Ok(())
 }
