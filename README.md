@@ -14,7 +14,16 @@ A lightning-fast password manager for the command line
 
 ### Online Vault
 
-TODO: describe this
+You can use Passlane in two different modes:
+
+1. As a standalone CLI tool that stores the credentials on your local disk.
+2. Use the Passlane Vault to store the, and have them safely available to all your devices and computers.
+
+The Online Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to descrypt the password values and never sent to our API servers.
+
+The Online Vault will soon support team management features which makes it possible to safely share credentials with team members.
+
+If you want to take advantage of the Passlane Vault, [head over to passlanevault.com and sign up](https://passlanevault.com).
 
 ## Installation
 
