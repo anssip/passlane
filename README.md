@@ -23,7 +23,7 @@ The Online Vault is secured by Auth0 and OAuth 2.0. All passwords are stored enc
 
 The Online Vault will soon support team management features which makes it possible to safely share credentials with team members.
 
-If you want to take advantage of the Passlane Vault, [head over to passlanevault.com and sign up](https://passlanevault.com).
+If you want to take advantage of the Passlane Vault, [head over to passlanevault.com and sign up for a **free account**](https://passlanevault.com).
 
 ## Installation
 
@@ -31,6 +31,7 @@ If you want to take advantage of the Passlane Vault, [head over to passlanevault
 2. Unpack the archive
 3. Place the unarchived binary `passlane` to your $PATH
 4. Enjoy!
+5. Optionally sign up in passlanevault.com to enable online storage and have the credentials data available to all your devices.
 
 ## Usage
 
