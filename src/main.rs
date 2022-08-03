@@ -315,8 +315,14 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
         debug!("no matches found to delete");
         return Ok(());
     }
+    let use_vault = store::has_logged_in();
     if matches.len() == 1 {
-        store::delete(&&vec![matches[0].clone()]);
+        if use_vault {
+            let token = get_access_token().await?;
+            online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
+        } else {
+            store::delete(&&vec![matches[0].clone()]);
+        }
         if delete_from_keychain {
             keychain::delete(&matches[0]);
         }
@@ -329,14 +335,26 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    store::delete(&matches);
+                    // delete all
+                    if use_vault {
+                        let token = get_access_token().await?;
+                        online_vault::delete_credentials(&token.access_token, grep, None).await?;            
+                    } else {
+                        store::delete(&matches);
+                    }
                     if delete_from_keychain {
                         keychain::delete_all(&matches);
                     }
                     println!("Deleted all {} matches!", matches.len());
                     
                 } else {
-                    store::delete(&vec![matches[index].clone()]);
+                    // delete selected index
+                    if use_vault {
+                        let token = get_access_token().await?;
+                        online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
+                    } else {
+                        store::delete(&vec![matches[index].clone()]);
+                    }
                     if delete_from_keychain {
                         keychain::delete(&matches[index]);
                     }            

@@ -1,6 +1,7 @@
 use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::CredentialsIn;
+use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::MeQuery;
 use crate::password::Credentials as CredentialsModel;
 use anyhow::bail;
@@ -10,7 +11,7 @@ pub async fn grep(
     master_password: &str,
     grep: &str,
 ) -> anyhow::Result<Vec<CredentialsModel>> {
-    let response = graphql::run_me_query(access_token, master_password, grep).await;
+    let response = graphql::run_me_query(access_token, grep).await;
     if response.errors.is_some() {
         bail!(format!("errors: {:?}", response));
     }
@@ -38,6 +39,7 @@ pub async fn grep(
             }
         }
     }
+    // TODO: sort by vaultId, service
     Ok(result.to_vec())
 }
 
@@ -76,4 +78,19 @@ pub async fn push_one_credential(
     let vec = &mut Vec::new();
     vec.push(credentials.clone());
     push_credentials(access_token, &vec, vault_id).await
+}
+
+pub async fn delete_credentials(
+    access_token: &str,
+    grep: &str,
+    index: Option<i32>,
+) -> anyhow::Result<i32> {
+    let response = graphql::run_delete_credentials_mutation(access_token, grep, index).await;
+    if response.errors.is_some() {
+        bail!(format!("errors: {:?}", response));
+    }
+    match response.data {
+        Some(DeleteCredentialsMutation { delete_credentials }) => Ok(delete_credentials),
+        _ => bail!("Failed to delete from the online vault"),
+    }
 }

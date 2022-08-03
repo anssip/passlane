@@ -16,7 +16,7 @@ type Vault {
   personal: Boolean!
   name: String!
   users: [User]!
-  credentials(masterPassword: String!, grep: String): [Credentials]
+  credentials(grep: String): [Credentials]
 }
 
 type Credentials {
@@ -52,10 +52,16 @@ input AddCredentialsGroupIn {
   credentials: [CredentialsIn!]!
 }
 
+input DeleteCredentialsIn {
+  grep: String!
+  index: Int
+}
+
 type Mutation {
   addCredentials(input: AddCredentialsIn!): Credentials!
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
   addUser(user: UserIn!): User!
+  deleteCredentials(input: DeleteCredentialsIn!): Int!
 }
 
 type Query {

@@ -9,7 +9,6 @@ pub mod queries {
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct CredentialsQueryVariables {
         pub grep: Option<String>,
-        pub master_password: String,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -36,7 +35,7 @@ pub mod queries {
     pub struct Vault {
         pub id: i32,
         pub name: String,
-        #[arguments(grep =  &args.grep, master_password = &args.master_password)]
+        #[arguments(grep = &args.grep)]
         pub credentials: Option<Vec<Option<Credentials>>>,
         pub personal: bool,
     }
@@ -84,35 +83,58 @@ pub mod queries {
         pub service: String,
         pub username: String,
     }
+
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct DeleteCredentialsMutationVariables {
+        pub input: DeleteCredentialsIn,
+    }
+
+    #[derive(cynic::InputObject, Debug, Clone)]
+    #[cynic(rename_all = "camelCase")]
+    pub struct DeleteCredentialsIn {
+        pub grep: String,
+        pub index: Option<i32>,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "DeleteCredentialsMutationVariables"
+    )]
+    pub struct DeleteCredentialsMutation {
+        #[arguments(input = DeleteCredentialsIn {
+            grep: args.input.grep.clone(),
+            index: args.input.index
+        })]
+        pub delete_credentials: i32,
+    }
 }
 
 mod schema {
     cynic::use_schema!(r#"src/schema.graphql"#);
 }
-
-pub async fn run_me_query(
-    access_token: &str,
-    master_password: &str,
-    grep: &str,
-) -> cynic::GraphQlResponse<queries::MeQuery> {
-    let operation = build_me_query(master_password, grep);
-
+fn new_request(access_token: &str) -> reqwest::RequestBuilder {
     reqwest::Client::new()
         .post(API_ENDPOINT)
         .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
+}
+
+pub async fn run_me_query(
+    access_token: &str,
+    grep: &str,
+) -> cynic::GraphQlResponse<queries::MeQuery> {
+    let operation = build_me_query(grep);
+
+    new_request(access_token)
         .run_graphql(operation)
         .await
         .unwrap()
 }
 
-fn build_me_query(
-    master_password: &str,
-    grep: &str,
-) -> cynic::Operation<'static, queries::MeQuery> {
+fn build_me_query(grep: &str) -> cynic::Operation<'static, queries::MeQuery> {
     use cynic::QueryBuilder;
 
     queries::MeQuery::build(queries::CredentialsQueryVariables {
-        master_password: master_password.into(),
         grep: Some(grep.into()),
     })
 }
@@ -124,9 +146,7 @@ pub async fn run_add_credentials_group_mutation(
 ) -> cynic::GraphQlResponse<queries::AddGredentialsGroupMutation> {
     let operation = build_add_credentials_group_mutation(credentials, vault_id);
 
-    reqwest::Client::new()
-        .post(API_ENDPOINT)
-        .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
+    new_request(access_token)
         .run_graphql(operation)
         .await
         .unwrap()
@@ -143,6 +163,33 @@ fn build_add_credentials_group_mutation(
         input: queries::AddCredentialsGroupIn {
             credentials: credentials,
             vault_id: vault_id,
+        },
+    })
+}
+
+pub async fn run_delete_credentials_mutation(
+    access_token: &str,
+    grep: &str,
+    index: Option<i32>,
+) -> cynic::GraphQlResponse<queries::DeleteCredentialsMutation> {
+    let operation = build_delete_credentials_mutation(grep.into(), index);
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_delete_credentials_mutation(
+    grep: String,
+    index: Option<i32>,
+) -> cynic::Operation<'static, queries::DeleteCredentialsMutation> {
+    use cynic::MutationBuilder;
+    use queries::{DeleteCredentialsMutation, DeleteCredentialsMutationVariables};
+
+    DeleteCredentialsMutation::build(&DeleteCredentialsMutationVariables {
+        input: queries::DeleteCredentialsIn {
+            grep: grep,
+            index: index,
         },
     })
 }
