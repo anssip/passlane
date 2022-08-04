@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
                 .expect("defaulted to false by clap");
 
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(&master_pwd, &grep).await.unwrap();
+            let matches = find_matches(Some(&master_pwd), &grep).await.unwrap();
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, verbose);
@@ -220,13 +220,13 @@ fn password_from_clipboard() -> anyhow::Result<String> {
 }
 
 async fn find_matches(
-    master_pwd: &str,
+    master_pwd: Option<&str>,
     grep_value: &str,
 ) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() {
         info!("searching from online vault");
         let token = get_access_token().await?;
-        online_vault::grep(&token.access_token, &master_pwd, &grep_value).await?
+        online_vault::grep(&token.access_token, master_pwd, &grep_value).await?
     } else {
         info!("searching from local file");
         store::grep(master_pwd, grep_value)
@@ -326,8 +326,7 @@ async fn login() -> anyhow::Result<bool> {
 
 async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
     debug!("also deleting from keychain? {}", delete_from_keychain);
-    let master_pwd = ui::ask_master_password();
-    let matches = find_matches(&master_pwd, grep).await?;
+    let matches = find_matches(None, grep).await?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
@@ -344,6 +343,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
         if delete_from_keychain {
             keychain::delete(&matches[0]);
         }
+        println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
         ui::show_as_table(&matches, false);

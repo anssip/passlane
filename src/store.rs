@@ -201,13 +201,17 @@ pub fn get_all_credentials() -> Vec<Credentials> {
     credentials
 }
 
-pub fn grep(master_password: &str, search: &str) -> Vec<Credentials> {
+pub fn grep(master_password: Option<&str>, search: &str) -> Vec<Credentials> {
     let creds = get_all_credentials();
     let mut matches = Vec::new();
     for credential in creds {
         let re = Regex::new(search).unwrap();
         if re.is_match(&credential.service) {
-            matches.push(credential.decrypt(&String::from(master_password)));
+            if let Some(pwd) = master_password {
+                matches.push(credential.decrypt(&String::from(pwd)));
+            } else {
+                matches.push(credential);
+            }
         }
     }
     matches

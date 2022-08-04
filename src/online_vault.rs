@@ -8,7 +8,7 @@ use anyhow::bail;
 
 pub async fn grep(
     access_token: &str,
-    master_password: &str,
+    master_password: Option<&str>,
     grep: &str,
 ) -> anyhow::Result<Vec<CredentialsModel>> {
     let response = graphql::run_me_query(access_token, grep).await;
@@ -27,14 +27,16 @@ pub async fn grep(
         if let Some(credentials) = vault.credentials {
             for creds in credentials {
                 if let Some(cred) = creds {
-                    result.push(
-                        (CredentialsModel {
-                            password: cred.password,
-                            username: cred.username,
-                            service: cred.service,
-                        })
-                        .decrypt(&master_password.into()),
-                    )
+                    let model = CredentialsModel {
+                        password: cred.password,
+                        username: cred.username,
+                        service: cred.service,
+                    };
+                    result.push(if let Some(pwd) = master_password {
+                        model.decrypt(&pwd.into())
+                    } else {
+                        model
+                    })
                 }
             }
         }
