@@ -60,19 +60,35 @@ SUBCOMMANDS:
                      expression.
 ```
 
-### Generate a new password
+### Generating and saving passwords
 
-- Sign up for a new service in the web browser
-- Run `passlane` --> gnerates and saves a new password to the clipboard
-- Use the generated password from the clipboard
-- After successful signup: Open terminal and run `passlane -s` to save the password
+To generate a new password without saving it. The generated password value is also copied to the clipboard.
+
+```
+passlane
+```
+
+To save a password from clipboard:
+
+```
+passlane add -c
+```
+
+To generate a new password and save it with one command:
+
+```
+passlane add -g
+```
 
 ### Using saved credentials
 
-Later on, when logging in to foobar.com:
+You can search and show saved passwords with regular expressions
 
-- Run `passlane show foobard.com` --> copies foobar.com's password to clipboard.
-- Use the password from clipboard to login
+```
+passlane show <regexp>
+```
+
+Run `passlane show foobard.com` --> shows foobar.com's password and alco copies the value to the clipboard.
 
 If the search finds more than one matches:
 
@@ -98,7 +114,7 @@ Password from index 3 copied to clipboard!
 
 _or alternatively_
 
-- Let MacOS propose the saved password. It knows it because Passlane also syncs to the keychain.
+- Let MacOS propose the saved password. It knows it because Passlane can also sync to the keychain. See below for mor info.
 
 ### Syncing with the system Keychain
 
@@ -149,6 +165,8 @@ Here are links to instructions for doing the CSV export:
 - [x] --csv to push to online vault, if user has a vault
 - [x] switch to use commands instead of options in the command line
 - [x] delete to delete from the online vault
+- [] generate & save at the same time
+- [] delete should not ask master password
 
 ### 2.0 (upcoming)
 

@@ -22,13 +22,13 @@ pub fn ask_password(question: &str) -> String {
     rpassword::prompt_password(question).unwrap()
 }
 
-pub fn ask_credentials(password: String) -> Credentials {
+pub fn ask_credentials(password: &str) -> Credentials {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
     Credentials {
         service,
         username,
-        password,
+        password: password.into(),
     }
 }
 

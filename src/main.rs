@@ -41,6 +41,12 @@ fn cli() -> Command<'static> {
         .subcommand(
             Command::new("add")
                 .about("Adds a new credential to the vault.")
+                .arg(arg!(
+                    -g --generate "Generate the password to be saved."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -c --clipboard "Get the password to save from the clipboard."
+                ).action(ArgAction::SetTrue))
                 .arg(keychain_arg())
         )
         .subcommand(
@@ -98,18 +104,30 @@ async fn main() -> anyhow::Result<()> {
             let keychain = *sub_matches
                 .get_one::<bool>("keychain")
                 .expect("defaulted to false by clap");
+            let generate = *sub_matches
+                .get_one::<bool>("generate")
+                .expect("defaulted to false by clap");
+            let clipboard = *sub_matches
+                .get_one::<bool>("clipboard")
+                .expect("defaulted to false by clap");
+                debug!("adding to keychain? {}", keychain);
+                
+            let get_password = || -> anyhow::Result<String> {
+                if generate {
+                    Ok(password::generate())
+                } else if clipboard {
+                    password_from_clipboard()
+                } else {
+                    Ok(ui::ask_password("Enter password to save: "))
+                }
+            };
+            let password = get_password().context(format!("Failed to get password {}", if clipboard {"from clipboard"} else {""} ))?;
+            let creds = ui::ask_credentials(&password);
             let master_pwd = ui::ask_master_password();
-            debug!("adding to keychain? {}", keychain);
-            match password_from_clipboard() {
-                Ok(password) => {
-                    let creds = ui::ask_credentials(password);
-                    save(&master_pwd, &creds, keychain).await.context("failed to save")?;
-                }
-                Err(_) => {
-                    let password = ui::ask_password("Enter password to save: ");
-                    let creds = ui::ask_credentials(password);
-                    save(&master_pwd, &creds, keychain).await.context("failed to save")?;
-                }
+            save(&master_pwd, &creds, keychain).await.context("failed to save")?;
+            if !clipboard {
+                copy_to_clipboard(&password);
+                println!("Password - also copied to clipboard: {}", password);        
             }
         },
         Some(("show", sub_matches)) => {
@@ -190,13 +208,13 @@ fn copy_to_clipboard(value: &String) {
     ctx.set_contents(String::from(value)).unwrap();
 }
 
-fn password_from_clipboard() -> Result<String, String> {
+fn password_from_clipboard() -> anyhow::Result<String> {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     let value = ctx
         .get_contents()
         .expect("Unable to retrieve value from clipboard");
     if !password::validate_password(&value) {
-        return Err(String::from("Unable to retrieve value from clipboard"));
+        bail!("The text in clipboard is not a valid password");
     }
     Result::Ok(value)
 }
