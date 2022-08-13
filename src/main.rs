@@ -8,6 +8,7 @@ use clap::{arg, ArgAction, Command};
 use crate::password::Credentials;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
+use tokio::task;
 
 mod auth;
 mod graphql;
@@ -137,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
                 .expect("defaulted to false by clap");
 
             let master_pwd = ui::ask_master_password();
-            let matches = find_matches(Some(&master_pwd), &grep).await.unwrap();
+            let matches = find_matches(Some(&master_pwd), &grep).await?;
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, verbose);
@@ -253,7 +254,7 @@ async fn get_access_token() -> anyhow::Result<AccessTokens> {
             }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                let token = auth::login().await?;
+                let token = auth::login()?;
                 store::store_access_token(&token)?;
                 Ok(token)
             }
@@ -318,7 +319,10 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
 }
 
 async fn login() -> anyhow::Result<bool> {
-    let token = auth::login().await?;
+    let token = task::spawn_blocking(move || {
+        auth::login()
+    }).await??;
+
     let first_login = !store::has_logged_in();
     store::store_access_token(&token)?;
     Ok(first_login)

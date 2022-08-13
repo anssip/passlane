@@ -165,8 +165,9 @@ Here are links to instructions for doing the CSV export:
 - [x] --csv to push to online vault, if user has a vault
 - [x] switch to use commands instead of options in the command line
 - [x] delete to delete from the online vault
-- [] generate & save at the same time
-- [] delete should not ask master password
+- [x] generate & save at the same time
+- [x] delete should not ask master password
+- [] show command should also include matches from usernames
 
 ### 2.0 (upcoming)
 

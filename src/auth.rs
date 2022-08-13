@@ -11,14 +11,16 @@ use futures::{
     prelude::*,
     task::{Context, Poll},
 };
-use hyper::{body::Body, server, service, Request, Response};
+use hyper::{body::Body, Request, Response};
 use oauth2::basic::BasicTokenType;
+use oauth2::devicecode::DeviceAuthorizationResponse;
+use oauth2::devicecode::ExtraDeviceAuthorizationFields;
+use oauth2::DeviceAuthorizationUrl;
 use oauth2::EmptyExtraTokenFields;
 use oauth2::RefreshToken;
 use oauth2::StandardTokenResponse;
-use serde::Deserialize;
-use std::env;
-use std::net::SocketAddr;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
 use tower_service::Service;
 
@@ -27,11 +29,17 @@ use anyhow::bail;
 use log::error;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
+use oauth2::reqwest::http_client;
 use oauth2::{
-    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    RedirectUrl, Scope, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, Scope, TokenResponse, TokenUrl,
 };
 use std::time::SystemTime;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoringFields(HashMap<String, serde_json::Value>);
+
+impl ExtraDeviceAuthorizationFields for StoringFields {}
+type StoringDeviceAuthorizationResponse = DeviceAuthorizationResponse<StoringFields>;
 
 pub struct AccessTokens {
     pub access_token: String,
@@ -89,14 +97,6 @@ pub struct Server {
     document: Vec<u8>,
 }
 
-async fn file_send(filename: &str) -> anyhow::Result<Vec<u8>> {
-    if let Ok(contents) = tokio::fs::read(filename).await {
-        let body = contents.into();
-        return Ok(body);
-    }
-    bail!("file not found")
-}
-
 impl Service<Request<Body>> for Server {
     type Response = Response<Body>;
     type Error = anyhow::Error;
@@ -121,12 +121,16 @@ impl Service<Request<Body>> for Server {
 
 fn new_client() -> anyhow::Result<BasicClient> {
     let client = BasicClient::new(
-        ClientId::new(env::var("AUTH_CLIENT_ID")?),
-        Some(ClientSecret::new(env::var("AUTH_CLIENT_SECRET")?)),
-        AuthUrl::new(env::var("AUTH_AUTHORIZE_URL")?)?,
-        Some(TokenUrl::new(env::var("AUTH_TOKEN_URL")?)?),
+        ClientId::new("fZILwNkyzH09Vc4n1VQ0SsDWenMZlOBY".to_string()),
+        None,
+        AuthUrl::new("https://passlane.eu.auth0.com/authorize".to_string())?,
+        Some(TokenUrl::new(
+            "https://passlane.eu.auth0.com/oauth/token".to_string(),
+        )?),
     )
-    .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?)
+    .set_device_authorization_url(DeviceAuthorizationUrl::new(
+        "https://passlane.eu.auth0.com/oauth/device/code".to_string(),
+    )?)
     .set_auth_type(AuthType::RequestBody);
     Ok(client)
 }
@@ -155,14 +159,10 @@ fn create_access_tokens(
     }
 }
 
-pub async fn login() -> Result<AccessTokens, anyhow::Error> {
+pub fn login() -> Result<AccessTokens, anyhow::Error> {
     let client = new_client()?;
-    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-    let csrf_token = CsrfToken::new_random_len(256);
-
-    // Generate the full authorization URL.
-    let (auth_url, csrf_state) = client
-        .authorize_url(|| csrf_token)
+    let details: StoringDeviceAuthorizationResponse = client
+        .exchange_device_code()?
         .add_scope(Scope::new("openid".to_string()))
         .add_scope(Scope::new("email".to_string()))
         .add_scope(Scope::new("profile".to_string()))
@@ -171,55 +171,24 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
             "audience".to_string(),
             "https://passlane.eu.auth0.com/api/v2/",
         )
-        .set_pkce_challenge(pkce_challenge)
-        .url();
+        .request(http_client)?;
 
     if !ui::open_browser(
-        &String::from(auth_url),
-        "Press ENTER to open up the browser to login or q to exit: ",
+        &details.verification_uri().to_string(),
+        &format!(
+            "Press ENTER to open up the browser to authorize this device. Enter the following code in the browser window: {}",
+            details.user_code().secret().to_string()
+        ),
     )? {
         bail!("Failed to open login page in browser");
     }
-    let received: ReceivedCode = listen_for_code(8080).await?;
-    if received.state.secret() != csrf_state.secret() {
-        bail!("CSRF token mismatch :(");
-    }
-    let token_result = client
-        .exchange_code(AuthorizationCode::new(received.code.secret().to_string()))
-        .set_pkce_verifier(pkce_verifier)
-        .request_async(async_http_client)
-        .await?;
-
-    Ok(create_access_tokens(token_result))
-}
-
-async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
-    let bind = format!("127.0.0.1:{}", port);
-    log::info!("Listening on: http://{}", bind);
-
-    let addr: SocketAddr = str::parse(&bind)?;
-
-    let (tx, rx) = oneshot::channel::<ReceivedCode>();
-    let mut channel = Some(tx);
-    let document = file_send("resources/auth_success.html").await?;
-    let server_future = server::Server::bind(&addr).serve(service::make_service_fn(move |_| {
-        let channel = channel.take().expect("channel is not available");
-        let mut server = Server {
-            channel: Some(channel),
-            document: document.clone(),
-        };
-        let service = service::service_fn(move |req| server.call(req));
-
-        async move { Ok::<_, hyper::Error>(service) }
-    }));
-
-    let mut server_future = server_future.fuse();
-    let mut rx = rx.fuse();
-
-    futures::select! {
-        _ = server_future => panic!("server exited for some reason"),
-        received = rx => Ok(received?),
-    }
+    // Now poll for the token
+    let token_response = client.exchange_device_access_token(&details).request(
+        http_client,
+        std::thread::sleep,
+        None,
+    )?;
+    Ok(create_access_tokens(token_response))
 }
 
 pub async fn exchange_refresh_token(token: AccessTokens) -> anyhow::Result<AccessTokens> {
