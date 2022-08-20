@@ -29,11 +29,12 @@ pub async fn grep(
                 if let Some(cred) = creds {
                     let model = CredentialsModel {
                         password: cred.password,
+                        iv: Some(cred.iv),
                         username: cred.username,
                         service: cred.service,
                     };
                     result.push(if let Some(pwd) = master_password {
-                        model.decrypt(&pwd.into())
+                        model.decrypt(&pwd)
                     } else {
                         model
                     })
@@ -54,6 +55,10 @@ pub async fn push_credentials(
         .into_iter()
         .map(|c| CredentialsIn {
             password_encrypted: String::from(&c.password),
+            iv: match &c.iv {
+                Some(iv) => String::from(iv),
+                None => panic!("No iv"),
+            },
             service: String::from(&c.service),
             username: String::from(&c.username),
         })

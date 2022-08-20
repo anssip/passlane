@@ -46,6 +46,7 @@ pub mod queries {
         pub modified: Option<Date>,
         pub id: i32,
         pub password: String,
+        pub iv: String,
         pub service: String,
         pub username: String,
     }
@@ -80,6 +81,7 @@ pub mod queries {
     #[cynic(rename_all = "camelCase")]
     pub struct CredentialsIn {
         pub password_encrypted: String,
+        pub iv: String,
         pub service: String,
         pub username: String,
     }

@@ -167,7 +167,7 @@ Here are links to instructions for doing the CSV export:
 - [x] delete to delete from the online vault
 - [x] generate & save at the same time
 - [x] delete should not ask master password
-- [] show command should also include matches from usernames
+- [x] migrate command to migrate from old format without iv
 
 ### 2.0 (upcoming)
 

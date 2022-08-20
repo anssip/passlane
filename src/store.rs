@@ -116,8 +116,8 @@ fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
 pub fn update_master_password(old_password: &String, new_password: &String) -> bool {
     let file;
     (file, ..) = open_password_file(false);
-    let path = PathBuf::from(dir_path()).join(".store_new");
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
+    let path = PathBuf::from(dir_path()).join(".store_new");
     let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
 
     for result in reader.deserialize() {
@@ -168,13 +168,15 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credentials>> {
     Ok(credentials.clone())
 }
 
-pub fn import_csv(file_path: &str, master_password: &String) -> anyhow::Result<i64> {
-    let out_file;
-    let exists;
-    (out_file, _, exists) = open_password_file(true);
-    let mut wtr = WriterBuilder::new()
+fn get_credentials_writer() -> csv::Writer<File> {
+    let (out_file, _, exists) = open_password_file(true);
+    WriterBuilder::new()
         .has_headers(!exists)
-        .from_writer(out_file);
+        .from_writer(out_file)
+}
+
+pub fn import_csv(file_path: &str, master_password: &String) -> anyhow::Result<i64> {
+    let mut wtr = get_credentials_writer();
 
     let mut count = 0;
     match read_from_csv(file_path) {
@@ -196,7 +198,10 @@ pub fn get_all_credentials() -> Vec<Credentials> {
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
     let mut credentials = Vec::new();
     for result in reader.deserialize() {
-        credentials.push(result.unwrap())
+        match result {
+            Ok(deserialized) => credentials.push(deserialized),
+            Err(message) => println!("Failed to deserialize: {}", message),
+        }
     }
     credentials
 }
@@ -284,4 +289,22 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
         },
         created_timestamp: parts[3].into(),
     })
+}
+
+pub fn migrate(master_password: &str) -> anyhow::Result<i16> {
+    let credentials = get_all_credentials();
+    let count = credentials.len();
+    let new_entries = credentials.into_iter().map(|c| c.migrate(master_password));
+
+    let path = PathBuf::from(dir_path()).join(".store_new");
+    let mut wtr = csv::Writer::from_path(path).expect("Unable to open temporary output file");
+
+    new_entries.into_iter().for_each(|c| {
+        wtr.serialize(c).expect("Unable to store credentials");
+    });
+
+    rename(dir_path().join(".store_new"), dir_path().join(".store"))
+        .expect("Unable to rename temporary password file");
+
+    Ok(count as i16)
 }

@@ -16,6 +16,7 @@ type Vault {
   personal: Boolean!
   name: String!
   users: [User]!
+  # // TODO; make this return a cursor for pagination (check Relay pagination)
   credentials(grep: String): [Credentials]
 }
 
@@ -23,6 +24,7 @@ type Credentials {
   id: Int!
   service: String!
   username: String!
+  iv: String!
   password: String!
   created: Date!
   modified: Date
@@ -31,6 +33,7 @@ type Credentials {
 input CredentialsIn {
   service: String!
   username: String!
+  iv: String!
   passwordEncrypted: String!
 }
 

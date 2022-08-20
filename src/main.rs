@@ -75,6 +75,10 @@ fn cli() -> Command<'static> {
                 ).action(ArgAction::SetTrue))
                 .arg_required_else_help(true)
         )
+        .subcommand(
+            Command::new("migrate")
+                .about("Migrate from legacy local credential store to passlane version 1.0 format")
+        )
 }
  
 
@@ -92,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(is_first_login) => {
                 println!("Logged in successfully. Online vaults in use.");
                 if is_first_login {
-                    println!("You can push all your locally stored credentials to the Online Vault with: passlane --push");
+                    println!("You can push all your locally stored credentials to the Online Vault with: passlane push");
                 }
             }
             Err(message) => println!("Login failed: {}", message),
@@ -189,6 +193,11 @@ async fn main() -> anyhow::Result<()> {
                 Ok(len) => println!("Synced {} entries", len),
                 Err(message) => println!("Failed to sync: {}", message),
             }
+        },
+        Some(("migrate", _)) => {
+            let pwd = ui::ask_master_password();
+            let count = store::migrate(&pwd)?;
+            println!("Migrated {} credentials", count);
         },
         _ => {
             if env::args().len() == 1 { 

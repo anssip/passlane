@@ -29,6 +29,7 @@ pub fn ask_credentials(password: &str) -> Credentials {
         service,
         username,
         password: password.into(),
+        iv: None,
     }
 }
 
