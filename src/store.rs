@@ -80,7 +80,7 @@ pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result
     }
 }
 
-fn save_master_password(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
+fn save_master_password(file_path: PathBuf, master_pwd: &str) -> Result<bool, String> {
     let mut file = File::create(file_path).expect("Cannot create master password file");
     let content = bcrypt::hash(master_pwd).unwrap();
     file.write_all(content.as_bytes())
@@ -113,7 +113,7 @@ fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
     (file, path, exists)
 }
 
-pub fn update_master_password(old_password: &String, new_password: &String) -> bool {
+pub fn update_master_password(old_password: &str, new_password: &str) -> bool {
     let file;
     (file, ..) = open_password_file(false);
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);

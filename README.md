@@ -1,14 +1,14 @@
 # Passlane
 
-A lightning-fast password manager for the command line
+A lightning-fast password manager for the command line. The data is saved in an online vault at [passlanevault.com](https://passlanevault.com). There is also a web interface that you can use to access your credentials on any device.
 
-![Screenshot](https://i.imgur.com/jCVJiLT.png)
+![Screenshot](https://i.imgur.com/TMB8DbS.png)
 
 ## Features
 
-- Generate passwords
-- Place the generated password into the clipboard
-- Save previously generated password from the clipboard
+- Generate and save passwords
+- Full management features
+- Online storage
 - Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
 
@@ -17,13 +17,17 @@ A lightning-fast password manager for the command line
 You can use Passlane in two different modes:
 
 1. As a standalone CLI tool that stores the credentials on your local disk.
-2. Use the Passlane Vault to store the, and have them safely available to all your devices and computers.
+2. Use the **Passlane Vault** as storage, and have the credentials safely available in all your devices and computers.
 
-The Online Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to descrypt the password values and never sent to our API servers.
+The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to decrypt the password values and never sent to our servers.
 
-The Online Vault will soon support team management features which makes it possible to safely share credentials with team members.
+If you want to take advantage of the Passlane Vault, head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
 
-If you want to take advantage of the Passlane Vault, [head over to passlanevault.com and sign up for a **free account**](https://passlanevault.com).
+```bash
+passlane login
+```
+
+to connect the CLI with the vault.
 
 ## Installation
 
@@ -53,6 +57,7 @@ SUBCOMMANDS:
                      expression.
     help             Print this message or the help of the given subcommand(s)
     keychain-push    Pushes all credentials to the OS specific keychain.
+    migrate          Migrate from legacy local credential store to passlane version 1.0 format
     login            Login to passlanevault.com
     password         Change the master password.
     push             Pushes all local credentials to the online vault.
@@ -158,29 +163,11 @@ Here are links to instructions for doing the CSV export:
 
 ## Roadmap
 
-### 1.0
+### 1.1
 
-- [x] access_token expiration handling: add created Instant to AccessTokens
-- [x] --save option to save online
-- [x] --csv to push to online vault, if user has a vault
-- [x] switch to use commands instead of options in the command line
-- [x] delete to delete from the online vault
-- [x] generate & save at the same time
-- [x] delete should not ask master password
-- [x] migrate command to migrate from old format without iv
+- [ ] Master password update for the online vault
 
-### 2.0 (upcoming)
+### 2.0
 
-- [] multiple vaults support
-- [] web UI for the online service
-
-### previous versions
-
-- [x] delete passwords
-- [x] show grep results in a table, copy password to clipboard by row index
-
-- [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
-- [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)
-- [x] import from CSV
-- [x] separate CLI option to sync to keychain
-- [x] possibility to show passwords when multiple search matches
+- [ ] multiple vaults support
+- [ ] web UI for the online service

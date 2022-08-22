@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("password", _)) => {
             let old_pwd = ui::ask_master_password();
             let new_pwd = ui::ask_new_password();
-            store::update_master_password(&old_pwd, &new_pwd);
+            update_master_password(&old_pwd, &new_pwd);
         },
         Some(("keychain-push", _)) => {
             let master_pwd = ui::ask_master_password();
@@ -398,4 +398,13 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn update_master_password(old_pwd: &str, new_pwd: &str) -> bool {
+    if store::has_logged_in() {
+        println!("Password update has not been implemented yet for the online vault!");
+        false
+    } else {
+        store::update_master_password(old_pwd, new_pwd)
+    }
 }

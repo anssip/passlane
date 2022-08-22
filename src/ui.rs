@@ -34,7 +34,7 @@ pub fn ask_credentials(password: &str) -> Credentials {
 }
 
 pub fn ask_new_password() -> String {
-    let pwd = ask_password("Enter new master password: ");
+    let pwd = ask_password("Enter new master password. Make sure to save the master password because if you forget it there is no way to recover it! : ");
     let pwd2 = ask_password("Re-enter new master password: ");
     if pwd.eq(&pwd2) {
         pwd
