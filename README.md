@@ -19,6 +19,13 @@ A lightning-fast password manager for the command line
 3. Place the unarchived binary `passlane` to your $PATH
 4. Enjoy!
 
+### To compile from sources
+
+1. Install rust development environment: [rustup](https://rustup.rs)
+2. Clone this repo
+3. Build `cargo build --release`
+4. Add the built `passlane` binary to your `$PATH`
+
 ## Usage
 
 ```bash
