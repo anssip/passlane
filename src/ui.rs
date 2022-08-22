@@ -4,7 +4,9 @@ use std::io::Write;
 
 use crate::password::Credentials;
 use crate::store;
+use anyhow::bail;
 use std::cmp::min;
+use webbrowser;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -20,18 +22,19 @@ pub fn ask_password(question: &str) -> String {
     rpassword::prompt_password(question).unwrap()
 }
 
-pub fn ask_credentials(password: String) -> Credentials {
+pub fn ask_credentials(password: &str) -> Credentials {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
     Credentials {
         service,
         username,
-        password,
+        password: password.into(),
+        iv: None,
     }
 }
 
 pub fn ask_new_password() -> String {
-    let pwd = ask_password("Enter new master password: ");
+    let pwd = ask_password("Enter new master password. Make sure to save the master password because if you forget it there is no way to recover it! : ");
     let pwd2 = ask_password("Re-enter new master password: ");
     if pwd.eq(&pwd2) {
         pwd
@@ -106,4 +109,12 @@ pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize
         }
         Err(_) => Err(String::from("Invalid index")),
     };
+}
+
+pub fn open_browser(url: &str, prompt: &str) -> Result<bool, anyhow::Error> {
+    if ask(prompt) == "q" {
+        bail!("Aborted")
+    } else {
+        Ok(webbrowser::open(url).is_ok())
+    }
 }

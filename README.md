@@ -1,16 +1,33 @@
 # Passlane
 
-A lightning-fast password manager for the command line
+A lightning-fast password manager for the command line. The data is saved in an online vault at [passlanevault.com](https://passlanevault.com). There is also a web interface that you can use to access your credentials on any device.
 
-![Screenshot](https://i.imgur.com/jCVJiLT.png)
+![Screenshot](https://i.imgur.com/TMB8DbS.png)
 
 ## Features
 
-- Generate passwords
-- Place the generated password into the clipboard
-- Save previously generated password from the clipboard
+- Generate and save passwords
+- Full management features
+- Online storage
 - Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
+
+### Online Vault
+
+You can use Passlane in two different modes:
+
+1. As a standalone CLI tool that stores the credentials on your local disk.
+2. Use the **Passlane Vault** as storage, and have the credentials safely available in all your devices and computers.
+
+The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to decrypt the password values and never sent to our servers.
+
+If you want to take advantage of the Passlane Vault, head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
+
+```bash
+passlane login
+```
+
+to connect the CLI with the vault.
 
 ## Installation
 
@@ -18,6 +35,7 @@ A lightning-fast password manager for the command line
 2. Unpack the archive
 3. Place the unarchived binary `passlane` to your $PATH
 4. Enjoy!
+5. Optionally sign up in passlanevault.com to enable online storage and have the credentials data available to all your devices.
 
 ### To compile from sources
 
@@ -29,81 +47,101 @@ A lightning-fast password manager for the command line
 ## Usage
 
 ```bash
-(base) ➜  temp passlane -h
-passlane 0.1.4
-Anssi Piirainen <anssip@email.com>
-A password manager for the command line. Syncs with the Keychain.
+$  passlane -h
+passlane
+A password manager and a CLI client for the online Passlane Vault
 
 USAGE:
-    passlane [OPTIONS]
+    passlane [SUBCOMMAND]
 
 OPTIONS:
-    -c, --csv <CSV>          Import credentials from a CSV file
-    -d, --delete <DELETE>    Delete passwords by service. Use together with --keychain to
-                             also delete from the keychain.
-    -g, --grep <GREP>        Grep passwords by service
-    -h, --help               Print help information
-    -k, --keychain           Sync credentials to Keychain. Syncs all store credentials when
-                             specified as the only option. When used together with --save, syncs
-                             only the password in question
-    -m, --master-pwd         Update master password
-    -s, --save               Save the last generated password
-    -v, --verbose            Verobose: show password values when grep option finds several matches
-    -V, --version            Print version information
+    -h, --help    Print help information
+
+SUBCOMMANDS:
+    add              Adds a new credential to the vault.
+    csv              Imports credentials from a CSV file.
+    delete           Deletes one or more credentials by searching with the specified regular
+                     expression.
+    help             Print this message or the help of the given subcommand(s)
+    keychain-push    Pushes all credentials to the OS specific keychain.
+    migrate          Migrate from legacy local credential store to passlane version 1.0 format
+    login            Login to passlanevault.com
+    password         Change the master password.
+    push             Pushes all local credentials to the online vault.
+    show             Shows one or more credentials by searching with the specified regular
+                     expression.
 ```
 
-### Generate a new password
+### Generating and saving passwords
 
-- Sign up for a new service in the web browser
-- Run `passlane` --> gnerates and saves a new password to the clipboard
-- Use the generated password from the clipboard
-- After successful signup: Open terminal and run `passlane -s` to save the password
+To generate a new password without saving it. The generated password value is also copied to the clipboard.
+
+```
+passlane
+```
+
+To save a password from clipboard:
+
+```
+passlane add -c
+```
+
+To generate a new password and save it with one command:
+
+```
+passlane add -g
+```
 
 ### Using saved credentials
 
-Later on, when logging in to foobar.com:
+You can search and show saved passwords with regular expressions
 
-- Run `passlane -g foobard.com` --> copies foobar.com's password to clipboard.
-- Use the password from clipboard to login
+```
+passlane show <regexp>
+```
+
+Run `passlane show foobard.com` --> shows foobar.com's password and alco copies the value to the clipboard.
+
+If the search finds more than one matches:
 
 ```bash
-$ passlane -g google.com
-Please enter master password:
+$ passlane show google.com
+Please enter master password: *********
 Found 9 matches:
-+---+-----------------------------------------------------+------------------------------------+
-|   | Service                                             | Username/email                     |
-+==============================================================================================+
-| 0 | https://accounts.google.com/signin/v2/challenge/pwd | jack@megacorp.com                  |
-|---+-----------------------------------------------------+------------------------------------|
-| 1 | https://accounts.google.com/signin/v2/challenge/pwd | jack1p@gmail.com                   |
-|---+-----------------------------------------------------+------------------------------------|
-| 2 | https://accounts.google.com/signin/v2/challenge/pwd | jck@hey.com                        |
-|---+-----------------------------------------------------+------------------------------------|
-| 3 | https://accounts.google.com/signin/v2/challenge/pwd | jackrussel@gmail.com               |
-|---+-----------------------------------------------------+------------------------------------|
-To copy one of these passwords to clipboard, please enter a row number from the table above,
-or press q to exit: 3
++---+--------------------------------+------------------------------------+
+|   | Service                        | Username/email                     |
++=========================================================================+
+| 0 | https://accounts.google.com    | jack@megacorp.com                  |
+|---+--------------------------------+------------------------------------|
+| 1 | https://accounts.google.com    | jack1p@gmail.com                   |
+|---+--------------------------------+------------------------------------|
+| 2 | https://accounts.google.com    | jck@hey.com                        |
+|---+--------------------------------+------------------------------------|
+| 3 | https://accounts.google.com    | jackrussel@gmail.com               |
+|---+--------------------------------+------------------------------------|
+To copy one of these passwords to clipboard, please enter a row number from
+the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
 _or alternatively_
 
-- Let MacOS propose the saved password. It knows it because Passlane also syncs to the keychain.
+- Let MacOS propose the saved password. It knows it because Passlane can also sync to the keychain. See below for mor info.
 
 ### Syncing with the system Keychain
 
 Passlane uses the [keyring crate](https://crates.io/crates/keyring) to sync credentials to the operating system's keychain. Syncing should work on Linux, iOS, macOS, and Windows.
 
-Use option `-s` together with `-k` to save the last generated password to the Passlane storage file _and_ to the keychain:
+Use option `add` command together with option `-k` to save the last generated password to the Passlane storage file _and_ to the keychain:
 
 ```
-passlane -s -k
+passlane add -k
 ```
 
-To sync all Passlane stored options to the keychain use the `-k` option alone:
+To sync all Passlane stored options to the keychain use the `keychain-push` command:
 
 ```
-passlane -k
+passlane keychain-push
 ```
 
 ### Migrating from 1Password, LastPass, Dashlane etc.
@@ -121,7 +159,7 @@ The `service` field is the URL or name of the service. When importing from Dashl
 To export the credentials to a CSV file and import the file into Passlane:
 
 ```bash
-passlane --csv <path_to_csv_file>
+passlane csv <path_to_csv_file>
 ```
 
 Here are links to instructions for doing the CSV export:
@@ -130,15 +168,13 @@ Here are links to instructions for doing the CSV export:
 - [1Password](https://support.1password.com/export/)
 - [Dashlane](https://support.dashlane.com/hc/en-us/articles/202625092-Export-your-passwords-from-Dashlane)
 
-## TODO
+## Roadmap
 
-- [] online sync service?
-- [] web UI for the online service
-- [x] delete passwords
-- [x] show grep results in a table, copy password to clipboard by row index
+### 1.1
 
-- [x] if "Failed: Unable to retrieve value from clipboard" --> prompt for the password to be saved
-- [x] [read password without showing input](https://stackoverflow.com/questions/28924134/how-can-i-get-password-input-without-showing-user-input)
-- [x] import from CSV
-- [x] separate CLI option to sync to keychain
-- [x] possibility to show passwords when multiple search matches
+- [ ] Master password update for the online vault
+
+### 2.0
+
+- [ ] multiple vaults support
+- [ ] web UI for the online service

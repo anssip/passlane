@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0]
+
+- Online vault at https://passlanevault.com
+- Switch to use commands instead of options in the command line
+- Generate & save at the same time using `passlane add -g`
+- Delete should not ask master password
+- `migrate` command to migrate from old format without iv
+
 ## [0.1.4]
 
 - New feature: Show results in table when querying for passwords using `--gerp`
