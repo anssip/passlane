@@ -1,14 +1,19 @@
 # Passlane
 
-A lightning-fast password manager for the command line. The data is saved in an online vault at [passlanevault.com](https://passlanevault.com). There is also a web interface that you can use to access your credentials on any device.
+A lightning-fast password manager for the command line and for the Web. The data is saved in an online vault at [passlanevault.com](https://passlanevault.com). There is also a web interface that you can use to access your credentials on any device.
 
-![Screenshot](https://i.imgur.com/TMB8DbS.png)
+![Screenshot](https://i.imgur.com/TMB8DbS.webp)
+
+Web interface
+
+![Web UI](https://i.imgur.com/Gr6Ae7F_d.webp?maxwidth=300&fidelity=grand)
 
 ## Features
 
+- CLI and Web user interfaces (see below)
 - Generate and save passwords
 - Full management features
-- Online storage
+- Online storage with access from any device
 - Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
 
