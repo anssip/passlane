@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.1]
+
+- Add ability to update the master password in the online vault. Changing the master password updates every credential with newly encrypted passwords.
+
 ## [1.0.0]
 
 - Online vault at https://passlanevault.com

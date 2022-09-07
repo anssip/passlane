@@ -3,6 +3,7 @@ use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::MeQuery;
+use crate::graphql::queries::UpdateMasterPasswordMutation;
 use crate::password::Credentials as CredentialsModel;
 use anyhow::bail;
 
@@ -29,7 +30,7 @@ pub async fn grep(
                 if let Some(cred) = creds {
                     let model = CredentialsModel {
                         password: cred.password,
-                        iv: Some(cred.iv),
+                        iv: cred.iv,
                         username: cred.username,
                         service: cred.service,
                     };
@@ -99,5 +100,24 @@ pub async fn delete_credentials(
     match response.data {
         Some(DeleteCredentialsMutation { delete_credentials }) => Ok(delete_credentials),
         _ => bail!("Failed to delete from the online vault"),
+    }
+}
+
+pub async fn update_master_password(
+    access_token: &str,
+    old_password: &str,
+    new_password: &str,
+) -> anyhow::Result<i32> {
+    let response =
+        graphql::run_update_master_password_mutation(access_token, old_password, new_password)
+            .await;
+    if response.errors.is_some() {
+        bail!(format!("errors: {:?}", response));
+    }
+    match response.data {
+        Some(UpdateMasterPasswordMutation {
+            update_master_password,
+        }) => Ok(update_master_password),
+        None => Ok(0),
     }
 }

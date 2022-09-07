@@ -44,8 +44,12 @@ pub fn ask_new_password() -> String {
     }
 }
 
-pub fn ask_master_password() -> String {
-    let master_pwd = ask_password("Please enter master password: ");
+pub fn ask_master_password(question: Option<&str>) -> String {
+    let master_pwd = if let Some(q) = question {
+        ask_password(q)
+    } else {
+        ask_password("Please enter master password: ")
+    };
     match store::verify_master_password(&master_pwd, true) {
         Ok(_) => master_pwd,
         Err(message) => {

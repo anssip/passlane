@@ -46,7 +46,7 @@ pub mod queries {
         pub modified: Option<Date>,
         pub id: i32,
         pub password: String,
-        pub iv: String,
+        pub iv: Option<String>,
         pub service: String,
         pub username: String,
     }
@@ -109,6 +109,22 @@ pub mod queries {
             index: args.input.index
         })]
         pub delete_credentials: i32,
+    }
+
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct UpdateMasterPasswordMutationVariables {
+        pub new_password: String,
+        pub old_password: String,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "UpdateMasterPasswordMutationVariables"
+    )]
+    pub struct UpdateMasterPasswordMutation {
+        #[arguments(new_password = args.new_password.clone(), old_password = args.old_password.clone())]
+        pub update_master_password: i32,
     }
 }
 
@@ -193,5 +209,30 @@ fn build_delete_credentials_mutation(
             grep: grep,
             index: index,
         },
+    })
+}
+
+pub async fn run_update_master_password_mutation(
+    access_token: &str,
+    old_password: &str,
+    new_password: &str,
+) -> cynic::GraphQlResponse<queries::UpdateMasterPasswordMutation> {
+    let operation = build_update_master_password_mutation(old_password, new_password);
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_update_master_password_mutation(
+    old_password: &str,
+    new_password: &str,
+) -> cynic::Operation<'static, queries::UpdateMasterPasswordMutation> {
+    use cynic::MutationBuilder;
+    use queries::{UpdateMasterPasswordMutation, UpdateMasterPasswordMutationVariables};
+
+    UpdateMasterPasswordMutation::build(&UpdateMasterPasswordMutationVariables {
+        old_password: String::from(old_password),
+        new_password: String::from(new_password),
     })
 }

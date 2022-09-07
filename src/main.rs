@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let password = get_password().context(format!("Failed to get password {}", if clipboard {"from clipboard"} else {""} ))?;
             let creds = ui::ask_credentials(&password);
-            let master_pwd = ui::ask_master_password();
+            let master_pwd = ui::ask_master_password(None);
             save(&master_pwd, &creds, keychain).await.context("failed to save")?;
             if !clipboard {
                 copy_to_clipboard(&password);
@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap");
 
-            let master_pwd = ui::ask_master_password();
+            let master_pwd = ui::ask_master_password(None);
             let matches = find_matches(Some(&master_pwd), &grep).await?;
             if matches.len() >= 1 {
                 println!("Found {} matches:", matches.len());
@@ -182,12 +182,17 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Some(("password", _)) => {
-            let old_pwd = ui::ask_master_password();
+            let old_pwd = ui::ask_master_password("Enter current master password: ".into());
             let new_pwd = ui::ask_new_password();
-            update_master_password(&old_pwd, &new_pwd);
+            let success = update_master_password(&old_pwd, &new_pwd).await.context("Failed to update master password")?;
+            if success {
+                println!("Password changed");
+            } else {
+                println!("Failed to change master password");
+            }
         },
         Some(("keychain-push", _)) => {
-            let master_pwd = ui::ask_master_password();
+            let master_pwd = ui::ask_master_password(None);
             let creds = store::get_all_credentials();
             match keychain::save_all(&creds, &master_pwd) {
                 Ok(len) => println!("Synced {} entries", len),
@@ -195,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Some(("migrate", _)) => {
-            let pwd = ui::ask_master_password();
+            let pwd = ui::ask_master_password(None);
             let count = store::migrate(&pwd)?;
             println!("Migrated {} credentials", count);
         },
@@ -317,7 +322,7 @@ async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64>
 }
 
 async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
-    let master_pwd = ui::ask_master_password();
+    let master_pwd = ui::ask_master_password(None);
     if store::has_logged_in() {
         info!("importing to the online vault");
         push_from_csv(&master_pwd, file_path).await
@@ -400,11 +405,15 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn update_master_password(old_pwd: &str, new_pwd: &str) -> bool {
+async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
-        println!("Password update has not been implemented yet for the online vault!");
-        false
+        debug!("Updating master password in online vault!");
+        let token = get_access_token().await?;
+        let count = online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
+        store::save_master_password(new_pwd);
+        debug!("Updated {} passwords", count);
     } else {
-        store::update_master_password(old_pwd, new_pwd)
+        store::update_master_password(old_pwd, new_pwd);
     }
+    Ok(true)
 }

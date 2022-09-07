@@ -172,7 +172,8 @@ Here are links to instructions for doing the CSV export:
 
 ### 1.1
 
-- [ ] Master password update for the online vault
+- [x] Master password update for the online vault
+- [ ] Export of vault contents
 
 ### 2.0
 

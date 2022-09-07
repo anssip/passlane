@@ -24,7 +24,7 @@ type Credentials {
   id: Int!
   service: String!
   username: String!
-  iv: String!
+  iv: String
   password: String!
   created: Date!
   modified: Date
@@ -38,7 +38,6 @@ input CredentialsIn {
 }
 
 input UserIn {
-  username: String!
   authUserId: String!
   firstName: String
   lastName: String
@@ -65,6 +64,7 @@ type Mutation {
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
   addUser(user: UserIn!): User!
   deleteCredentials(input: DeleteCredentialsIn!): Int!
+  updateMasterPassword(oldPassword: String!, newPassword: String!): Int!
 }
 
 type Query {

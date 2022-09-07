@@ -71,21 +71,20 @@ pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result
     if store_if_new {
         let retyped = ask_password("Re-enter master password: ");
         if master_pwd.eq(&retyped) {
-            save_master_password(file_path, master_pwd)
+            save_master_password(master_pwd);
         } else {
-            Err(String::from("Passwords did not match"))
+            return Err(String::from("Passwords did not match"));
         }
-    } else {
-        Result::Ok(true)
     }
+    Result::Ok(true)
 }
 
-fn save_master_password(file_path: PathBuf, master_pwd: &str) -> Result<bool, String> {
+pub fn save_master_password(master_pwd: &str) {
+    let file_path = master_password_file_path();
     let mut file = File::create(file_path).expect("Cannot create master password file");
     let content = bcrypt::hash(master_pwd).unwrap();
     file.write_all(content.as_bytes())
         .expect("Unable write to master password file");
-    Result::Ok(true)
 }
 
 fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
@@ -125,8 +124,7 @@ pub fn update_master_password(old_password: &str, new_password: &str) -> bool {
         wtr.serialize(creds.decrypt(old_password).encrypt(new_password))
             .expect("Unable to store credentials to temp file");
     }
-    save_master_password(master_password_file_path(), new_password)
-        .expect("Failed to save master password");
+    save_master_password(new_password);
     rename(dir_path().join(".store_new"), dir_path().join(".store"))
         .expect("Unable to rename password file");
     true
