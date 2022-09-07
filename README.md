@@ -4,7 +4,7 @@ A lightning-fast password manager for the command line and for the Web. The data
 
 ![Screenshot](https://i.imgur.com/TMB8DbS.webp)
 
-Web interface
+## Web interface
 
 ![Web UI](https://i.imgur.com/Gr6Ae7F_d.webp?maxwidth=300&fidelity=grand)
 
