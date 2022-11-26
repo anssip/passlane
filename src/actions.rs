@@ -184,3 +184,67 @@ impl Action for PushAction {
         Ok(())
     }
 }
+
+pub struct ShowAction {
+    pub grep: String,
+    pub verbose: bool,
+}
+
+impl ShowAction {
+    pub fn new(matches: &ArgMatches) -> ShowAction {
+        ShowAction {
+            grep: matches.value_of("REGEXP").expect("required").to_string(),
+            verbose: *matches
+                .get_one::<bool>("verbose")
+                .expect("defaulted to false by clap"),
+        }
+    }
+}
+
+pub async fn find_matches(
+    master_pwd: Option<&str>,
+    grep_value: &str,
+) -> anyhow::Result<Vec<Credentials>> {
+    let matches = if store::has_logged_in() {
+        info!("searching from online vault");
+        let token = get_access_token().await?;
+        online_vault::grep(&token.access_token, master_pwd, &grep_value).await?
+    } else {
+        info!("searching from local file");
+        store::grep(master_pwd, grep_value)
+    };
+    if matches.len() == 0 {
+        println!("No matches found");
+    }
+    Ok(matches)
+}
+
+#[async_trait]
+impl Action for ShowAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let master_pwd = ui::ask_master_password(None);
+        let matches = find_matches(Some(&master_pwd), &self.grep).await?;
+        if matches.len() >= 1 {
+            println!("Found {} matches:", matches.len());
+            ui::show_as_table(&matches, self.verbose);
+            if matches.len() == 1 {
+                copy_to_clipboard(&matches[0].password);
+                println!("Password copied to clipboard!",);
+            } else {
+                match ui::ask_index(
+                    "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
+                    &matches,
+                ) {
+                    Ok(index) => {
+                        copy_to_clipboard(&matches[index].password);
+                        println!("Password from index {} copied to clipboard!", index);
+                    }
+                    Err(message) => {
+                        println!("{}", message);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

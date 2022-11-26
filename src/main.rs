@@ -2,12 +2,10 @@ extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
 use crate::auth::AccessTokens;
-use anyhow::{bail, Context };
+use anyhow::{Context };
 use clap::{arg, ArgAction, Command};
 
 use crate::password::Credentials;
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
 use crate::actions::Action;
 
 mod auth;
@@ -18,7 +16,7 @@ mod password;
 mod store;
 mod ui;
 mod actions;
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::env;
 use std::io;
 
@@ -96,36 +94,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("login", _)) => actions::LoginAction::new().execute().await?,
         Some(("push", _)) => actions::PushAction {}.execute().await?,
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
-        Some(("show", sub_matches)) => {
-            let grep = sub_matches.value_of("REGEXP").expect("required");
-            let verbose = *sub_matches
-                .get_one::<bool>("verbose")
-                .expect("defaulted to false by clap");
-
-            let master_pwd = ui::ask_master_password(None);
-            let matches = find_matches(Some(&master_pwd), &grep).await?;
-            if matches.len() >= 1 {
-                println!("Found {} matches:", matches.len());
-                ui::show_as_table(&matches, verbose);
-                if matches.len() == 1 {
-                    actions::copy_to_clipboard(&matches[0].password);
-                    println!("Password copied to clipboard!",);
-                } else {
-                    match ui::ask_index(
-                        "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
-                        &matches,
-                    ) {
-                        Ok(index) => {
-                            actions::copy_to_clipboard(&matches[index].password);
-                            println!("Password from index {} copied to clipboard!", index);
-                        }
-                        Err(message) => {
-                            println!("{}", message);
-                        }
-                    }
-                }
-            }
-        },
+        Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
         Some(("delete", sub_matches)) => {
             let grep = sub_matches.value_of("REGEXP").expect("required");
             let keychain = *sub_matches
@@ -179,24 +148,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn find_matches(
-    master_pwd: Option<&str>,
-    grep_value: &str,
-) -> anyhow::Result<Vec<Credentials>> {
-    let matches = if store::has_logged_in() {
-        info!("searching from online vault");
-        let token = actions::get_access_token().await?;
-        online_vault::grep(&token.access_token, master_pwd, &grep_value).await?
-    } else {
-        info!("searching from local file");
-        store::grep(master_pwd, grep_value)
-    };
-    if matches.len() == 0 {
-        println!("No matches found");
-    }
-    Ok(matches)
-}
-
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
     let token = actions::get_access_token().await?;
     let credentials = store::read_from_csv(file_path)?;
@@ -223,7 +174,7 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
 
 async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
     debug!("also deleting from keychain? {}", delete_from_keychain);
-    let matches = find_matches(None, grep).await?;
+    let matches = actions::find_matches(None, grep).await?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
