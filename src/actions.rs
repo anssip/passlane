@@ -384,3 +384,36 @@ impl Action for ImportCsvAction {
         Ok(())
     }
 }
+
+pub struct UpdateMasterPasswordAction { }
+
+async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
+    if store::has_logged_in() {
+        debug!("Updating master password in online vault!");
+        let token = get_access_token().await?;
+        let count =
+            online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
+        store::save_master_password(new_pwd);
+        debug!("Updated {} passwords", count);
+    } else {
+        store::update_master_password(old_pwd, new_pwd);
+    }
+    Ok(true)
+}
+
+#[async_trait]                                                                      
+impl Action for UpdateMasterPasswordAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let old_pwd = ui::ask_master_password("Enter current master password: ".into());
+        let new_pwd = ui::ask_new_password();
+        let success = update_master_password(&old_pwd, &new_pwd)
+            .await
+            .context("Failed to update master password")?;
+        if success {
+            println!("Password changed");
+        } else {
+            println!("Failed to change master password");
+        }
+        Ok(())
+    }
+}
