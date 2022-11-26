@@ -95,14 +95,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
         Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
         Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
-        Some(("keychain-push", _)) => {
-            let master_pwd = ui::ask_master_password(None);
-            let creds = store::get_all_credentials();
-            match keychain::save_all(&creds, &master_pwd) {
-                Ok(len) => println!("Synced {} entries", len),
-                Err(message) => println!("Failed to sync: {}", message),
-            }
-        }
+        Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
         Some(("migrate", _)) => {
             let pwd = ui::ask_master_password(None);
             let count = store::migrate(&pwd)?;

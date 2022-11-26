@@ -417,3 +417,18 @@ impl Action for UpdateMasterPasswordAction {
         Ok(())
     }
 }
+
+pub struct KeychainPushAction {}
+
+#[async_trait]
+impl Action for KeychainPushAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let master_pwd = ui::ask_master_password(None);
+        let creds = store::get_all_credentials();
+        match keychain::save_all(&creds, &master_pwd) {
+            Ok(len) => println!("Synced {} entries", len),
+            Err(message) => println!("Failed to sync: {}", message),
+        }
+        Ok(())
+    }
+}
