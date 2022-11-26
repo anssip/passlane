@@ -16,7 +16,7 @@ mod online_vault;
 mod password;
 mod store;
 mod ui;
-use log::{debug, info};
+use log::debug;
 use std::env;
 use std::io;
 
@@ -95,14 +95,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
         Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
         Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
-        Some(("csv", sub_matches)) => {
-            let file_path = sub_matches.value_of("FILE_PATH").expect("required");
-
-            match import_csv(&file_path).await {
-                Err(message) => println!("Failed to import: {}", message),
-                Ok(count) => println!("Imported {} entries", count),
-            }
-        }
+        Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
         Some(("password", _)) => {
             let old_pwd = ui::ask_master_password("Enter current master password: ".into());
             let new_pwd = ui::ask_new_password();
@@ -142,30 +135,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
-    let token = actions::get_access_token().await?;
-    let credentials = store::read_from_csv(file_path)?;
-    online_vault::push_credentials(
-        &token.access_token,
-        &password::encrypt_all(master_pwd, &credentials),
-        None,
-    )
-    .await?;
-    let num_imported = credentials.len();
-    Ok(num_imported.try_into().unwrap())
-}
-
-async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
-    let master_pwd = ui::ask_master_password(None);
-    if store::has_logged_in() {
-        info!("importing to the online vault");
-        push_from_csv(&master_pwd, file_path).await
-    } else {
-        info!("importing to local file");
-        store::import_csv(file_path, &master_pwd)
-    }
 }
 
 async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {

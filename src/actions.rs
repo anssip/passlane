@@ -338,3 +338,49 @@ impl Action for DeleteAction {
     }
 }
 
+pub struct ImportCsvAction {
+    pub file_path: String,
+}
+
+impl ImportCsvAction {
+    pub fn new(matches: &ArgMatches) -> ImportCsvAction {
+        ImportCsvAction {
+            file_path: matches.value_of("FILE_PATH").expect("required").to_string(),
+        }
+    }
+}
+
+async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
+    let master_pwd = ui::ask_master_password(None);
+    if store::has_logged_in() {
+        info!("importing to the online vault");
+        push_from_csv(&master_pwd, file_path).await
+    } else {
+        info!("importing to local file");
+        store::import_csv(file_path, &master_pwd)
+    }
+}
+
+async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
+    let token = get_access_token().await?;
+    let credentials = store::read_from_csv(file_path)?;
+    online_vault::push_credentials(
+        &token.access_token,
+        &password::encrypt_all(master_pwd, &credentials),
+        None,
+    )
+    .await?;
+    let num_imported = credentials.len();
+    Ok(num_imported.try_into().unwrap())
+}
+
+#[async_trait]
+impl Action for ImportCsvAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        match import_csv(&self.file_path).await {
+            Err(message) => println!("Failed to import: {}", message),
+            Ok(count) => println!("Imported {} entries", count),
+        }
+        Ok(())
+    }
+}
