@@ -94,12 +94,7 @@ async fn main() -> anyhow::Result<()> {
 
     match matches.subcommand() {
         Some(("login", _)) => actions::LoginAction::new().execute().await?,
-        Some(("push", _)) => {
-            match push_credentials().await {
-                Ok(num) => println!("Pushed {} credentials online", num),
-                Err(message) => println!("Push failed: {}", message),
-            };
-        },
+        Some(("push", _)) => actions::PushAction {}.execute().await?,
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
         Some(("show", sub_matches)) => {
             let grep = sub_matches.value_of("REGEXP").expect("required");
@@ -200,12 +195,6 @@ async fn find_matches(
         println!("No matches found");
     }
     Ok(matches)
-}
-
-async fn push_credentials() -> anyhow::Result<i32> {
-    let token = actions::get_access_token().await?;
-    let credentials = store::get_all_credentials();
-    online_vault::push_credentials(&token.access_token, &credentials, None).await
 }
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {

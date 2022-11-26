@@ -97,6 +97,19 @@ pub struct AddAction {
 }
 
 impl AddAction {
+    pub fn new(matches: &ArgMatches) -> AddAction {
+        AddAction {
+            keychain: *matches
+                .get_one::<bool>("keychain")
+                .expect("defaulted to false by clap"),
+            generate: *matches
+                .get_one::<bool>("generate")
+                .expect("defaulted to false by clap"),
+            clipboard: *matches
+                .get_one::<bool>("clipboard")
+                .expect("defaulted to false by clap"),
+        }
+    }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
         let value = ctx
@@ -132,22 +145,6 @@ impl AddAction {
     }
 }
 
-impl AddAction {
-    pub fn new(matches: &ArgMatches) -> AddAction {
-        AddAction {
-            keychain: *matches
-                .get_one::<bool>("keychain")
-                .expect("defaulted to false by clap"),
-            generate: *matches
-                .get_one::<bool>("generate")
-                .expect("defaulted to false by clap"),
-            clipboard: *matches
-                .get_one::<bool>("clipboard")
-                .expect("defaulted to false by clap"),
-        }
-    }
-}
-
 #[async_trait]
 impl Action for AddAction {
     async fn execute(&self) -> anyhow::Result<()> {
@@ -164,6 +161,25 @@ impl Action for AddAction {
         if !self.clipboard {
             copy_to_clipboard(&password);
             println!("Password - also copied to clipboard: {}", password);
+        };
+        Ok(())
+    }
+}
+
+pub struct PushAction {}
+
+async fn push_credentials() -> anyhow::Result<i32> {
+    let token = get_access_token().await?;
+    let credentials = store::get_all_credentials();
+    online_vault::push_credentials(&token.access_token, &credentials, None).await
+}
+
+#[async_trait]
+impl Action for PushAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        match push_credentials().await {
+            Ok(num) => println!("Pushed {} credentials online", num),
+            Err(message) => println!("Push failed: {}", message),
         };
         Ok(())
     }
