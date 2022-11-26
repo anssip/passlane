@@ -8,7 +8,7 @@ use clap::{arg, ArgAction, Command};
 use crate::password::Credentials;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
-use tokio::task;
+use crate::actions::Action;
 
 mod auth;
 mod graphql;
@@ -17,6 +17,7 @@ mod online_vault;
 mod password;
 mod store;
 mod ui;
+mod actions;
 use log::{debug, info, warn};
 use std::env;
 use std::io;
@@ -92,18 +93,12 @@ async fn main() -> anyhow::Result<()> {
     let matches = cli().get_matches();
 
     match matches.subcommand() {
-        Some(("login", _)) => match login().await {
-            Ok(is_first_login) => {
-                println!("Logged in successfully. Online vaults in use.");
-                if is_first_login {
-                    println!("You can push all your locally stored credentials to the Online Vault with: passlane push");
-                }
-            }
-            Err(message) => println!("Login failed: {}", message),
-        },
-        Some(("push", _)) => match push_credentials().await {
-            Ok(num) => println!("Pushed {} credentials online", num),
-            Err(message) => println!("Push failed: {}", message),
+        Some(("login", _)) => actions::LoginAction::new().execute().await,
+        Some(("push", _)) => {
+            match push_credentials().await {
+                Ok(num) => println!("Pushed {} credentials online", num),
+                Err(message) => println!("Push failed: {}", message),
+            };
         },
         Some(("add", sub_matches)) => {
             let keychain = *sub_matches
@@ -330,16 +325,6 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
         info!("importing to local file");
         store::import_csv(file_path, &master_pwd)
     }
-}
-
-async fn login() -> anyhow::Result<bool> {
-    let token = task::spawn_blocking(move || {
-        auth::login()
-    }).await??;
-
-    let first_login = !store::has_logged_in();
-    store::store_access_token(&token)?;
-    Ok(first_login)
 }
 
 async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
