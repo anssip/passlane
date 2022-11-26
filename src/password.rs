@@ -33,15 +33,6 @@ impl Credentials {
         let decrypted_passwd = decrypt((key, iv), &self.password);
         self.clone_with_password((&decrypted_passwd, iv))
     }
-    pub fn migrate(&self, key: &str) -> Credentials {
-        let decrypted = Credentials {
-            password: decrypt_old(key, &self.password),
-            iv: None,
-            username: String::from(&self.username),
-            service: String::from(&self.service),
-        };
-        decrypted.encrypt(key)
-    }
 }
 
 impl Display for Credentials {
@@ -133,14 +124,6 @@ fn decrypt(key_and_iv: (&str, &str), value: &String) -> String {
     let mc = new_magic_crypt!(String::from(key_and_iv.0), 256, String::from(key_and_iv.1));
     mc.decrypt_base64_to_string(value)
         .expect("Unable to decrypt credentials. Invalid password?")
-}
-
-pub fn decrypt_old(key: &str, value: &String) -> String {
-    let mc = new_magic_crypt!(String::from(key), 256);
-    mc.decrypt_base64_to_string(value).expect(&format!(
-        "Unable to decrypt value '{}'. Invalid password?",
-        value
-    ))
 }
 
 pub fn encrypt_all(key: &str, credentials: &Vec<Credentials>) -> Vec<Credentials> {

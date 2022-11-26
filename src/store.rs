@@ -288,21 +288,3 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
         created_timestamp: parts[3].into(),
     })
 }
-
-pub fn migrate(master_password: &str) -> anyhow::Result<i16> {
-    let credentials = get_all_credentials();
-    let count = credentials.len();
-    let new_entries = credentials.into_iter().map(|c| c.migrate(master_password));
-
-    let path = PathBuf::from(dir_path()).join(".store_new");
-    let mut wtr = csv::Writer::from_path(path).expect("Unable to open temporary output file");
-
-    new_entries.into_iter().for_each(|c| {
-        wtr.serialize(c).expect("Unable to store credentials");
-    });
-
-    rename(dir_path().join(".store_new"), dir_path().join(".store"))
-        .expect("Unable to rename temporary password file");
-
-    Ok(count as i16)
-}
