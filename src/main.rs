@@ -93,43 +93,14 @@ async fn main() -> anyhow::Result<()> {
     let matches = cli().get_matches();
 
     match matches.subcommand() {
-        Some(("login", _)) => actions::LoginAction::new().execute().await,
+        Some(("login", _)) => actions::LoginAction::new().execute().await?,
         Some(("push", _)) => {
             match push_credentials().await {
                 Ok(num) => println!("Pushed {} credentials online", num),
                 Err(message) => println!("Push failed: {}", message),
             };
         },
-        Some(("add", sub_matches)) => {
-            let keychain = *sub_matches
-                .get_one::<bool>("keychain")
-                .expect("defaulted to false by clap");
-            let generate = *sub_matches
-                .get_one::<bool>("generate")
-                .expect("defaulted to false by clap");
-            let clipboard = *sub_matches
-                .get_one::<bool>("clipboard")
-                .expect("defaulted to false by clap");
-                debug!("adding to keychain? {}", keychain);
-                
-            let get_password = || -> anyhow::Result<String> {
-                if generate {
-                    Ok(password::generate())
-                } else if clipboard {
-                    password_from_clipboard()
-                } else {
-                    Ok(ui::ask_password("Enter password to save: "))
-                }
-            };
-            let password = get_password().context(format!("Failed to get password {}", if clipboard {"from clipboard"} else {""} ))?;
-            let creds = ui::ask_credentials(&password);
-            let master_pwd = ui::ask_master_password(None);
-            save(&master_pwd, &creds, keychain).await.context("failed to save")?;
-            if !clipboard {
-                copy_to_clipboard(&password);
-                println!("Password - also copied to clipboard: {}", password);        
-            }
-        },
+        Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
         Some(("show", sub_matches)) => {
             let grep = sub_matches.value_of("REGEXP").expect("required");
             let verbose = *sub_matches
@@ -142,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Found {} matches:", matches.len());
                 ui::show_as_table(&matches, verbose);
                 if matches.len() == 1 {
-                    copy_to_clipboard(&matches[0].password);
+                    actions::copy_to_clipboard(&matches[0].password);
                     println!("Password copied to clipboard!",);
                 } else {
                     match ui::ask_index(
@@ -150,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                         &matches,
                     ) {
                         Ok(index) => {
-                            copy_to_clipboard(&matches[index].password);
+                            actions::copy_to_clipboard(&matches[index].password);
                             println!("Password from index {} copied to clipboard!", index);
                         }
                         Err(message) => {
@@ -202,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
         _ => {
             if env::args().len() == 1 { 
                 let password = password::generate();
-                copy_to_clipboard(&password);
+                actions::copy_to_clipboard(&password);
                 println!("Password - also copied to clipboard: {}", password);
             } else {
                 let mut out = io::stdout();
@@ -213,29 +184,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_to_clipboard(value: &String) {
-    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-    ctx.set_contents(String::from(value)).unwrap();
-}
-
-fn password_from_clipboard() -> anyhow::Result<String> {
-    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-    let value = ctx
-        .get_contents()
-        .expect("Unable to retrieve value from clipboard");
-    if !password::validate_password(&value) {
-        bail!("The text in clipboard is not a valid password");
-    }
-    Result::Ok(value)
-}
-
 async fn find_matches(
     master_pwd: Option<&str>,
     grep_value: &str,
 ) -> anyhow::Result<Vec<Credentials>> {
     let matches = if store::has_logged_in() {
         info!("searching from online vault");
-        let token = get_access_token().await?;
+        let token = actions::get_access_token().await?;
         online_vault::grep(&token.access_token, master_pwd, &grep_value).await?
     } else {
         info!("searching from local file");
@@ -247,64 +202,14 @@ async fn find_matches(
     Ok(matches)
 }
 
-async fn get_access_token() -> anyhow::Result<AccessTokens> {
-    debug!("get_access_token()");
-    if !store::has_logged_in() {
-        bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
-    }
-    let token = store::get_access_token()?;
-    debug!("Token expired? {}", token.is_expired());
-    debug!("Token {}", token);
-    if token.is_expired() {
-        match auth::exchange_refresh_token(token).await {
-            Ok(token) => {
-                store::store_access_token(&token)?;
-                Ok(token)
-            }
-            Err(err) => {
-                warn!("failed to refresh access token: {}", err);
-                let token = auth::login()?;
-                store::store_access_token(&token)?;
-                Ok(token)
-            }
-        }
-    } else {
-        Ok(token)
-    }
-}
-
 async fn push_credentials() -> anyhow::Result<i32> {
-    let token = get_access_token().await?;
+    let token = actions::get_access_token().await?;
     let credentials = store::get_all_credentials();
     online_vault::push_credentials(&token.access_token, &credentials, None).await
 }
 
-async fn push_one_credential(
-    master_pwd: &String,
-    credentials: &Credentials,
-) -> anyhow::Result<i32> {
-    let token = get_access_token().await?;
-    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None)
-        .await
-}
-
-async fn save(master_pwd: &String, creds: &Credentials, keychain: bool) -> anyhow::Result<()> {
-    if store::has_logged_in() {
-        info!("saving to online vault");
-        push_one_credential(master_pwd, &creds).await?;
-    } else {
-        info!("saving to local file");
-        store::save(master_pwd, creds);
-    }
-    if keychain {
-        keychain::save(&creds).expect("Unable to store credentials to keychain");
-    }
-    println!("Saved.");
-    Ok(())
-}
-
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
-    let token = get_access_token().await?;
+    let token = actions::get_access_token().await?;
     let credentials = store::read_from_csv(file_path)?;
     online_vault::push_credentials(
         &token.access_token,
@@ -338,7 +243,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
     let use_vault = store::has_logged_in();
     if matches.len() == 1 {
         if use_vault {
-            let token = get_access_token().await?;
+            let token = actions::get_access_token().await?;
             online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
         } else {
             store::delete(&&vec![matches[0].clone()]);
@@ -358,7 +263,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
                 if index == usize::MAX {
                     // delete all
                     if use_vault {
-                        let token = get_access_token().await?;
+                        let token = actions::get_access_token().await?;
                         online_vault::delete_credentials(&token.access_token, grep, None).await?;            
                     } else {
                         store::delete(&matches);
@@ -371,7 +276,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
                 } else {
                     // delete selected index
                     if use_vault {
-                        let token = get_access_token().await?;
+                        let token = actions::get_access_token().await?;
                         online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
                     } else {
                         store::delete(&vec![matches[index].clone()]);
@@ -393,7 +298,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
 async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
-        let token = get_access_token().await?;
+        let token = actions::get_access_token().await?;
         let count = online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
