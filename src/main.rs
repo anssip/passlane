@@ -96,11 +96,6 @@ async fn main() -> anyhow::Result<()> {
         Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
         Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
         Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
-        Some(("migrate", _)) => {
-            let pwd = ui::ask_master_password(None);
-            let count = store::migrate(&pwd)?;
-            println!("Migrated {} credentials", count);
-        }
         _ => {
             if env::args().len() == 1 {
                 let password = password::generate();
