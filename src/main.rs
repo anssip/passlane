@@ -2,12 +2,13 @@ extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
 use crate::auth::AccessTokens;
-use anyhow::{Context };
+use anyhow::Context;
 use clap::{arg, ArgAction, Command};
 
-use crate::password::Credentials;
 use crate::actions::Action;
+use crate::password::Credentials;
 
+mod actions;
 mod auth;
 mod graphql;
 mod keychain;
@@ -15,7 +16,6 @@ mod online_vault;
 mod password;
 mod store;
 mod ui;
-mod actions;
 use log::{debug, info};
 use std::env;
 use std::io;
@@ -79,7 +79,6 @@ fn cli() -> Command<'static> {
                 .about("Migrate from legacy local credential store to passlane version 1.0 format")
         )
 }
- 
 
 fn keychain_arg() -> clap::Arg<'static> {
     arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue)
@@ -95,14 +94,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("push", _)) => actions::PushAction {}.execute().await?,
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
         Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
-        Some(("delete", sub_matches)) => {
-            let grep = sub_matches.value_of("REGEXP").expect("required");
-            let keychain = *sub_matches
-                .get_one::<bool>("keychain")
-                .expect("defaulted to false by clap");
-        
-            delete(grep, keychain).await.context("failed to delete")?;
-        },
+        Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
         Some(("csv", sub_matches)) => {
             let file_path = sub_matches.value_of("FILE_PATH").expect("required");
 
@@ -110,17 +102,19 @@ async fn main() -> anyhow::Result<()> {
                 Err(message) => println!("Failed to import: {}", message),
                 Ok(count) => println!("Imported {} entries", count),
             }
-        },
+        }
         Some(("password", _)) => {
             let old_pwd = ui::ask_master_password("Enter current master password: ".into());
             let new_pwd = ui::ask_new_password();
-            let success = update_master_password(&old_pwd, &new_pwd).await.context("Failed to update master password")?;
+            let success = update_master_password(&old_pwd, &new_pwd)
+                .await
+                .context("Failed to update master password")?;
             if success {
                 println!("Password changed");
             } else {
                 println!("Failed to change master password");
             }
-        },
+        }
         Some(("keychain-push", _)) => {
             let master_pwd = ui::ask_master_password(None);
             let creds = store::get_all_credentials();
@@ -128,22 +122,24 @@ async fn main() -> anyhow::Result<()> {
                 Ok(len) => println!("Synced {} entries", len),
                 Err(message) => println!("Failed to sync: {}", message),
             }
-        },
+        }
         Some(("migrate", _)) => {
             let pwd = ui::ask_master_password(None);
             let count = store::migrate(&pwd)?;
             println!("Migrated {} credentials", count);
-        },
+        }
         _ => {
-            if env::args().len() == 1 { 
+            if env::args().len() == 1 {
                 let password = password::generate();
                 actions::copy_to_clipboard(&password);
                 println!("Password - also copied to clipboard: {}", password);
             } else {
                 let mut out = io::stdout();
-                cli().write_help(&mut out).expect("failed to write to stdout");
+                cli()
+                    .write_help(&mut out)
+                    .expect("failed to write to stdout");
             }
-        },
+        }
     }
     Ok(())
 }
@@ -172,74 +168,12 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
     }
 }
 
-async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
-    debug!("also deleting from keychain? {}", delete_from_keychain);
-    let matches = actions::find_matches(None, grep).await?;
-
-    if matches.len() == 0 {
-        debug!("no matches found to delete");
-        return Ok(());
-    }
-    let use_vault = store::has_logged_in();
-    if matches.len() == 1 {
-        if use_vault {
-            let token = actions::get_access_token().await?;
-            online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
-        } else {
-            store::delete(&&vec![matches[0].clone()]);
-        }
-        if delete_from_keychain {
-            keychain::delete(&matches[0]);
-        }
-        println!("Deleted credential for service '{}'", matches[0].service);
-    }
-    if matches.len() > 1 {
-        ui::show_as_table(&matches, false);
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
-            &matches,
-        ) {
-            Ok(index) => {
-                if index == usize::MAX {
-                    // delete all
-                    if use_vault {
-                        let token = actions::get_access_token().await?;
-                        online_vault::delete_credentials(&token.access_token, grep, None).await?;            
-                    } else {
-                        store::delete(&matches);
-                    }
-                    if delete_from_keychain {
-                        keychain::delete_all(&matches);
-                    }
-                    println!("Deleted all {} matches!", matches.len());
-                    
-                } else {
-                    // delete selected index
-                    if use_vault {
-                        let token = actions::get_access_token().await?;
-                        online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
-                    } else {
-                        store::delete(&vec![matches[index].clone()]);
-                    }
-                    if delete_from_keychain {
-                        keychain::delete(&matches[index]);
-                    }            
-                    println!("Deleted credentials of row {}!", index);
-                }
-            }
-            Err(message) => {
-                println!("{}", message);
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
         let token = actions::get_access_token().await?;
-        let count = online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
+        let count =
+            online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
     } else {

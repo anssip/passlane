@@ -248,3 +248,93 @@ impl Action for ShowAction {
         Ok(())
     }
 }
+
+pub struct DeleteAction {
+    pub grep: String,
+    pub keychain: bool,
+}
+
+impl DeleteAction {
+    pub fn new(matches: &ArgMatches) -> DeleteAction {
+        DeleteAction {
+            grep: matches.value_of("REGEXP").expect("required").to_string(),
+            keychain: *matches
+                .get_one::<bool>("keychain")
+                .expect("defaulted to false by clap"),
+        }
+    }
+}
+
+
+async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
+    debug!("also deleting from keychain? {}", delete_from_keychain);
+    let matches = find_matches(None, grep).await?;
+
+    if matches.len() == 0 {
+        debug!("no matches found to delete");
+        return Ok(());
+    }
+    let use_vault = store::has_logged_in();
+    if matches.len() == 1 {
+        if use_vault {
+            let token = get_access_token().await?;
+            online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
+        } else {
+            store::delete(&&vec![matches[0].clone()]);
+        }
+        if delete_from_keychain {
+            keychain::delete(&matches[0]);
+        }
+        println!("Deleted credential for service '{}'", matches[0].service);
+    }
+    if matches.len() > 1 {
+        ui::show_as_table(&matches, false);
+        match ui::ask_index(
+            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
+            &matches,
+        ) {
+            Ok(index) => {
+                if index == usize::MAX {
+                    // delete all
+                    if use_vault {
+                        let token = get_access_token().await?;
+                        online_vault::delete_credentials(&token.access_token, grep, None).await?;            
+                    } else {
+                        store::delete(&matches);
+                    }
+                    if delete_from_keychain {
+                        keychain::delete_all(&matches);
+                    }
+                    println!("Deleted all {} matches!", matches.len());
+                    
+                } else {
+                    // delete selected index
+                    if use_vault {
+                        let token = get_access_token().await?;
+                        online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
+                    } else {
+                        store::delete(&vec![matches[index].clone()]);
+                    }
+                    if delete_from_keychain {
+                        keychain::delete(&matches[index]);
+                    }            
+                    println!("Deleted credentials of row {}!", index);
+                }
+            }
+            Err(message) => {
+                println!("{}", message);
+            }
+        }
+    }
+    Ok(())
+}
+
+
+#[async_trait]
+impl Action for DeleteAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        delete(&self.grep, self.keychain).await?;
+        Ok(())
+    }
+}
+
