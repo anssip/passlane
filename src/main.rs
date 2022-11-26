@@ -98,9 +98,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
         _ => {
             if env::args().len() == 1 {
-                let password = password::generate();
-                actions::copy_to_clipboard(&password);
-                println!("Password - also copied to clipboard: {}", password);
+                actions::GeneratePasswordAction {}.execute().await?;
             } else {
                 let mut out = io::stdout();
                 cli()

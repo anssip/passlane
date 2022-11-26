@@ -432,3 +432,15 @@ impl Action for KeychainPushAction {
         Ok(())
     }
 }
+
+pub struct GeneratePasswordAction {}
+
+#[async_trait]
+impl Action for GeneratePasswordAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let password = password::generate();
+        copy_to_clipboard(&password);
+        println!("Password - also copied to clipboard: {}", password);
+        Ok(())
+    }
+}
