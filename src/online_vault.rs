@@ -2,6 +2,7 @@ use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
+use crate::graphql::queries::LockMutation;
 use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::UpdateMasterPasswordMutation;
 use crate::password::Credentials as CredentialsModel;
@@ -119,5 +120,16 @@ pub async fn update_master_password(
             update_master_password,
         }) => Ok(update_master_password),
         None => Ok(0),
+    }
+}
+
+pub async fn lock(access_token: &str, master_password: &str) -> anyhow::Result<bool> {
+    let response = graphql::run_lock_mutation(access_token, master_password).await;
+    if response.errors.is_some() {
+        bail!(format!("errors: {:?}", response));
+    }
+    match response.data {
+        Some(LockMutation { lock }) => Ok(lock),
+        None => bail!("Failed to lock the online vault"),
     }
 }

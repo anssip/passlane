@@ -179,9 +179,9 @@ Here are links to instructions for doing the CSV export:
 
 #### Encryption keys
 
-- [ ] Encryption key generation: Ask master password --> generate the encryption key (hash)
-  - [ ] Saving of the encryption key to Vault
-- [ ] A way to reset the encryption key: Destroys the encryption key, generates a new one and re-encrypts everything
+- [ ] lock command
+- [ ] unlock command
+
 - [ ] Use encryption key when saving new credentials
 - [ ] Queries: decrypt the credentials using the encryption key. Don't ask master passwords.
 - [ ] Logout

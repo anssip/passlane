@@ -444,3 +444,18 @@ impl Action for GeneratePasswordAction {
         Ok(())
     }
 }
+
+pub struct LockAction {}
+
+#[async_trait]
+impl Action for LockAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let token = get_access_token().await?;
+        let master_password = ui::ask_master_password(None);
+        match online_vault::lock(&token.access_token, &master_password).await {
+            Ok(_) => println!("Vault locked."),
+            Err(message) => println!("Failed to lock vault: {}", message)
+        }
+        Ok(())
+    }
+}

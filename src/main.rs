@@ -73,8 +73,8 @@ fn cli() -> Command<'static> {
                 .arg_required_else_help(true)
         )
         .subcommand(
-            Command::new("migrate")
-                .about("Migrate from legacy local credential store to passlane version 1.0 format")
+            Command::new("lock")
+                .about("Lock the vaults to prevent access to clear-text passwords")
         )
 }
 
@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
         Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
         Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
+        Some(("lock", _)) => actions::LockAction {}.execute().await?,
         _ => {
             if env::args().len() == 1 {
                 actions::GeneratePasswordAction {}.execute().await?;

@@ -60,6 +60,8 @@ input DeleteCredentialsIn {
 }
 
 type Mutation {
+  unlock(masterPassword: String!): String!
+  lock(masterPassword: String!): Boolean!
   addCredentials(input: AddCredentialsIn!): Credentials!
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
   addUser(user: UserIn!): User!
