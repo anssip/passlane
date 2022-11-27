@@ -9,6 +9,7 @@ type User {
   vaults: [Vault!]!
   created: Date!
   modified: Date
+  key: String
 }
 
 type Vault {

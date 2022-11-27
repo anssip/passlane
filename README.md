@@ -175,21 +175,21 @@ Here are links to instructions for doing the CSV export:
 
 ## Roadmap
 
-### 1.1
+### 2.0
 
 #### Encryption keys
 
-- [ ] lock command
-- [ ] unlock command
+- [x] lock command
+- [x] unlock command
 
 - [ ] Use encryption key when saving new credentials
-- [ ] Queries: decrypt the credentials using the encryption key. Don't ask master passwords.
-- [ ] Logout
+- [x] show: decrypt the credentials using the encryption key. Don't ask master passwords.
+- [ ] remove local storage
 - [ ] Vault migration
 
 - [ ] Export of vault contents
 
-### 2.0
+### 3.0
 
 - [ ] multiple vaults support
 - [ ] new vault items: payment cards, notes

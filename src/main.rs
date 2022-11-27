@@ -76,6 +76,10 @@ fn cli() -> Command<'static> {
             Command::new("lock")
                 .about("Lock the vaults to prevent access to clear-text passwords")
         )
+        .subcommand(
+            Command::new("unlock")
+                .about("Opens the vaults and grants access to clear-text passwords")
+        )
 }
 
 fn keychain_arg() -> clap::Arg<'static> {
@@ -97,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
         Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
         Some(("lock", _)) => actions::LockAction {}.execute().await?,
+        Some(("unlock", _)) => actions::UnlockAction {}.execute().await?,
         _ => {
             if env::args().len() == 1 {
                 actions::GeneratePasswordAction {}.execute().await?;

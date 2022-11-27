@@ -28,6 +28,7 @@ pub mod queries {
         pub last_name: String,
         pub modified: Option<Date>,
         pub vaults: Vec<Vault>,
+        pub key: Option<String>,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -146,7 +147,7 @@ pub mod queries {
     #[cynic(graphql_type = "Mutation", argument_struct = "UnlockMutationVariables")]
     pub struct UnlockMutation {
         #[arguments(master_password = args.master_password.clone())]
-        pub lock: bool,
+        pub unlock: String,
     }
 }
 
@@ -272,6 +273,27 @@ pub async fn run_lock_mutation(
     master_password: &str,
 ) -> cynic::GraphQlResponse<queries::LockMutation> {
     let operation = build_lock_mutation(master_password);
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_unlock_mutation(
+    master_password: &str,
+) -> cynic::Operation<'static, queries::UnlockMutation> {
+    use cynic::MutationBuilder;
+    use queries::{UnlockMutation, UnlockMutationVariables};
+
+    UnlockMutation::build(&UnlockMutationVariables {
+        master_password: String::from(master_password),
+    })
+}
+pub async fn run_unlock_mutation(
+    access_token: &str,
+    master_password: &str,
+) -> cynic::GraphQlResponse<queries::UnlockMutation> {
+    let operation = build_unlock_mutation(master_password);
     new_request(access_token)
         .run_graphql(operation)
         .await

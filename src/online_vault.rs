@@ -4,28 +4,32 @@ use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::LockMutation;
 use crate::graphql::queries::MeQuery;
+use crate::graphql::queries::UnlockMutation;
 use crate::graphql::queries::UpdateMasterPasswordMutation;
 use crate::password::Credentials as CredentialsModel;
 use anyhow::bail;
+use log::debug;
 
-pub async fn grep(
-    access_token: &str,
-    master_password: Option<&str>,
-    grep: &str,
-) -> anyhow::Result<Vec<CredentialsModel>> {
+pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<CredentialsModel>> {
     let response = graphql::run_me_query(access_token, grep).await;
     if response.errors.is_some() {
         bail!(format!("errors: {:?}", response));
     }
-    let vaults = match response.data {
-        Some(MeQuery { me }) => me.vaults,
+    let me = match response.data {
+        Some(MeQuery { me }) => me,
         _ => {
-            println!("No credentials found");
-            Vec::new()
+            bail!("User account not found. Did you sign up at https://passlanevault.com already?");
+        }
+    };
+    debug!("me: {:?}", me);
+    let encryption_key = match me.key {
+        Some(key) => key,
+        _ => {
+            bail!("Vault is locked. Run `passlane unlock` to unlock.");
         }
     };
     let result = &mut Vec::new();
-    for vault in vaults {
+    for vault in me.vaults {
         if let Some(credentials) = vault.credentials {
             for creds in credentials {
                 if let Some(cred) = creds {
@@ -35,11 +39,7 @@ pub async fn grep(
                         username: cred.username,
                         service: cred.service,
                     };
-                    result.push(if let Some(pwd) = master_password {
-                        model.decrypt(&pwd)
-                    } else {
-                        model
-                    })
+                    result.push(model.decrypt(&encryption_key));
                 }
             }
         }
@@ -130,6 +130,17 @@ pub async fn lock(access_token: &str, master_password: &str) -> anyhow::Result<b
     }
     match response.data {
         Some(LockMutation { lock }) => Ok(lock),
-        None => bail!("Failed to lock the online vault"),
+        None => bail!("Failed to lock the vault"),
+    }
+}
+
+pub async fn unlock(access_token: &str, master_password: &str) -> anyhow::Result<String> {
+    let response = graphql::run_unlock_mutation(access_token, master_password).await;
+    if response.errors.is_some() {
+        bail!(format!("errors: {:?}", response));
+    }
+    match response.data {
+        Some(UnlockMutation { unlock }) => Ok(unlock),
+        None => bail!("Failed to unlock the vault"),
     }
 }

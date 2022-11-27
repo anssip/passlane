@@ -202,17 +202,11 @@ impl ShowAction {
 }
 
 pub async fn find_matches(
-    master_pwd: Option<&str>,
     grep_value: &str,
 ) -> anyhow::Result<Vec<Credentials>> {
-    let matches = if store::has_logged_in() {
-        info!("searching from online vault");
-        let token = get_access_token().await?;
-        online_vault::grep(&token.access_token, master_pwd, &grep_value).await?
-    } else {
-        info!("searching from local file");
-        store::grep(master_pwd, grep_value)
-    };
+    info!("searching from online vault");
+    let token = get_access_token().await?;
+    let matches =  online_vault::grep(&token.access_token, &grep_value).await?;
     if matches.len() == 0 {
         println!("No matches found");
     }
@@ -222,8 +216,7 @@ pub async fn find_matches(
 #[async_trait]
 impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        let master_pwd = ui::ask_master_password(None);
-        let matches = find_matches(Some(&master_pwd), &self.grep).await?;
+        let matches = find_matches(&self.grep).await?;
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
             ui::show_as_table(&matches, self.verbose);
@@ -268,7 +261,7 @@ impl DeleteAction {
 
 async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
     debug!("also deleting from keychain? {}", delete_from_keychain);
-    let matches = find_matches(None, grep).await?;
+    let matches = find_matches(grep).await?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
@@ -455,6 +448,21 @@ impl Action for LockAction {
         match online_vault::lock(&token.access_token, &master_password).await {
             Ok(_) => println!("Vault locked."),
             Err(message) => println!("Failed to lock vault: {}", message)
+        }
+        Ok(())
+    }
+}
+
+pub struct UnlockAction {}
+
+#[async_trait]
+impl Action for UnlockAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let token = get_access_token().await?;
+        let master_password = ui::ask_master_password(None);
+        match online_vault::unlock(&token.access_token, &master_password).await {
+            Ok(_) => println!("Vault unlocked."),
+            Err(message) => println!("Failed to unlock vault: {}", message)
         }
         Ok(())
     }
