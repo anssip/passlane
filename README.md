@@ -162,11 +162,12 @@ Here are links to instructions for doing the CSV export:
 
 - [x] Use encryption key when saving new credentials
 - [x] show: decrypt the credentials using the encryption key. Don't ask master passwords.
-- [ ] remove local storage
+- [x] remove local storage
 - [x] remove keychain syncing
-- [ ] Vault migration
-
+- [x] let online vault check master passwords
 - [ ] Export of vault contents
+- [ ] Vault migration
+- [ ] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
 
 ### 3.0
 

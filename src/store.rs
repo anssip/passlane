@@ -1,6 +1,5 @@
 use crate::auth::AccessTokens;
 use crate::password::Credentials;
-use crate::ui::ask_password;
 use anyhow;
 use anyhow::bail;
 use chrono::Duration;
@@ -42,41 +41,12 @@ fn master_password_file_path() -> PathBuf {
     PathBuf::from(dir_path()).join(".master_pwd")
 }
 
-pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result<bool, String> {
-    let file_path = master_password_file_path();
-    let exists = Path::new(&file_path).exists();
-    if exists {
-        return verify_with_saved(file_path, master_pwd);
-    }
-    if store_if_new {
-        let retyped = ask_password("Re-enter master password: ");
-        if master_pwd.eq(&retyped) {
-            save_master_password(master_pwd);
-        } else {
-            return Err(String::from("Passwords did not match"));
-        }
-    }
-    Result::Ok(true)
-}
-
 pub fn save_master_password(master_pwd: &str) {
     let file_path = master_password_file_path();
     let mut file = File::create(file_path).expect("Cannot create master password file");
     let content = bcrypt::hash(master_pwd).unwrap();
     file.write_all(content.as_bytes())
         .expect("Unable write to master password file");
-}
-
-fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
-    let mut file = File::open(file_path).expect("Cannot open master password file");
-    let mut file_content = String::new();
-    file.read_to_string(&mut file_content)
-        .expect("Unable to read master password file");
-    if bcrypt::verify(master_pwd, &file_content) {
-        Result::Ok(true)
-    } else {
-        Err(String::from("Incorrect password"))
-    }
 }
 
 fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
