@@ -6,6 +6,7 @@ use crate::graphql::queries::LockMutation;
 use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::UnlockMutation;
 use crate::graphql::queries::UpdateMasterPasswordMutation;
+use crate::password::get_random_key;
 use crate::password::Credentials as CredentialsModel;
 use anyhow::bail;
 use log::debug;
@@ -56,11 +57,8 @@ pub async fn push_credentials(
     let credentials_in: Vec<CredentialsIn> = credentials
         .into_iter()
         .map(|c| CredentialsIn {
-            password_encrypted: String::from(&c.password),
-            iv: match &c.iv {
-                Some(iv) => String::from(iv),
-                None => panic!("No iv"),
-            },
+            password: String::from(&c.password),
+            iv: get_random_key(),
             service: String::from(&c.service),
             username: String::from(&c.username),
         })

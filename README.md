@@ -14,7 +14,6 @@ A lightning-fast password manager for the command line and for the Web. The data
 - Generate and save passwords
 - Full management features
 - Online storage with access from any device
-- Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
 
 ### Online Vault
@@ -68,7 +67,6 @@ SUBCOMMANDS:
     delete           Deletes one or more credentials by searching with the specified regular
                      expression.
     help             Print this message or the help of the given subcommand(s)
-    keychain-push    Pushes all credentials to the OS specific keychain.
     migrate          Migrate from legacy local credential store to passlane version 1.0 format
     login            Login to passlanevault.com
     password         Change the master password.
@@ -129,26 +127,6 @@ the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
-_or alternatively_
-
-- Let MacOS propose the saved password. It knows it because Passlane can also sync to the keychain. See below for mor info.
-
-### Syncing with the system Keychain
-
-Passlane uses the [keyring crate](https://crates.io/crates/keyring) to sync credentials to the operating system's keychain. Syncing should work on Linux, iOS, macOS, and Windows.
-
-Use option `add` command together with option `-k` to save the last generated password to the Passlane storage file _and_ to the keychain:
-
-```
-passlane add -k
-```
-
-To sync all Passlane stored options to the keychain use the `keychain-push` command:
-
-```
-passlane keychain-push
-```
-
 ### Migrating from 1Password, LastPass, Dashlane etc.
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
@@ -185,11 +163,13 @@ Here are links to instructions for doing the CSV export:
 - [x] Use encryption key when saving new credentials
 - [x] show: decrypt the credentials using the encryption key. Don't ask master passwords.
 - [ ] remove local storage
+- [x] remove keychain syncing
 - [ ] Vault migration
 
 - [ ] Export of vault contents
 
 ### 3.0
 
+- [ ] push to vault from keychain
 - [ ] multiple vaults support
 - [ ] new vault items: payment cards, notes

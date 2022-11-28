@@ -81,7 +81,7 @@ pub mod queries {
     #[derive(cynic::InputObject, Debug, Clone)]
     #[cynic(rename_all = "camelCase")]
     pub struct CredentialsIn {
-        pub password_encrypted: String,
+        pub password: String,
         pub iv: String,
         pub service: String,
         pub username: String,

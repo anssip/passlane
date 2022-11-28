@@ -5,10 +5,8 @@ use anyhow;
 use anyhow::bail;
 use chrono::Duration;
 use csv::ReaderBuilder;
-use csv::WriterBuilder;
 use log::debug;
 use pwhash::bcrypt;
-use regex::Regex;
 use std::fs::create_dir;
 use std::fs::rename;
 use std::fs::File;
@@ -38,24 +36,6 @@ fn access_token_path() -> PathBuf {
     let path = dir_path();
     let path = path.join(".access_token");
     path
-}
-
-pub fn save(master_password: &String, creds: &Credentials) {
-    let file_path = PathBuf::from(dir_path()).join(".store");
-    println!("path {:?}", file_path);
-    let exists = Path::new(&file_path).exists();
-    println!("exists? {}", exists);
-
-    let file = OpenOptions::new()
-        .create_new(!exists)
-        .write(true)
-        .append(true)
-        .open(file_path)
-        .unwrap();
-
-    let mut wtr = WriterBuilder::new().has_headers(!exists).from_writer(file);
-    wtr.serialize(creds.encrypt(master_password))
-        .expect("Unable to store credentials");
 }
 
 fn master_password_file_path() -> PathBuf {
@@ -130,31 +110,6 @@ pub fn update_master_password(old_password: &str, new_password: &str) -> bool {
     true
 }
 
-// TODO: refactor to two differvent functions: delete and delete_all
-pub fn delete(credentials_to_delete: &Vec<Credentials>) {
-    let creds = get_all_credentials();
-    let mut new_entries = Vec::new();
-    for credential in &creds {
-        match credentials_to_delete.into_iter().find(|c| credential.eq(c)) {
-            None => {
-                new_entries.push(credential);
-            }
-            Some(_) => (), // drop this
-        }
-    }
-    if new_entries.len() < creds.len() {
-        let path = PathBuf::from(dir_path()).join(".store_new");
-        let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
-
-        for creds in new_entries {
-            wtr.serialize(creds)
-                .expect("Unable to store credentials to temp file");
-        }
-        rename(dir_path().join(".store_new"), dir_path().join(".store"))
-            .expect("Unable to rename password file");
-    }
-}
-
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credentials>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
@@ -164,60 +119,6 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credentials>> {
         credentials.push(result?);
     }
     Ok(credentials.clone())
-}
-
-fn get_credentials_writer() -> csv::Writer<File> {
-    let (out_file, _, exists) = open_password_file(true);
-    WriterBuilder::new()
-        .has_headers(!exists)
-        .from_writer(out_file)
-}
-
-pub fn import_csv(file_path: &str, master_password: &String) -> anyhow::Result<i64> {
-    let mut wtr = get_credentials_writer();
-
-    let mut count = 0;
-    match read_from_csv(file_path) {
-        Ok(credentials) => {
-            for creds in credentials {
-                wtr.serialize(creds.encrypt(master_password))
-                    .expect("Unable to store credentials");
-                count += 1;
-            }
-        }
-        Err(message) => bail!(format!("Failed to read CSV: {}", message)),
-    }
-    Result::Ok(count)
-}
-
-pub fn get_all_credentials() -> Vec<Credentials> {
-    let file;
-    (file, ..) = open_password_file(false);
-    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
-    let mut credentials = Vec::new();
-    for result in reader.deserialize() {
-        match result {
-            Ok(deserialized) => credentials.push(deserialized),
-            Err(message) => println!("Failed to deserialize: {}", message),
-        }
-    }
-    credentials
-}
-
-pub fn grep(master_password: Option<&str>, search: &str) -> Vec<Credentials> {
-    let creds = get_all_credentials();
-    let mut matches = Vec::new();
-    for credential in creds {
-        let re = Regex::new(search).unwrap();
-        if re.is_match(&credential.service) {
-            if let Some(pwd) = master_password {
-                matches.push(credential.decrypt(&String::from(pwd)));
-            } else {
-                matches.push(credential);
-            }
-        }
-    }
-    matches
 }
 
 pub fn store_access_token(token: &AccessTokens) -> anyhow::Result<bool> {

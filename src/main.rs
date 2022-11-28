@@ -10,7 +10,6 @@ use crate::password::Credentials;
 mod actions;
 mod auth;
 mod graphql;
-mod keychain;
 mod online_vault;
 mod password;
 mod store;
@@ -33,10 +32,6 @@ fn cli() -> Command<'static> {
                 .about("Change the master password.")
         )
         .subcommand(
-            Command::new("push")
-                .about("Pushes all local credentials to the online vault.")
-        )
-        .subcommand(
             Command::new("add")
                 .about("Adds a new credential to the vault.")
                 .arg(arg!(
@@ -45,7 +40,6 @@ fn cli() -> Command<'static> {
                 .arg(arg!(
                     -c --clipboard "Get the password to save from the clipboard."
                 ).action(ArgAction::SetTrue))
-                .arg(keychain_arg())
         )
         .subcommand(
             Command::new("csv")
@@ -53,14 +47,9 @@ fn cli() -> Command<'static> {
                 .arg(arg!(<FILE_PATH> "The the CSV file to import."))
         )
         .subcommand(
-            Command::new("keychain-push")
-                .about("Pushes all credentials to the OS specific keychain.")
-        )
-        .subcommand(
             Command::new("delete")
                 .about("Deletes one or more credentials by searching with the specified regular expression.")
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete."))
-                .arg(keychain_arg())
                 .arg_required_else_help(true)
         )
         .subcommand(
@@ -82,10 +71,6 @@ fn cli() -> Command<'static> {
         )
 }
 
-fn keychain_arg() -> clap::Arg<'static> {
-    arg!(-k --keychain "Adds also to OS keychain").action(ArgAction::SetTrue)
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -93,13 +78,11 @@ async fn main() -> anyhow::Result<()> {
 
     match matches.subcommand() {
         Some(("login", _)) => actions::LoginAction::new().execute().await?,
-        Some(("push", _)) => actions::PushAction {}.execute().await?,
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
         Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
         Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
         Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
         Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
-        Some(("keychain-push", _)) => actions::KeychainPushAction {}.execute().await?,
         Some(("lock", _)) => actions::LockAction {}.execute().await?,
         Some(("unlock", _)) => actions::UnlockAction {}.execute().await?,
         _ => {

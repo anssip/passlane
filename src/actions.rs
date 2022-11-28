@@ -5,7 +5,6 @@ use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
 
 use crate::auth;
-use crate::keychain;
 use crate::online_vault;
 use crate::password;
 use crate::store;
@@ -42,11 +41,10 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
 }
 
 async fn push_one_credential(
-    master_pwd: &String,
     credentials: &Credentials,
 ) -> anyhow::Result<i32> {
     let token = get_access_token().await?;
-    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(master_pwd), None)
+    online_vault::push_one_credential(&token.access_token, &credentials, None)
         .await
 }
 
@@ -91,7 +89,6 @@ impl Action for LoginAction {
 }
 
 pub struct AddAction {
-    pub keychain: bool,
     pub generate: bool,
     pub clipboard: bool,
 }
@@ -99,9 +96,6 @@ pub struct AddAction {
 impl AddAction {
     pub fn new(matches: &ArgMatches) -> AddAction {
         AddAction {
-            keychain: *matches
-                .get_one::<bool>("keychain")
-                .expect("defaulted to false by clap"),
             generate: *matches
                 .get_one::<bool>("generate")
                 .expect("defaulted to false by clap"),
@@ -129,17 +123,9 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    async fn save(&self, master_pwd: &String, creds: &Credentials) -> anyhow::Result<()> {
-        if store::has_logged_in() {
-            info!("saving to online vault");
-            push_one_credential(master_pwd, &creds).await?;
-        } else {
-            info!("saving to local file");
-            store::save(master_pwd, creds);
-        }
-        if self.keychain {
-            keychain::save(&creds).expect("Unable to store credentials to keychain");
-        }
+    async fn save(&self, creds: &Credentials) -> anyhow::Result<()> {
+        info!("saving to online vault");
+        push_one_credential(&creds).await?;
         println!("Saved.");
         Ok(())
     }
@@ -154,32 +140,12 @@ impl Action for AddAction {
         ))?;
 
         let creds = ui::ask_credentials(&password);
-        let master_pwd = ui::ask_master_password(None);
-        self.save(&master_pwd, &creds)
+        self.save(&creds)
             .await
             .context("failed to save")?;
         if !self.clipboard {
             copy_to_clipboard(&password);
             println!("Password - also copied to clipboard: {}", password);
-        };
-        Ok(())
-    }
-}
-
-pub struct PushAction {}
-
-async fn push_credentials() -> anyhow::Result<i32> {
-    let token = get_access_token().await?;
-    let credentials = store::get_all_credentials();
-    online_vault::push_credentials(&token.access_token, &credentials, None).await
-}
-
-#[async_trait]
-impl Action for PushAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        match push_credentials().await {
-            Ok(num) => println!("Pushed {} credentials online", num),
-            Err(message) => println!("Push failed: {}", message),
         };
         Ok(())
     }
@@ -244,40 +210,27 @@ impl Action for ShowAction {
 
 pub struct DeleteAction {
     pub grep: String,
-    pub keychain: bool,
 }
 
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
             grep: matches.value_of("REGEXP").expect("required").to_string(),
-            keychain: *matches
-                .get_one::<bool>("keychain")
-                .expect("defaulted to false by clap"),
         }
     }
 }
 
 
-async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
-    debug!("also deleting from keychain? {}", delete_from_keychain);
+async fn delete(grep: &str) -> anyhow::Result<()> {
     let matches = find_matches(grep).await?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
         return Ok(());
     }
-    let use_vault = store::has_logged_in();
     if matches.len() == 1 {
-        if use_vault {
-            let token = get_access_token().await?;
-            online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
-        } else {
-            store::delete(&&vec![matches[0].clone()]);
-        }
-        if delete_from_keychain {
-            keychain::delete(&matches[0]);
-        }
+        let token = get_access_token().await?;
+        online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
         println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
@@ -288,29 +241,13 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    // delete all
-                    if use_vault {
-                        let token = get_access_token().await?;
-                        online_vault::delete_credentials(&token.access_token, grep, None).await?;            
-                    } else {
-                        store::delete(&matches);
-                    }
-                    if delete_from_keychain {
-                        keychain::delete_all(&matches);
-                    }
+                    let token = get_access_token().await?;
+                    online_vault::delete_credentials(&token.access_token, grep, None).await?;            
                     println!("Deleted all {} matches!", matches.len());
                     
                 } else {
-                    // delete selected index
-                    if use_vault {
-                        let token = get_access_token().await?;
-                        online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
-                    } else {
-                        store::delete(&vec![matches[index].clone()]);
-                    }
-                    if delete_from_keychain {
-                        keychain::delete(&matches[index]);
-                    }            
+                    let token = get_access_token().await?;
+                    online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
                     println!("Deleted credentials of row {}!", index);
                 }
             }
@@ -326,7 +263,7 @@ async fn delete(grep: &str, delete_from_keychain: bool) -> anyhow::Result<()> {
 #[async_trait]
 impl Action for DeleteAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        delete(&self.grep, self.keychain).await?;
+        delete(&self.grep).await?;
         Ok(())
     }
 }
@@ -345,13 +282,8 @@ impl ImportCsvAction {
 
 async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
     let master_pwd = ui::ask_master_password(None);
-    if store::has_logged_in() {
-        info!("importing to the online vault");
-        push_from_csv(&master_pwd, file_path).await
-    } else {
-        info!("importing to local file");
-        store::import_csv(file_path, &master_pwd)
-    }
+    info!("importing to the online vault");
+    push_from_csv(&master_pwd, file_path).await
 }
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
@@ -406,21 +338,6 @@ impl Action for UpdateMasterPasswordAction {
             println!("Password changed");
         } else {
             println!("Failed to change master password");
-        }
-        Ok(())
-    }
-}
-
-pub struct KeychainPushAction {}
-
-#[async_trait]
-impl Action for KeychainPushAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        let master_pwd = ui::ask_master_password(None);
-        let creds = store::get_all_credentials();
-        match keychain::save_all(&creds, &master_pwd) {
-            Ok(len) => println!("Synced {} entries", len),
-            Err(message) => println!("Failed to sync: {}", message),
         }
         Ok(())
     }
