@@ -182,7 +182,7 @@ Here are links to instructions for doing the CSV export:
 - [x] lock command
 - [x] unlock command
 
-- [ ] Use encryption key when saving new credentials
+- [x] Use encryption key when saving new credentials
 - [x] show: decrypt the credentials using the encryption key. Don't ask master passwords.
 - [ ] remove local storage
 - [ ] Vault migration
