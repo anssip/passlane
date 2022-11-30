@@ -14,33 +14,13 @@ A lightning-fast password manager for the command line and for the Web. The data
 - Generate and save passwords
 - Full management features
 - Online storage with access from any device
-- Sync the generated password to OS specific keychains, including Mac's iCloud Keychain
 - Import passwords from CSV files
-
-### Online Vault
-
-You can use Passlane in two different modes:
-
-1. As a standalone CLI tool that stores the credentials on your local disk.
-2. Use the **Passlane Vault** as storage, and have the credentials safely available in all your devices and computers.
-
-The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to decrypt the password values and never sent to our servers.
-
-If you want to take advantage of the Passlane Vault, head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
-
-```bash
-passlane login
-```
-
-to connect the CLI with the vault.
 
 ## Installation
 
 1. Download the [latest release](https://github.com/anssip/passlane/releases)
 2. Unpack the archive
 3. Place the unarchived binary `passlane` to your $PATH
-4. Enjoy!
-5. Optionally sign up in passlanevault.com to enable online storage and have the credentials data available to all your devices.
 
 ### To compile from sources
 
@@ -48,6 +28,18 @@ to connect the CLI with the vault.
 2. Clone this repo
 3. Build `cargo build --release`
 4. Add the built `passlane` binary to your `$PATH`
+
+### Create an account
+
+The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted. If you lock your vault (see below), nobody, including the author of this tool, can access the passwords.
+
+Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
+
+```bash
+passlane login
+```
+
+to connect the CLI with the vault. The login will stay active for several days and the OAuth token will get automatically refreshed if it expires. Use the `lock` and `unlock` commands to open and close access to the vault contents after you havew logged in.
 
 ## Usage
 
@@ -63,18 +55,31 @@ OPTIONS:
     -h, --help    Print help information
 
 SUBCOMMANDS:
-    add              Adds a new credential to the vault.
-    csv              Imports credentials from a CSV file.
-    delete           Deletes one or more credentials by searching with the specified regular
-                     expression.
-    help             Print this message or the help of the given subcommand(s)
-    keychain-push    Pushes all credentials to the OS specific keychain.
-    migrate          Migrate from legacy local credential store to passlane version 1.0 format
-    login            Login to passlanevault.com
-    password         Change the master password.
-    push             Pushes all local credentials to the online vault.
-    show             Shows one or more credentials by searching with the specified regular
-                     expression.
+    add         Adds a new credential to the vault.
+    csv         Imports credentials from a CSV file.
+    delete      Deletes one or more credentials by searching with the specified regular
+                    expression.
+    help        Print this message or the help of the given subcommand(s)
+    lock        Lock the vaults to prevent access to clear-text passwords
+    login       Login to passlanevault.com
+    password    Change the master password.
+    show        Shows one or more credentials by searching with the specified regular
+                    expression.
+    unlock      Opens the vaults and grants access to clear-text passwords
+```
+
+### Locking and unlocking
+
+Before accessing your passwords you should unlock:
+
+```
+passlane unlock
+```
+
+At the end of the session, lock the vaults and nobody can access the data.
+
+```
+passlane lock
 ```
 
 ### Generating and saving passwords
@@ -129,26 +134,6 @@ the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
-_or alternatively_
-
-- Let MacOS propose the saved password. It knows it because Passlane can also sync to the keychain. See below for mor info.
-
-### Syncing with the system Keychain
-
-Passlane uses the [keyring crate](https://crates.io/crates/keyring) to sync credentials to the operating system's keychain. Syncing should work on Linux, iOS, macOS, and Windows.
-
-Use option `add` command together with option `-k` to save the last generated password to the Passlane storage file _and_ to the keychain:
-
-```
-passlane add -k
-```
-
-To sync all Passlane stored options to the keychain use the `keychain-push` command:
-
-```
-passlane keychain-push
-```
-
 ### Migrating from 1Password, LastPass, Dashlane etc.
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
@@ -175,21 +160,24 @@ Here are links to instructions for doing the CSV export:
 
 ## Roadmap
 
-### 1.1
+### 2.0
 
 #### Encryption keys
 
-- [ ] Encryption key generation: Ask master password --> generate the encryption key (hash)
-  - [ ] Saving of the encryption key to Vault
-- [ ] A way to reset the encryption key: Destroys the encryption key, generates a new one and re-encrypts everything
-- [ ] Use encryption key when saving new credentials
-- [ ] Queries: decrypt the credentials using the encryption key. Don't ask master passwords.
-- [ ] Logout
-- [ ] Vault migration
+- [x] lock command
+- [x] unlock command
+
+- [x] Use encryption key when saving new credentials
+- [x] show: decrypt the credentials using the encryption key. Don't ask master passwords.
+- [x] remove local storage
+- [x] remove keychain syncing
+- [x] let online vault check master passwords
+- [x] Vault migration
+- [ ] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
+
+### 3.0
 
 - [ ] Export of vault contents
-
-### 2.0
-
+- [ ] push to vault from keychain
 - [ ] multiple vaults support
 - [ ] new vault items: payment cards, notes

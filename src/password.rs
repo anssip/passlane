@@ -105,7 +105,7 @@ fn append(to: &String, charset: &String) -> String {
     result
 }
 
-fn get_random_key() -> String {
+pub fn get_random_key() -> String {
     let mut arr = [0u8; 8];
     thread_rng()
         .try_fill(&mut arr[..])

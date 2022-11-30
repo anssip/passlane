@@ -3,7 +3,6 @@ use std::io;
 use std::io::Write;
 
 use crate::password::Credentials;
-use crate::store;
 use anyhow::bail;
 use std::cmp::min;
 use webbrowser;
@@ -45,17 +44,10 @@ pub fn ask_new_password() -> String {
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
-    let master_pwd = if let Some(q) = question {
+    if let Some(q) = question {
         ask_password(q)
     } else {
         ask_password("Please enter master password: ")
-    };
-    match store::verify_master_password(&master_pwd, true) {
-        Ok(_) => master_pwd,
-        Err(message) => {
-            println!("{}", message);
-            std::process::exit(1);
-        }
     }
 }
 
