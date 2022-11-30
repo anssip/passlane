@@ -116,7 +116,6 @@ If the search finds more than one matches:
 
 ```bash
 $ passlane show google.com
-Please enter master password: *********
 Found 9 matches:
 +---+--------------------------------+------------------------------------+
 |   | Service                        | Username/email                     |
