@@ -39,7 +39,7 @@ Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **
 passlane login
 ```
 
-to connect the CLI with the vault. The login will stay active for several days and the OAuth token will get automatically refreshed if it expires. Use the `lock` and `unlock` commands to open and close access to the vault contents after you havew logged in.
+to connect the CLI with the vault. The connection will stay active after that. Use the `lock` and `unlock` commands to open and close access to the vault contents after you have logged in.
 
 ## Usage
 
