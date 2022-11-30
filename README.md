@@ -16,30 +16,11 @@ A lightning-fast password manager for the command line and for the Web. The data
 - Online storage with access from any device
 - Import passwords from CSV files
 
-### Online Vault
-
-You can use Passlane in two different modes:
-
-1. As a standalone CLI tool that stores the credentials on your local disk.
-2. Use the **Passlane Vault** as storage, and have the credentials safely available in all your devices and computers.
-
-The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted and the _master password_ is not stored on our servers. The master password is only used locally to decrypt the password values and never sent to our servers.
-
-If you want to take advantage of the Passlane Vault, head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
-
-```bash
-passlane login
-```
-
-to connect the CLI with the vault.
-
 ## Installation
 
 1. Download the [latest release](https://github.com/anssip/passlane/releases)
 2. Unpack the archive
 3. Place the unarchived binary `passlane` to your $PATH
-4. Enjoy!
-5. Optionally sign up in passlanevault.com to enable online storage and have the credentials data available to all your devices.
 
 ### To compile from sources
 
@@ -47,6 +28,18 @@ to connect the CLI with the vault.
 2. Clone this repo
 3. Build `cargo build --release`
 4. Add the built `passlane` binary to your `$PATH`
+
+### Create an account
+
+The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted. If you lock your vault (see below), nobody, including the author of this tool, can access the passwords.
+
+Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
+
+```bash
+passlane login
+```
+
+to connect the CLI with the vault. The login will stay active for several days and the OAuth token will get automatically refreshed if it expires. Use the `lock` and `unlock` commands to open and close access to the vault contents after you havew logged in.
 
 ## Usage
 
@@ -62,17 +55,31 @@ OPTIONS:
     -h, --help    Print help information
 
 SUBCOMMANDS:
-    add              Adds a new credential to the vault.
-    csv              Imports credentials from a CSV file.
-    delete           Deletes one or more credentials by searching with the specified regular
-                     expression.
-    help             Print this message or the help of the given subcommand(s)
-    migrate          Migrate from legacy local credential store to passlane version 1.0 format
-    login            Login to passlanevault.com
-    password         Change the master password.
-    push             Pushes all local credentials to the online vault.
-    show             Shows one or more credentials by searching with the specified regular
-                     expression.
+    add         Adds a new credential to the vault.
+    csv         Imports credentials from a CSV file.
+    delete      Deletes one or more credentials by searching with the specified regular
+                    expression.
+    help        Print this message or the help of the given subcommand(s)
+    lock        Lock the vaults to prevent access to clear-text passwords
+    login       Login to passlanevault.com
+    password    Change the master password.
+    show        Shows one or more credentials by searching with the specified regular
+                    expression.
+    unlock      Opens the vaults and grants access to clear-text passwords
+```
+
+### Locking and unlocking
+
+Before accessing your passwords you should unlock:
+
+```
+passlane unlock
+```
+
+At the end of the session, lock the vaults and nobody can access the data.
+
+```
+passlane lock
 ```
 
 ### Generating and saving passwords
@@ -165,12 +172,12 @@ Here are links to instructions for doing the CSV export:
 - [x] remove local storage
 - [x] remove keychain syncing
 - [x] let online vault check master passwords
-- [ ] Export of vault contents
-- [ ] Vault migration
+- [x] Vault migration
 - [ ] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
 
 ### 3.0
 
+- [ ] Export of vault contents
 - [ ] push to vault from keychain
 - [ ] multiple vaults support
 - [ ] new vault items: payment cards, notes

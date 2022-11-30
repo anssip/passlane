@@ -30,7 +30,7 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
             }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                let token = auth::login()?;
+                let token = task::spawn_blocking(move || auth::login()).await??;
                 store::store_access_token(&token)?;
                 Ok(token)
             }

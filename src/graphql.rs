@@ -1,7 +1,8 @@
 use cynic::http::ReqwestExt;
 use reqwest::header;
 
-const API_ENDPOINT: &str = "https://passlanevault-dev.fly.dev/api/graphql";
+//const API_ENDPOINT: &str = "http://localhost:3000/api/graphql";
+const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
 
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod queries {
