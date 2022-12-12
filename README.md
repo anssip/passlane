@@ -31,7 +31,9 @@ A lightning-fast password manager for the command line and for the Web. The data
 
 ### Create an account
 
-The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted. If you lock your vault (see below), nobody, including the author of this tool, can access the passwords.
+The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted.
+
+The encryption keys are stored on your own device and nobody else can access the encrypted data in the vault. This is because only you have access to the encryptin key.
 
 Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
 
