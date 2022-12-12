@@ -3,7 +3,7 @@ use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::MeQuery;
-use crate::graphql::queries::UpdateMasterPasswordMutation;
+use crate::graphql::queries::MigrateMutation;
 use crate::graphql::queries::User;
 use crate::password::Credentials as CredentialsModel;
 use crate::store::get_encryption_key;
@@ -86,18 +86,10 @@ pub async fn delete_credentials(
     }
 }
 
-pub async fn update_master_password(
-    access_token: &str,
-    old_password: &str,
-    new_password: &str,
-) -> anyhow::Result<i32> {
-    let response =
-        graphql::run_update_master_password_mutation(access_token, old_password, new_password)
-            .await;
+pub async fn migrate(access_token: &str, old_key: &str, new_key: &str) -> anyhow::Result<i32> {
+    let response = graphql::run_migrate_mutation(access_token, old_key, new_key).await;
     match response.data {
-        Some(UpdateMasterPasswordMutation {
-            update_master_password,
-        }) => Ok(update_master_password),
+        Some(MigrateMutation { migrate }) => Ok(migrate),
         None => bail!(check_response_errors(response)),
     }
 }

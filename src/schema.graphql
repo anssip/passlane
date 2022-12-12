@@ -64,7 +64,7 @@ type Mutation {
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
   addUser(user: UserIn!): User!
   deleteCredentials(input: DeleteCredentialsIn!): Int!
-  updateMasterPassword(oldPassword: String!, newPassword: String!): Int!
+  migrate(oldKey: String!, newKey: String!): Int!
 }
 
 type Query {

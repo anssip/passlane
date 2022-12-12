@@ -1,3 +1,5 @@
+use crate::password::derive_encryption_key;
+use crate::online_vault::get_me;
 use crate::store::get_encryption_key;
 use crate::store::delete_encryption_key;
 use crate::AccessTokens;
@@ -19,7 +21,7 @@ use tokio::task;
 pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
     debug!("get_access_token()");
     if !store::has_logged_in() {
-        bail!("You are not logged in to the Passlane Online Vault. Please run `passlane -l` to login (or signup) first.");
+        bail!("You are not logged in to the Passlane Online Vault. Please run `passlane login` to login (or signup) first.");
     }
     let token = store::get_access_token()?;
     debug!("Token expired? {}", token.is_expired());
@@ -317,13 +319,17 @@ impl Action for ImportCsvAction {
 
 pub struct UpdateMasterPasswordAction { }
 
-// TODO: change to pass in old key & new key
-async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
+async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
         let token = get_access_token().await?;
+        let me = get_me(&token.access_token).await?;
+        let salt = me.get_salt();
+        let old_key = derive_encryption_key(&old_pwd, &salt);
+        let new_key = derive_encryption_key(&new_pwd, &salt);
+
         let count =
-            online_vault::update_master_password(&token.access_token, old_pwd, new_pwd).await?;
+            online_vault::migrate(&token.access_token, &old_key, &new_key).await?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
     } else {
@@ -337,7 +343,9 @@ impl Action for UpdateMasterPasswordAction {
     async fn execute(&self) -> anyhow::Result<()> {
         let old_pwd = ui::ask_master_password("Enter current master password: ".into());
         let new_pwd = ui::ask_new_password();
-        let success = update_master_password(&old_pwd, &new_pwd)
+
+
+        let success = migrate(&old_pwd, &new_pwd)
             .await
             .context("Failed to update master password")?;
         if success {

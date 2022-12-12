@@ -2,7 +2,7 @@ use cynic::http::ReqwestExt;
 use reqwest::header;
 
 //const API_ENDPOINT: &str = "http://localhost:3000/api/graphql";
-const API_ENDPOINT: &str = "https://passlanevault-dev.fly.dev/api/graphql";
+const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
 
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod queries {
@@ -36,10 +36,14 @@ pub mod queries {
     }
 
     impl User {
+        pub fn get_salt(&self) -> String {
+            format!("{}-{}", self.id, self.created).replace(":", "")
+        }
+
         pub fn get_encryption_key(&self, master_pwd: &str) -> String {
             debug!("created: {}", self.created.to_string());
 
-            let salt = format!("{}-{}", self.id, self.created).replace(":", "");
+            let salt = self.get_salt();
             debug!("salt: {}", salt);
 
             let encryption_key = derive_encryption_key(&salt, master_pwd);
@@ -136,19 +140,19 @@ pub mod queries {
     }
 
     #[derive(cynic::FragmentArguments, Debug)]
-    pub struct UpdateMasterPasswordMutationVariables {
-        pub new_password: String,
-        pub old_password: String,
+    pub struct MigrateMutationVariables {
+        pub new_key: String,
+        pub old_key: String,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
         graphql_type = "Mutation",
-        argument_struct = "UpdateMasterPasswordMutationVariables"
+        argument_struct = "MigrateMutationVariables"
     )]
-    pub struct UpdateMasterPasswordMutation {
-        #[arguments(new_password = args.new_password.clone(), old_password = args.old_password.clone())]
-        pub update_master_password: i32,
+    pub struct MigrateMutation {
+        #[arguments(new_key = args.new_key.clone(), old_key = args.old_key.clone())]
+        pub migrate: i32,
     }
 }
 
@@ -233,27 +237,27 @@ fn build_delete_credentials_mutation(
     })
 }
 
-pub async fn run_update_master_password_mutation(
+pub async fn run_migrate_mutation(
     access_token: &str,
-    old_password: &str,
-    new_password: &str,
-) -> cynic::GraphQlResponse<queries::UpdateMasterPasswordMutation> {
-    let operation = build_update_master_password_mutation(old_password, new_password);
+    old_key: &str,
+    new_key: &str,
+) -> cynic::GraphQlResponse<queries::MigrateMutation> {
+    let operation = build_migrate_mutation(old_key, new_key);
     new_request(access_token)
         .run_graphql(operation)
         .await
         .unwrap()
 }
 
-fn build_update_master_password_mutation(
-    old_password: &str,
-    new_password: &str,
-) -> cynic::Operation<'static, queries::UpdateMasterPasswordMutation> {
+fn build_migrate_mutation(
+    old_key: &str,
+    new_key: &str,
+) -> cynic::Operation<'static, queries::MigrateMutation> {
     use cynic::MutationBuilder;
-    use queries::{UpdateMasterPasswordMutation, UpdateMasterPasswordMutationVariables};
+    use queries::{MigrateMutation, MigrateMutationVariables};
 
-    UpdateMasterPasswordMutation::build(&UpdateMasterPasswordMutationVariables {
-        old_password: String::from(old_password),
-        new_password: String::from(new_password),
+    MigrateMutation::build(&MigrateMutationVariables {
+        old_key: String::from(old_key),
+        new_key: String::from(new_key),
     })
 }
