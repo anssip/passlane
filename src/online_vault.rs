@@ -2,28 +2,23 @@ use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
-use crate::graphql::queries::LockMutation;
 use crate::graphql::queries::MeQuery;
-use crate::graphql::queries::UnlockMutation;
 use crate::graphql::queries::UpdateMasterPasswordMutation;
-use crate::password::get_random_key;
+use crate::graphql::queries::User;
 use crate::password::Credentials as CredentialsModel;
+use crate::store::get_encryption_key;
 use anyhow::bail;
 use log::debug;
 
 pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<CredentialsModel>> {
-    let response = graphql::run_me_query(access_token, grep).await;
+    let response = graphql::run_me_query(access_token, Some(grep.to_string())).await;
     let me = match response.data {
         Some(MeQuery { me }) => me,
         None => bail!(check_response_errors(response)),
     };
     debug!("me: {:?}", me);
-    let encryption_key = match me.key {
-        Some(key) => key,
-        _ => {
-            bail!("Vault is locked. Run `passlane unlock` to unlock.");
-        }
-    };
+    let encryption_key = get_encryption_key()?;
+
     let result = &mut Vec::new();
     for vault in me.vaults {
         if let Some(credentials) = vault.credentials {
@@ -52,8 +47,8 @@ pub async fn push_credentials(
     let credentials_in: Vec<CredentialsIn> = credentials
         .into_iter()
         .map(|c| CredentialsIn {
-            password: String::from(&c.password),
-            iv: get_random_key(),
+            password_encrypted: String::from(&c.password),
+            iv: String::from(c.iv.as_ref().unwrap()),
             service: String::from(&c.service),
             username: String::from(&c.username),
         })
@@ -107,22 +102,6 @@ pub async fn update_master_password(
     }
 }
 
-pub async fn lock(access_token: &str, master_password: &str) -> anyhow::Result<bool> {
-    let response = graphql::run_lock_mutation(access_token, master_password).await;
-    match response.data {
-        Some(LockMutation { lock }) => Ok(lock),
-        None => bail!(check_response_errors(response)),
-    }
-}
-
-pub async fn unlock(access_token: &str, master_password: &str) -> anyhow::Result<String> {
-    let response = graphql::run_unlock_mutation(access_token, master_password).await;
-    match response.data {
-        Some(UnlockMutation { unlock }) => Ok(unlock),
-        None => bail!(check_response_errors(response)),
-    }
-}
-
 fn check_response_errors<T>(response: cynic::GraphQlResponse<T>) -> String {
     match response.errors {
         Some(errors) => {
@@ -130,5 +109,13 @@ fn check_response_errors<T>(response: cynic::GraphQlResponse<T>) -> String {
             errors[0].message.to_string()
         }
         None => "".to_string(),
+    }
+}
+
+pub async fn get_me(access_token: &str) -> anyhow::Result<User> {
+    let response = graphql::run_me_query(access_token, None).await;
+    match response.data {
+        Some(MeQuery { me }) => Ok(me),
+        None => bail!(check_response_errors(response)),
     }
 }

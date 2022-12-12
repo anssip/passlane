@@ -9,7 +9,6 @@ type User {
   vaults: [Vault!]!
   created: Date!
   modified: Date
-  key: String
 }
 
 type Vault {
@@ -35,7 +34,7 @@ input CredentialsIn {
   service: String!
   username: String!
   iv: String!
-  password: String!
+  passwordEncrypted: String!
 }
 
 input UserIn {
@@ -61,8 +60,6 @@ input DeleteCredentialsIn {
 }
 
 type Mutation {
-  unlock(masterPassword: String!): String!
-  lock(masterPassword: String!): Boolean!
   addCredentials(input: AddCredentialsIn!): Credentials!
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
   addUser(user: UserIn!): User!

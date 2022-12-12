@@ -2,11 +2,15 @@ use cynic::http::ReqwestExt;
 use reqwest::header;
 
 //const API_ENDPOINT: &str = "http://localhost:3000/api/graphql";
-const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
+const API_ENDPOINT: &str = "https://passlanevault-dev.fly.dev/api/graphql";
 
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod queries {
     use super::schema;
+    use crate::password::derive_encryption_key;
+    use core::fmt::Display;
+    use core::fmt::Formatter;
+    use log::debug;
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct CredentialsQueryVariables {
         pub grep: Option<String>,
@@ -29,7 +33,19 @@ pub mod queries {
         pub last_name: String,
         pub modified: Option<Date>,
         pub vaults: Vec<Vault>,
-        pub key: Option<String>,
+    }
+
+    impl User {
+        pub fn get_encryption_key(&self, master_pwd: &str) -> String {
+            debug!("created: {}", self.created.to_string());
+
+            let salt = format!("{}-{}", self.id, self.created).replace(":", "");
+            debug!("salt: {}", salt);
+
+            let encryption_key = derive_encryption_key(&salt, master_pwd);
+            debug!("encryption_key: {}", encryption_key);
+            encryption_key
+        }
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -55,6 +71,12 @@ pub mod queries {
 
     #[derive(cynic::Scalar, Debug, Clone)]
     pub struct Date(pub String);
+
+    impl Display for Date {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
 
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct AddGredentialsGroupMutationVariables {
@@ -82,7 +104,7 @@ pub mod queries {
     #[derive(cynic::InputObject, Debug, Clone)]
     #[cynic(rename_all = "camelCase")]
     pub struct CredentialsIn {
-        pub password: String,
+        pub password_encrypted: String,
         pub iv: String,
         pub service: String,
         pub username: String,
@@ -128,28 +150,6 @@ pub mod queries {
         #[arguments(new_password = args.new_password.clone(), old_password = args.old_password.clone())]
         pub update_master_password: i32,
     }
-
-    #[derive(cynic::FragmentArguments, Debug)]
-    pub struct LockMutationVariables {
-        pub master_password: String,
-    }
-    #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Mutation", argument_struct = "LockMutationVariables")]
-    pub struct LockMutation {
-        #[arguments(master_password = args.master_password.clone())]
-        pub lock: bool,
-    }
-
-    #[derive(cynic::FragmentArguments, Debug)]
-    pub struct UnlockMutationVariables {
-        pub master_password: String,
-    }
-    #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Mutation", argument_struct = "UnlockMutationVariables")]
-    pub struct UnlockMutation {
-        #[arguments(master_password = args.master_password.clone())]
-        pub unlock: String,
-    }
 }
 
 mod schema {
@@ -163,7 +163,7 @@ fn new_request(access_token: &str) -> reqwest::RequestBuilder {
 
 pub async fn run_me_query(
     access_token: &str,
-    grep: &str,
+    grep: Option<String>,
 ) -> cynic::GraphQlResponse<queries::MeQuery> {
     let operation = build_me_query(grep);
 
@@ -173,12 +173,9 @@ pub async fn run_me_query(
         .unwrap()
 }
 
-fn build_me_query(grep: &str) -> cynic::Operation<'static, queries::MeQuery> {
+fn build_me_query(grep: Option<String>) -> cynic::Operation<'static, queries::MeQuery> {
     use cynic::QueryBuilder;
-
-    queries::MeQuery::build(queries::CredentialsQueryVariables {
-        grep: Some(grep.into()),
-    })
+    queries::MeQuery::build(queries::CredentialsQueryVariables { grep })
 }
 
 pub async fn run_add_credentials_group_mutation(
@@ -259,44 +256,4 @@ fn build_update_master_password_mutation(
         old_password: String::from(old_password),
         new_password: String::from(new_password),
     })
-}
-
-fn build_lock_mutation(master_password: &str) -> cynic::Operation<'static, queries::LockMutation> {
-    use cynic::MutationBuilder;
-    use queries::{LockMutation, LockMutationVariables};
-
-    LockMutation::build(&LockMutationVariables {
-        master_password: String::from(master_password),
-    })
-}
-pub async fn run_lock_mutation(
-    access_token: &str,
-    master_password: &str,
-) -> cynic::GraphQlResponse<queries::LockMutation> {
-    let operation = build_lock_mutation(master_password);
-    new_request(access_token)
-        .run_graphql(operation)
-        .await
-        .unwrap()
-}
-
-fn build_unlock_mutation(
-    master_password: &str,
-) -> cynic::Operation<'static, queries::UnlockMutation> {
-    use cynic::MutationBuilder;
-    use queries::{UnlockMutation, UnlockMutationVariables};
-
-    UnlockMutation::build(&UnlockMutationVariables {
-        master_password: String::from(master_password),
-    })
-}
-pub async fn run_unlock_mutation(
-    access_token: &str,
-    master_password: &str,
-) -> cynic::GraphQlResponse<queries::UnlockMutation> {
-    let operation = build_unlock_mutation(master_password);
-    new_request(access_token)
-        .run_graphql(operation)
-        .await
-        .unwrap()
 }

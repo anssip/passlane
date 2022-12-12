@@ -7,6 +7,7 @@ use csv::ReaderBuilder;
 use log::debug;
 use pwhash::bcrypt;
 use std::fs::create_dir;
+use std::fs::remove_file;
 use std::fs::rename;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -158,4 +159,42 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
         },
         created_timestamp: parts[3].into(),
     })
+}
+
+pub fn save_encryption_key(key: &str) -> anyhow::Result<bool> {
+    let path = PathBuf::from(dir_path()).join(".encryption_key");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(false)
+        .create_new(!path.exists())
+        .open(&path)
+        .expect("Unable to open encryption key file");
+
+    file.write_all(key.as_bytes())?;
+    Ok(true)
+}
+
+pub fn get_encryption_key() -> anyhow::Result<String> {
+    let path = PathBuf::from(dir_path()).join(".encryption_key");
+    if !path.exists() {
+        bail!("Vault is locked. Use `passlane unlock` to unlock.");
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create_new(false)
+        .open(&path)?;
+
+    let mut file_content = String::new();
+    file.read_to_string(&mut file_content)?;
+    Ok(file_content)
+}
+
+pub fn delete_encryption_key() -> anyhow::Result<bool> {
+    let path = PathBuf::from(dir_path()).join(".encryption_key");
+    if !path.exists() {
+        bail!("Vault is already unlocked.");
+    }
+    remove_file(path)?;
+    Ok(true)
 }

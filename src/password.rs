@@ -2,10 +2,17 @@ use core::fmt::Display;
 use core::fmt::Formatter;
 use hex::{self};
 use magic_crypt::MagicCryptTrait;
+use pbkdf2::Params;
+use pbkdf2::{
+    password_hash::{PasswordHasher, Salt},
+    Pbkdf2,
+};
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
+extern crate base64;
+use log::debug;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Credentials {
@@ -26,10 +33,12 @@ impl Credentials {
     }
     pub fn encrypt(&self, key: &str) -> Credentials {
         let (password, iv) = encrypt(key, &self.password);
+        debug!("encrypt() key: {}, iv {}", &key, &iv);
         self.clone_with_password((&password, &iv))
     }
     pub fn decrypt(&self, key: &str) -> Credentials {
         let iv = &self.iv.as_ref().expect("Cannot decrpt without iv");
+        debug!("decrypt() key: {}, iv {}", &key, &iv);
         let decrypted_passwd = decrypt((key, iv), &self.password);
         self.clone_with_password((&decrypted_passwd, iv))
     }
@@ -111,6 +120,21 @@ pub fn get_random_key() -> String {
         .try_fill(&mut arr[..])
         .expect("Failed to generate ramdom key");
     return hex::encode(&arr);
+}
+
+pub fn derive_encryption_key(salt: &str, master_password: &str) -> String {
+    let params = Params {
+        rounds: 4096,
+        output_length: 32,
+    };
+    let salt_bytes = base64::encode(salt.as_bytes());
+    let salt = Salt::new(&salt_bytes).unwrap();
+    let hash = Pbkdf2
+        // .hash_password(master_password.as_bytes(), Salt::new(salt).unwrap())
+        .hash_password_customized(master_password.as_bytes(), None, None, params, salt)
+        .unwrap();
+
+    hash.hash.unwrap().to_string()
 }
 
 pub fn encrypt(key: &str, value: &str) -> (String, String) {

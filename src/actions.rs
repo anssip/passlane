@@ -1,3 +1,5 @@
+use crate::store::get_encryption_key;
+use crate::store::delete_encryption_key;
 use crate::AccessTokens;
 use crate::Credentials;
 use async_trait::async_trait;
@@ -44,7 +46,10 @@ async fn push_one_credential(
     credentials: &Credentials,
 ) -> anyhow::Result<i32> {
     let token = get_access_token().await?;
-    online_vault::push_one_credential(&token.access_token, &credentials, None)
+    let encryption_key = get_encryption_key()?;
+    debug!("saving with encryption_key: {}", encryption_key);
+
+    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(&encryption_key), None)
         .await
 }
 
@@ -312,6 +317,7 @@ impl Action for ImportCsvAction {
 
 pub struct UpdateMasterPasswordAction { }
 
+// TODO: change to pass in old key & new key
 async fn update_master_password(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
@@ -360,12 +366,7 @@ pub struct LockAction {}
 #[async_trait]
 impl Action for LockAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        let token = get_access_token().await?;
-        let master_password = ui::ask_master_password(None);
-        match online_vault::lock(&token.access_token, &master_password).await {
-            Ok(_) => println!("Vault locked."),
-            Err(message) => println!("Failed to lock vault: {}", message)
-        }
+        delete_encryption_key()?;
         Ok(())
     }
 }
@@ -377,10 +378,9 @@ impl Action for UnlockAction {
     async fn execute(&self) -> anyhow::Result<()> {
         let token = get_access_token().await?;
         let master_password = ui::ask_master_password(None);
-        match online_vault::unlock(&token.access_token, &master_password).await {
-            Ok(_) => println!("Vault unlocked."),
-            Err(message) => println!("Failed to unlock vault: {}", message)
-        }
+        let me = online_vault::get_me(&token.access_token).await?;
+
+        store::save_encryption_key(&me.get_encryption_key(&master_password))?;
         Ok(())
     }
 }
