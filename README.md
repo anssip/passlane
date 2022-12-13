@@ -1,15 +1,14 @@
 # Passlane
 
-A lightning-fast password manager for the command line and for the Web. The data is saved in an online vault at [passlanevault.com](https://passlanevault.com). There is also a web interface that you can use to access your credentials on any device.
+Passlane is a password manager for the command line and for the Web. There is also a web interface at [passlanevault.com](https://passlanevault.com) that you can use to access your credentials on any device.
+
+Passlane CLI is written in Rust.
 
 ![Screenshot](https://i.imgur.com/TMB8DbS.webp)
 
-## Web interface
-
-![Web UI](https://i.imgur.com/Gr6Ae7F_d.webp?maxwidth=300&fidelity=grand)
-
 ## Features
 
+- You control the encryption keys: Your keys, your data.
 - CLI and Web user interfaces (see below)
 - Generate and save passwords
 - Full management features
@@ -26,7 +25,7 @@ A lightning-fast password manager for the command line and for the Web. The data
 
 1. Install rust development environment: [rustup](https://rustup.rs)
 2. Clone this repo
-3. Build `cargo build --release`
+3. Run build: `cargo build --release`
 4. Add the built `passlane` binary to your `$PATH`
 
 ### Create an account
