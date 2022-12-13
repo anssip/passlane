@@ -33,7 +33,7 @@ A lightning-fast password manager for the command line and for the Web. The data
 
 The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted.
 
-The encryption keys are stored on your own device and nobody else can access the encrypted data in the vault. This is because only you have access to the encryptin key.
+> Passlane stores the encryption key on your device. It never sends it out to the passlane vault servers or anywhere else. Only you, the end user, can access the encrypted data in the vault. You are the only person who has access to the encryption key.
 
 Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
 
@@ -77,6 +77,8 @@ Before accessing your passwords you should unlock:
 ```
 passlane unlock
 ```
+
+This will ask for your master password which is then used to generate an encryption key. The encryption key is used for encrypting and storing password entries, and for retrieveing and decrypting these entries.
 
 At the end of the session, lock the vaults and nobody can access the data.
 
@@ -163,15 +165,12 @@ Here are links to instructions for doing the CSV export:
 
 ### 2.0
 
-#### Encryption keys
+Encryption keys
 
-- [x] lock command
-- [x] unlock command
+### Next
 
-- [ ] use store.get_encryption_key()
-- [ ] Update master password: take in old & new key
-- [ ] Vault migration: take in new key
 - [ ] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
+- [ ] Encrypt evertyhing in the entries?
 
 ### 3.0
 

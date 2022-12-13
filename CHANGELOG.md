@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.0]
+
+- Introduced encryption keys.
+- Added the possibility to keep the vault open (with `passlane unlock`) so that the master password is not prompted with every password query.
+- Encryption keys are kept on client device, only the end user can decrypt and access sensitive password info.
+
 ## [1.0.1]
 
 - Add ability to update the master password in the online vault. Changing the master password updates every credential with newly encrypted passwords.
