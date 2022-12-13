@@ -30,7 +30,7 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
                         username: cred.username,
                         service: cred.service,
                     };
-                    result.push(model.decrypt(&encryption_key));
+                    result.push(model.decrypt(&encryption_key)?);
                 }
             }
         }

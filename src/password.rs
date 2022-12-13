@@ -36,11 +36,12 @@ impl Credentials {
         debug!("encrypt() key: {}, iv {}", &key, &iv);
         self.clone_with_password((&password, &iv))
     }
-    pub fn decrypt(&self, key: &str) -> Credentials {
-        let iv = &self.iv.as_ref().expect("Cannot decrpt without iv");
+    pub fn decrypt(&self, key: &str) -> anyhow::Result<Credentials> {
+        let iv = &self.iv.as_ref().expect("Cannot decrypt without iv");
         debug!("decrypt() key: {}, iv {}", &key, &iv);
-        let decrypted_passwd = decrypt((key, iv), &self.password);
-        self.clone_with_password((&decrypted_passwd, iv))
+        debug!("decrypt() encrypted: {}", &self.password);
+        let decrypted_passwd = decrypt((key, iv), &self.password)?;
+        Ok(self.clone_with_password((&decrypted_passwd, iv)))
     }
 }
 
@@ -144,10 +145,9 @@ pub fn encrypt(key: &str, value: &str) -> (String, String) {
     (String::from(encrypted), String::from(iv))
 }
 
-fn decrypt(key_and_iv: (&str, &str), value: &String) -> String {
+fn decrypt(key_and_iv: (&str, &str), value: &String) -> anyhow::Result<String> {
     let mc = new_magic_crypt!(String::from(key_and_iv.0), 256, String::from(key_and_iv.1));
-    mc.decrypt_base64_to_string(value)
-        .expect("Unable to decrypt credentials. Invalid password?")
+    Ok(mc.decrypt_base64_to_string(value)?)
 }
 
 pub fn encrypt_all(key: &str, credentials: &Vec<Credentials>) -> Vec<Credentials> {

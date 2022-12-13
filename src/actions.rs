@@ -189,7 +189,8 @@ pub async fn find_matches(
 #[async_trait]
 impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        let matches = find_matches(&self.grep).await?;
+        let matches = find_matches(&self.grep).await.context("Failed to find matches. Invalid password? Try unlocking agin.")?;
+
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
             ui::show_as_table(&matches, self.verbose);
@@ -229,7 +230,7 @@ impl DeleteAction {
 
 
 async fn delete(grep: &str) -> anyhow::Result<()> {
-    let matches = find_matches(grep).await?;
+    let matches = find_matches(grep).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
@@ -333,7 +334,7 @@ async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
     } else {
-        store::update_master_password(old_pwd, new_pwd);
+        store::update_master_password(old_pwd, new_pwd)?;
     }
     Ok(true)
 }
