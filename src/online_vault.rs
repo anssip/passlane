@@ -1,11 +1,13 @@
 use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
+use crate::graphql::queries::AddPaymentCardMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::MigrateMutation;
+use crate::graphql::queries::PaymentCardIn;
 use crate::graphql::queries::User;
-use crate::password::Credentials as CredentialsModel;
+use crate::credentials::Credentials as CredentialsModel;
 use crate::store::get_encryption_key;
 use anyhow::bail;
 use log::debug;
@@ -108,6 +110,20 @@ pub async fn get_me(access_token: &str) -> anyhow::Result<User> {
     let response = graphql::run_me_query(access_token, None).await;
     match response.data {
         Some(MeQuery { me }) => Ok(me),
+        None => bail!(check_response_errors(response)),
+    }
+}
+
+pub async fn save_payment(
+    access_token: &str,
+    payment: PaymentCardIn,
+    vault_id: Option<i32>,
+) -> anyhow::Result<()> {
+    let response = graphql::run_add_payment_card_mutation(access_token, payment, vault_id).await;
+    match response.data {
+        Some(AddPaymentCardMutation {
+            add_payment_card: _,
+        }) => Ok(()),
         None => bail!(check_response_errors(response)),
     }
 }

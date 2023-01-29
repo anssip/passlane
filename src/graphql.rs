@@ -7,10 +7,12 @@ const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod queries {
     use super::schema;
-    use crate::password::derive_encryption_key;
+    use crate::credentials::derive_encryption_key;
     use core::fmt::Display;
     use core::fmt::Formatter;
     use log::debug;
+    use crate::credentials::{ encrypt };
+
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct CredentialsQueryVariables {
         pub grep: Option<String>,
@@ -154,6 +156,120 @@ pub mod queries {
         #[arguments(new_key = args.new_key.clone(), old_key = args.old_key.clone())]
         pub migrate: i32,
     }
+    #[derive(cynic::InputObject, Debug, Clone)]
+    pub struct ExpiryIn {
+        pub month: i32,
+        pub year: i32,
+    }
+    #[derive(cynic::QueryFragment, Debug)]
+    pub struct Expiry {
+        pub month: i32,
+        pub year: i32,
+    }
+    #[derive(cynic::InputObject, Debug, Clone)]
+    pub struct AddressIn {
+        pub street: String,
+        pub city: String,
+        pub country: String,
+        pub state: Option<String>,
+        pub zip: String,
+    }
+    impl AddressIn {
+        pub fn encrypt(&self, key: &str, iv: &str) -> AddressIn {
+            AddressIn {
+                street: encrypt(key, iv, &self.street),
+                city: encrypt(key, iv, &self.city),
+                country: encrypt(key, iv, &self.country),
+                state: if let Some(state) = &self.state {
+                    Some(encrypt(key, iv, state))
+                } else {
+                    None
+                },
+                zip: encrypt(key, iv, &self.zip),
+            }
+        }
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    pub struct Address {
+        pub id: i32,
+        pub street: String,
+        pub city: String,
+        pub country: String,
+        pub state: Option<String>,
+        pub zip: String,
+    }
+
+    #[derive(cynic::InputObject, Debug, Clone)]
+    pub struct PaymentCardIn {
+        pub iv: String,
+        pub name: String,
+        pub name_on_card: String,
+        pub number: String,
+        pub cvv: String,
+        pub expiry: ExpiryIn,
+        pub color: Option<String>,
+        pub billing_address: Option<AddressIn>
+    }
+
+    impl PaymentCardIn {
+        pub fn encrypt(&self, key: &str) -> PaymentCardIn {
+            PaymentCardIn {
+                iv: self.iv.clone(),
+                name: self.name.clone(),
+                expiry: self.expiry.clone(),
+                number: encrypt(key, &self.iv, &self.number),
+                name_on_card: encrypt(key, &self.iv, &self.name_on_card),
+                cvv: encrypt(key, &self.iv, &self.cvv),
+                color: if let Some(color) = &self.color {
+                    Some(encrypt(key, &self.iv, color))
+                } else {
+                    None
+                },
+                billing_address: if let Some(address) = &self.billing_address {
+                    Some(address.encrypt(key, &self.iv))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    pub struct PaymentCard {
+        pub id: i32,    
+        pub iv: String,
+        pub name: String,
+        pub name_on_card: String,
+        pub number: String,
+        pub cvv: String,
+        pub expiry: Expiry,
+        pub color: Option<String>,
+        pub billing_address: Option<Address>
+    }
+    #[derive(cynic::InputObject, Debug, Clone)]
+    pub struct AddPaymentCardIn {
+        pub payment: PaymentCardIn,
+        pub vault_id: Option<i32>,
+    }
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct AddPaymentCardMutationVariables {
+        pub input: AddPaymentCardIn
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "AddPaymentCardMutationVariables"
+    )]
+    pub struct AddPaymentCardMutation {
+        #[arguments(input = AddPaymentCardIn {
+            payment: args.input.payment.clone(),
+            vault_id: args.input.vault_id
+        })]
+        pub add_payment_card: PaymentCard,
+    }
+
 }
 
 mod schema {
@@ -204,8 +320,8 @@ fn build_add_credentials_group_mutation(
 
     AddGredentialsGroupMutation::build(&AddGredentialsGroupMutationVariables {
         input: queries::AddCredentialsGroupIn {
-            credentials: credentials,
-            vault_id: vault_id,
+            credentials,
+            vault_id,
         },
     })
 }
@@ -231,8 +347,8 @@ fn build_delete_credentials_mutation(
 
     DeleteCredentialsMutation::build(&DeleteCredentialsMutationVariables {
         input: queries::DeleteCredentialsIn {
-            grep: grep,
-            index: index,
+            grep,
+            index,
         },
     })
 }
@@ -259,5 +375,33 @@ fn build_migrate_mutation(
     MigrateMutation::build(&MigrateMutationVariables {
         old_key: String::from(old_key),
         new_key: String::from(new_key),
+    })
+}
+
+pub async fn run_add_payment_card_mutation(
+    access_token: &str,
+    payment: queries::PaymentCardIn,
+    vault_id: Option<i32>,
+) -> cynic::GraphQlResponse<queries::AddPaymentCardMutation> {
+    let operation: cynic::Operation<queries::AddPaymentCardMutation> = build_add_payment_card_mutation(payment, vault_id);
+
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+        
+fn build_add_payment_card_mutation(
+    payment: queries::PaymentCardIn,
+    vault_id: Option<i32>,
+) -> cynic::Operation<'static, queries::AddPaymentCardMutation> {
+    use cynic::MutationBuilder;
+    use queries::{AddPaymentCardMutation, AddPaymentCardMutationVariables};
+
+    AddPaymentCardMutation::build(&AddPaymentCardMutationVariables {
+        input: queries::AddPaymentCardIn {
+            payment,
+            vault_id,
+        },
     })
 }

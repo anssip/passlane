@@ -1,5 +1,5 @@
 use crate::auth::AccessTokens;
-use crate::password::Credentials;
+use crate::credentials::Credentials;
 use crate::ui::ask_password;
 use anyhow;
 use anyhow::bail;

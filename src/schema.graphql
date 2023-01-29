@@ -15,9 +15,8 @@ type Vault {
   id: Int!
   personal: Boolean!
   name: String!
-  users: [User]!
-  # // TODO; make this return a cursor for pagination (check Relay pagination)
   credentials(grep: String): [Credentials]
+  paymentCards: [PaymentCard]
 }
 
 type Credentials {
@@ -28,6 +27,58 @@ type Credentials {
   password: String!
   created: Date!
   modified: Date
+}
+
+type Expiry {
+  month: Int!
+  year: Int!
+}
+
+input ExpiryIn {
+  month: Int!
+  year: Int!
+}
+
+type PaymentCard {
+  id: Int!
+  iv: String!
+  name: String!
+  nameOnCard: String!
+  number: String!
+  cvv: String!
+  expiry: Expiry!
+  color: String
+  billingAddress: Address
+  created: Date!
+  modified: Date
+}
+
+type Address {
+  id: Int!
+  street: String!
+  city: String!
+  country: String!
+  state: String
+  zip: String!
+}
+
+input AddressIn {
+  street: String!
+  city: String!
+  country: String!
+  state: String
+  zip: String!
+}
+
+input PaymentCardIn {
+  iv: String!
+  name: String!
+  nameOnCard: String!
+  number: String!
+  cvv: String!
+  expiry: ExpiryIn!
+  color: String
+  billingAddress: AddressIn
 }
 
 input CredentialsIn {
@@ -49,6 +100,11 @@ input AddCredentialsIn {
   credentials: CredentialsIn!
 }
 
+input AddPaymentCardIn {
+  vaultId: Int
+  payment: PaymentCardIn!
+}
+
 input AddCredentialsGroupIn {
   vaultId: Int
   credentials: [CredentialsIn!]!
@@ -65,6 +121,7 @@ type Mutation {
   addUser(user: UserIn!): User!
   deleteCredentials(input: DeleteCredentialsIn!): Int!
   migrate(oldKey: String!, newKey: String!): Int!
+  addPaymentCard(input: AddPaymentCardIn!): PaymentCard!
 }
 
 type Query {

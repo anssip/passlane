@@ -2,7 +2,8 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::password::Credentials;
+use crate::graphql::queries::{PaymentCardIn, ExpiryIn, AddressIn};
+use crate::credentials::{Credentials, get_random_key};
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
@@ -20,6 +21,16 @@ pub fn ask(question: &str) -> String {
 
 pub fn ask_password(question: &str) -> String {
     rpassword::prompt_password(question).unwrap()
+}
+
+pub fn ask_number(question: &str) -> i32 {
+    match ask(question).parse() {
+        Ok(n) => n,
+        Err(_) => {
+            println!("Please enter a number");
+            ask_number(question)
+        }
+    }
 }
 
 pub fn ask_credentials(password: &str) -> Credentials {
@@ -120,5 +131,51 @@ pub fn open_browser(url: &str, prompt: &str) -> Result<bool, anyhow::Error> {
         bail!("Aborted")
     } else {
         Ok(webbrowser::open(url).is_ok())
+    }
+}
+
+fn ask_address() -> AddressIn {
+    println!("Enter billing address:");
+    let street = ask("Enter street address:");
+    let city = ask("Enter city:");
+    let state = ask("Enter state:");
+    let zip = ask("Enter postal code:");
+    let country = ask("Enter country:");
+
+    AddressIn {
+        street,
+        city,
+        state: if state != "" {
+            Some(state)
+        } else {
+            None
+        },
+        zip,
+        country,
+    }
+}
+
+pub fn ask_payment_info() -> PaymentCardIn {
+    let name = ask("Enter card name:");
+    let number = ask("Enter card number:");
+    let name_on_card = ask("Enter card holder name:");
+    let card_expiration_month = ask_number("Enter card expiration month:");
+    let card_expiration_year = ask_number("Enter card expiration year:");
+    let cvv = ask("Enter card cvv:");
+    let address = ask_address();
+    let iv = get_random_key();
+
+    PaymentCardIn {
+        iv,
+        name,
+        number,
+        name_on_card,
+        expiry: ExpiryIn {
+            month: card_expiration_month,
+            year: card_expiration_year,
+        },
+        cvv,
+        color: None,
+        billing_address: Some(address),
     }
 }

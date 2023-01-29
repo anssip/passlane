@@ -32,7 +32,8 @@ impl Credentials {
         }
     }
     pub fn encrypt(&self, key: &str) -> Credentials {
-        let (password, iv) = encrypt(key, &self.password);
+        let iv = get_random_key();
+        let password= encrypt(key, &iv, &self.password);
         debug!("encrypt() key: {}, iv {}", &key, &iv);
         self.clone_with_password((&password, &iv))
     }
@@ -138,11 +139,10 @@ pub fn derive_encryption_key(salt: &str, master_password: &str) -> String {
     hash.hash.unwrap().to_string()
 }
 
-pub fn encrypt(key: &str, value: &str) -> (String, String) {
-    let iv = get_random_key();
-    let mc = new_magic_crypt!(key, 256, &iv);
+pub fn encrypt(key: &str, iv: &str, value: &str) -> String {
+    let mc = new_magic_crypt!(key, 256, iv);
     let encrypted = mc.encrypt_str_to_base64(value);
-    (String::from(encrypted), String::from(iv))
+    String::from(encrypted)
 }
 
 fn decrypt(key_and_iv: (&str, &str), value: &String) -> anyhow::Result<String> {

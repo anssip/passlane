@@ -168,12 +168,14 @@ Encryption keys
 
 ### Next
 
-- [ ] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
-- [ ] Encrypt evertyhing in the entries?
+- [x] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
+- [ ] Add payment methods
+- [ ] Add secure notes
+- [ ] Refactor: Remove Credentials struct and only use the graphql Credentials type (similar to PaymentCards)
 
 ### 3.0
 
 - [ ] Export of vault contents
 - [ ] push to vault from keychain
-- [ ] multiple vaults support
+- [ ] multiple users & vaults support ?
 - [ ] new vault items: payment cards, notes
