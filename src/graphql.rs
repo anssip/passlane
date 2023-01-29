@@ -8,10 +8,10 @@ const API_ENDPOINT: &str = "https://passlanevault.fly.dev/api/graphql";
 pub mod queries {
     use super::schema;
     use crate::credentials::derive_encryption_key;
+    use crate::credentials::{decrypt, encrypt};
     use core::fmt::Display;
     use core::fmt::Formatter;
     use log::debug;
-    use crate::credentials::{ encrypt };
 
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct CredentialsQueryVariables {
@@ -61,6 +61,16 @@ pub mod queries {
         pub name: String,
         #[arguments(grep = &args.grep)]
         pub credentials: Option<Vec<Option<Credentials>>>,
+        pub personal: bool,
+    }
+
+    // TODO: add a query to fetch only the payment cards
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(argument_struct = "CredentialsQueryVariables", graphql_type = "Vault")]
+    pub struct VaultWithPaymentCards {
+        pub id: i32,
+        pub name: String,
+        pub payment_cards: Option<Vec<Option<PaymentCard>>>,
         pub personal: bool,
     }
 
@@ -161,7 +171,7 @@ pub mod queries {
         pub month: i32,
         pub year: i32,
     }
-    #[derive(cynic::QueryFragment, Debug)]
+    #[derive(cynic::QueryFragment, Debug, Clone)]
     pub struct Expiry {
         pub month: i32,
         pub year: i32,
@@ -190,7 +200,7 @@ pub mod queries {
         }
     }
 
-    #[derive(cynic::QueryFragment, Debug)]
+    #[derive(cynic::QueryFragment, Debug, Clone)]
     pub struct Address {
         pub id: i32,
         pub street: String,
@@ -198,6 +208,22 @@ pub mod queries {
         pub country: String,
         pub state: Option<String>,
         pub zip: String,
+    }
+    impl Address {
+        pub fn decrypt(&self, key: &str, iv: &str) -> anyhow::Result<Address> {
+            Ok(Address {
+                id: self.id,
+                street: decrypt((key, iv), &self.street)?,
+                city: decrypt((key, iv), &self.city)?,
+                country: decrypt((key, iv), &self.country)?,
+                state: if let Some(state) = &self.state {
+                    Some(decrypt((key, iv), state)?)
+                } else {
+                    None
+                },
+                zip: decrypt((key, iv), &self.zip)?,
+            })
+        }
     }
 
     #[derive(cynic::InputObject, Debug, Clone)]
@@ -209,7 +235,7 @@ pub mod queries {
         pub cvv: String,
         pub expiry: ExpiryIn,
         pub color: Option<String>,
-        pub billing_address: Option<AddressIn>
+        pub billing_address: Option<AddressIn>,
     }
 
     impl PaymentCardIn {
@@ -230,14 +256,14 @@ pub mod queries {
                     Some(address.encrypt(key, &self.iv))
                 } else {
                     None
-                }
+                },
             }
         }
     }
 
-    #[derive(cynic::QueryFragment, Debug)]
+    #[derive(cynic::QueryFragment, Debug, Clone)]
     pub struct PaymentCard {
-        pub id: i32,    
+        pub id: i32,
         pub iv: String,
         pub name: String,
         pub name_on_card: String,
@@ -245,7 +271,30 @@ pub mod queries {
         pub cvv: String,
         pub expiry: Expiry,
         pub color: Option<String>,
-        pub billing_address: Option<Address>
+        pub billing_address: Option<Address>,
+    }
+    impl PaymentCard {
+        pub fn decrypt(&self, key: &str) -> anyhow::Result<PaymentCard> {
+            Ok(PaymentCard {
+                id: self.id,
+                iv: self.iv.clone(),
+                name: self.name.clone(),
+                expiry: self.expiry.clone(),
+                number: decrypt((key, &self.iv), &self.number)?,
+                name_on_card: decrypt((key, &self.iv), &self.name_on_card)?,
+                cvv: decrypt((key, &self.iv), &self.cvv)?,
+                color: if let Some(color) = &self.color {
+                    Some(decrypt((key, &self.iv), color)?)
+                } else {
+                    None
+                },
+                billing_address: if let Some(address) = &self.billing_address {
+                    Some(address.decrypt(key, &self.iv)?)
+                } else {
+                    None
+                },
+            })
+        }
     }
     #[derive(cynic::InputObject, Debug, Clone)]
     pub struct AddPaymentCardIn {
@@ -254,7 +303,7 @@ pub mod queries {
     }
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct AddPaymentCardMutationVariables {
-        pub input: AddPaymentCardIn
+        pub input: AddPaymentCardIn,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -269,7 +318,6 @@ pub mod queries {
         })]
         pub add_payment_card: PaymentCard,
     }
-
 }
 
 mod schema {
@@ -346,10 +394,7 @@ fn build_delete_credentials_mutation(
     use queries::{DeleteCredentialsMutation, DeleteCredentialsMutationVariables};
 
     DeleteCredentialsMutation::build(&DeleteCredentialsMutationVariables {
-        input: queries::DeleteCredentialsIn {
-            grep,
-            index,
-        },
+        input: queries::DeleteCredentialsIn { grep, index },
     })
 }
 
@@ -383,14 +428,15 @@ pub async fn run_add_payment_card_mutation(
     payment: queries::PaymentCardIn,
     vault_id: Option<i32>,
 ) -> cynic::GraphQlResponse<queries::AddPaymentCardMutation> {
-    let operation: cynic::Operation<queries::AddPaymentCardMutation> = build_add_payment_card_mutation(payment, vault_id);
+    let operation: cynic::Operation<queries::AddPaymentCardMutation> =
+        build_add_payment_card_mutation(payment, vault_id);
 
     new_request(access_token)
         .run_graphql(operation)
         .await
         .unwrap()
 }
-        
+
 fn build_add_payment_card_mutation(
     payment: queries::PaymentCardIn,
     vault_id: Option<i32>,
@@ -399,9 +445,6 @@ fn build_add_payment_card_mutation(
     use queries::{AddPaymentCardMutation, AddPaymentCardMutationVariables};
 
     AddPaymentCardMutation::build(&AddPaymentCardMutationVariables {
-        input: queries::AddPaymentCardIn {
-            payment,
-            vault_id,
-        },
+        input: queries::AddPaymentCardIn { payment, vault_id },
     })
 }

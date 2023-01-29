@@ -145,7 +145,7 @@ pub fn encrypt(key: &str, iv: &str, value: &str) -> String {
     String::from(encrypted)
 }
 
-fn decrypt(key_and_iv: (&str, &str), value: &String) -> anyhow::Result<String> {
+pub fn decrypt(key_and_iv: (&str, &str), value: &String) -> anyhow::Result<String> {
     let mc = new_magic_crypt!(String::from(key_and_iv.0), 256, String::from(key_and_iv.1));
     Ok(mc.decrypt_base64_to_string(value)?)
 }

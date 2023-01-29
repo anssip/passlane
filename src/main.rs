@@ -9,15 +9,15 @@ use crate::credentials::Credentials;
 
 mod actions;
 mod auth;
+mod credentials;
 mod graphql;
 mod online_vault;
-mod credentials;
 mod store;
 mod ui;
 use std::env;
 use std::io;
 
-fn cli() -> Command<'static> {
+fn cli() -> Command {
     Command::new("passlane")
         .about("A password manager and a CLI client for the online Passlane Vault")
         .subcommand_required(false)
@@ -58,11 +58,17 @@ fn cli() -> Command<'static> {
         )
         .subcommand(
             Command::new("show")
-                .about("Shows one or more credentials by searching with the specified regular expression.")
-                .arg(arg!(<REGEXP> "The regular expression used to search services to show.").required(true))
+                .about("Shows one or more entries.")
                 .arg(arg!(
-                    -v --verbose "Verbosely display the passwords when grep option finds several matches."
+                    -v --verbose "Verbosely display matches table in clear text."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -p --payments "Shows payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -c --credentials "Shows credentials by searching with the specified regular expression."
+                ).action(ArgAction::SetTrue).requires("search"))
+                .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))
                 .arg_required_else_help(true)
         )
         .subcommand(

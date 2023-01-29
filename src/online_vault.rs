@@ -1,3 +1,4 @@
+use crate::credentials::Credentials as CredentialsModel;
 use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
 use crate::graphql::queries::AddPaymentCardMutation;
@@ -5,9 +6,9 @@ use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::MigrateMutation;
+use crate::graphql::queries::PaymentCard;
 use crate::graphql::queries::PaymentCardIn;
 use crate::graphql::queries::User;
-use crate::credentials::Credentials as CredentialsModel;
 use crate::store::get_encryption_key;
 use anyhow::bail;
 use log::debug;
@@ -21,7 +22,8 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
     debug!("me: {:?}", me);
     let encryption_key = get_encryption_key()?;
 
-    let result = &mut Vec::new();
+    let result_credentials = &mut Vec::new();
+
     for vault in me.vaults {
         if let Some(credentials) = vault.credentials {
             for creds in credentials {
@@ -32,13 +34,38 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
                         username: cred.username,
                         service: cred.service,
                     };
-                    result.push(model.decrypt(&encryption_key)?);
+                    result_credentials.push(model.decrypt(&encryption_key)?);
+                }
+            }
+        }
+    }
+    Ok(result_credentials.to_vec())
+}
+
+pub async fn find_payment_cards(access_token: &str) -> anyhow::Result<Vec<PaymentCard>> {
+    let response = graphql::run_me_query(access_token, None).await;
+    let me = match response.data {
+        Some(MeQuery { me }) => me,
+        None => bail!(check_response_errors(response)),
+    };
+    debug!("me: {:?}", me);
+    let encryption_key = get_encryption_key()?;
+
+    let result_cards = &mut Vec::new();
+
+    for vault in me.vaults {
+        if let Some(payment_cards) = vault.payment_cards {
+            for cards in payment_cards {
+                if let Some(card) = cards {
+                    let decrypted = card.decrypt(&encryption_key)?;
+                    result_cards.push(decrypted);
                 }
             }
         }
     }
     // TODO: sort by vaultId, service
-    Ok(result.to_vec())
+    debug!("result_cards: {:?}", result_cards);
+    Ok(result_cards.to_vec())
 }
 
 pub async fn push_credentials(
@@ -107,6 +134,7 @@ fn check_response_errors<T>(response: cynic::GraphQlResponse<T>) -> String {
 }
 
 pub async fn get_me(access_token: &str) -> anyhow::Result<User> {
+    // TODO: should not run the normal me_query, but a new query wich does not query vaults or payment cards
     let response = graphql::run_me_query(access_token, None).await;
     match response.data {
         Some(MeQuery { me }) => Ok(me),

@@ -159,37 +159,29 @@ impl Action for AddAction {
 }
 
 pub struct ShowAction {
-    pub grep: String,
+    pub grep: Option<String>,
     pub verbose: bool,
+    pub payments: bool,
 }
 
 impl ShowAction {
     pub fn new(matches: &ArgMatches) -> ShowAction {
         ShowAction {
-            grep: matches.value_of("REGEXP").expect("required").to_string(),
+            grep: matches.get_one::<String>("REGEXP").cloned(),
             verbose: *matches
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap"),
+            payments: *matches
+                .get_one::<bool>("payments")
+                .expect("defaulted to false by clap"),
         }
     }
-}
-
-pub async fn find_matches(
-    grep_value: &str,
-) -> anyhow::Result<Vec<Credentials>> {
-    info!("searching from online vault");
-    let token = get_access_token().await?;
-    let matches =  online_vault::grep(&token.access_token, &grep_value).await?;
-    if matches.len() == 0 {
-        println!("No matches found");
-    }
-    Ok(matches)
-}
-
-#[async_trait]
-impl Action for ShowAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        let matches = find_matches(&self.grep).await.context("Failed to find matches. Invalid password? Try unlocking agin.")?;
+    async fn show_credentials(&self) -> anyhow::Result<()> {
+        let grep = match &self.grep {
+            Some(grep) => grep,
+            None => panic!("-g <REGEXP> is required"),
+        };
+        let matches = find_credentials(grep).await.context("Failed to find matches. Invalid password? Try unlocking agin.")?;
 
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
@@ -214,6 +206,36 @@ impl Action for ShowAction {
         }
         Ok(())
     }
+
+    fn show_payments(&self) -> anyhow::Result<()> {
+        debug!("showing payments");
+        Ok(())
+    }
+
+}
+
+async fn find_credentials(
+    grep_value: &str,
+) -> anyhow::Result<Vec<Credentials>> {
+    info!("searching from online vault");
+    let token = get_access_token().await?;
+    let matches =  online_vault::grep(&token.access_token, &grep_value).await?;
+    if matches.len() == 0 {
+        println!("No matches found");
+    }
+    Ok(matches)
+}
+
+#[async_trait]
+impl Action for ShowAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        if self.payments {
+            self.show_payments()?;
+        } else {
+            self.show_credentials().await?;
+        }
+        Ok(())
+    }
 }
 
 pub struct DeleteAction {
@@ -223,14 +245,14 @@ pub struct DeleteAction {
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
-            grep: matches.value_of("REGEXP").expect("required").to_string(),
+            grep: matches.get_one::<String>("REGEXP").expect("required").to_string(),
         }
     }
 }
 
 
 async fn delete(grep: &str) -> anyhow::Result<()> {
-    let matches = find_matches(grep).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
+    let matches = find_credentials(grep).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
@@ -283,7 +305,7 @@ pub struct ImportCsvAction {
 impl ImportCsvAction {
     pub fn new(matches: &ArgMatches) -> ImportCsvAction {
         ImportCsvAction {
-            file_path: matches.value_of("FILE_PATH").expect("required").to_string(),
+            file_path: matches.get_one::<String>("FILE_PATH").expect("required").to_string(),
         }
     }
 }
