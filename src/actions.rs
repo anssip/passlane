@@ -207,8 +207,17 @@ impl ShowAction {
         Ok(())
     }
 
-    fn show_payments(&self) -> anyhow::Result<()> {
+    async fn show_payments(&self) -> anyhow::Result<()> {
         debug!("showing payments");
+        let token = get_access_token().await?;
+        let matches = online_vault::find_payment_cards(&token.access_token).await?;
+        if matches.len() == 0 {
+            println!("No payment cards found");
+        } else {
+            println!("Found {} payment cards:", matches.len());
+            println!("{:?}", matches);
+            // TODO: Display card names first, then ask for index and show details for that card
+        }
         Ok(())
     }
 
@@ -230,7 +239,7 @@ async fn find_credentials(
 impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
         if self.payments {
-            self.show_payments()?;
+            self.show_payments().await?;
         } else {
             self.show_credentials().await?;
         }

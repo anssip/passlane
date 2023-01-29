@@ -8,6 +8,7 @@ use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::MigrateMutation;
 use crate::graphql::queries::PaymentCard;
 use crate::graphql::queries::PaymentCardIn;
+use crate::graphql::queries::PaymentCardMeQuery;
 use crate::graphql::queries::User;
 use crate::store::get_encryption_key;
 use anyhow::bail;
@@ -23,6 +24,7 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
     let encryption_key = get_encryption_key()?;
 
     let result_credentials = &mut Vec::new();
+    debug!("vaults: {:?}", me.vaults);
 
     for vault in me.vaults {
         if let Some(credentials) = vault.credentials {
@@ -43,15 +45,16 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
 }
 
 pub async fn find_payment_cards(access_token: &str) -> anyhow::Result<Vec<PaymentCard>> {
-    let response = graphql::run_me_query(access_token, None).await;
+    let response = graphql::run_payment_card_query(access_token).await;
     let me = match response.data {
-        Some(MeQuery { me }) => me,
+        Some(PaymentCardMeQuery { me }) => me,
         None => bail!(check_response_errors(response)),
     };
     debug!("me: {:?}", me);
     let encryption_key = get_encryption_key()?;
 
     let result_cards = &mut Vec::new();
+    debug!("vaults: {:?}", me.vaults);
 
     for vault in me.vaults {
         if let Some(payment_cards) = vault.payment_cards {
@@ -63,7 +66,6 @@ pub async fn find_payment_cards(access_token: &str) -> anyhow::Result<Vec<Paymen
             }
         }
     }
-    // TODO: sort by vaultId, service
     debug!("result_cards: {:?}", result_cards);
     Ok(result_cards.to_vec())
 }

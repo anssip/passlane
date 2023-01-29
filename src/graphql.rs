@@ -18,10 +18,19 @@ pub mod queries {
         pub grep: Option<String>,
     }
 
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct PaymentCardsQueryVariables {}
+
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(graphql_type = "Query", argument_struct = "CredentialsQueryVariables")]
     pub struct MeQuery {
         pub me: User,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(graphql_type = "Query", argument_struct = "PaymentCardsQueryVariables")]
+    pub struct PaymentCardMeQuery {
+        pub me: UserWithPaymentCards,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -35,6 +44,19 @@ pub mod queries {
         pub last_name: String,
         pub modified: Option<Date>,
         pub vaults: Vec<Vault>,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(argument_struct = "PaymentCardsQueryVariables", graphql_type = "User")]
+    pub struct UserWithPaymentCards {
+        pub auth_user_id: String,
+        pub created: Date,
+        pub email: String,
+        pub first_name: String,
+        pub id: i32,
+        pub last_name: String,
+        pub modified: Option<Date>,
+        pub vaults: Vec<VaultWithPaymentCards>,
     }
 
     impl User {
@@ -64,9 +86,8 @@ pub mod queries {
         pub personal: bool,
     }
 
-    // TODO: add a query to fetch only the payment cards
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "CredentialsQueryVariables", graphql_type = "Vault")]
+    #[cynic(argument_struct = "PaymentCardsQueryVariables", graphql_type = "Vault")]
     pub struct VaultWithPaymentCards {
         pub id: i32,
         pub name: String,
@@ -344,6 +365,21 @@ pub async fn run_me_query(
 fn build_me_query(grep: Option<String>) -> cynic::Operation<'static, queries::MeQuery> {
     use cynic::QueryBuilder;
     queries::MeQuery::build(queries::CredentialsQueryVariables { grep })
+}
+
+pub async fn run_payment_card_query(
+    access_token: &str,
+) -> cynic::GraphQlResponse<queries::PaymentCardMeQuery> {
+    let operation = build_payment_card_query();
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_payment_card_query() -> cynic::Operation<'static, queries::PaymentCardMeQuery> {
+    use cynic::QueryBuilder;
+    queries::PaymentCardMeQuery::build(queries::PaymentCardsQueryVariables {})
 }
 
 pub async fn run_add_credentials_group_mutation(
