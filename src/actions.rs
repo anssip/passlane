@@ -185,14 +185,14 @@ impl ShowAction {
 
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
-            ui::show_as_table(&matches, self.verbose);
+            ui::show_credentials_table(&matches, self.verbose);
             if matches.len() == 1 {
                 copy_to_clipboard(&matches[0].password);
                 println!("Password copied to clipboard!",);
             } else {
                 match ui::ask_index(
                     "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
-                    &matches,
+                    matches.len() as i16 - 1,
                 ) {
                     Ok(index) => {
                         copy_to_clipboard(&matches[index].password);
@@ -216,7 +216,28 @@ impl ShowAction {
         } else {
             println!("Found {} payment cards:", matches.len());
             println!("{:?}", matches);
-            // TODO: Display card names first, then ask for index and show details for that card
+            ui::show_payment_cards_table(&matches, self.verbose);
+
+            if matches.len() == 1 {
+                ui::show_card(&matches[0]);
+                copy_to_clipboard(&matches[0].number);
+                println!("Card number copied to clipboard!",);
+            } else {
+                match ui::ask_index(
+                    "Enter a row number from the table above, or press q to exit:",
+                    matches.len() as i16 - 1,
+                ) {
+                    Ok(index) => {
+                        ui::show_card(&matches[index]);
+                        copy_to_clipboard(&matches[index].number);
+                        println!("Card number copied to clipboard!");
+                    }
+                    Err(message) => {
+                        println!("{}", message);
+                    }
+                }
+            }
+
         }
         Ok(())
     }
@@ -273,10 +294,10 @@ async fn delete(grep: &str) -> anyhow::Result<()> {
         println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
-        ui::show_as_table(&matches, false);
+        ui::show_credentials_table(&matches, false);
         match ui::ask_index(
             "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
-            &matches,
+            matches.len() as i16 - 1,
         ) {
             Ok(index) => {
                 if index == usize::MAX {

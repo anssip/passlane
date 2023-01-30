@@ -2,8 +2,8 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::graphql::queries::{PaymentCardIn, ExpiryIn, AddressIn};
-use crate::credentials::{Credentials, get_random_key};
+use crate::credentials::{get_random_key, Credentials};
+use crate::graphql::queries::{AddressIn, ExpiryIn, PaymentCard, PaymentCardIn};
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
@@ -70,7 +70,7 @@ pub fn ask_master_password(question: Option<&str>) -> String {
     }
 }
 
-pub fn show_as_table(credentials: &Vec<Credentials>, show_password: bool) {
+pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: bool) {
     let mut table = Table::new();
     let mut index: i16 = 0;
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
@@ -106,7 +106,91 @@ pub fn show_as_table(credentials: &Vec<Credentials>, show_password: bool) {
     println!("{table}");
 }
 
-pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize, String> {
+pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) {
+    let mut table = Table::new();
+    let mut index: i16 = 0;
+    let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
+    let headers = if show_cleartext {
+        vec![
+            "",
+            "Name",
+            "Color",
+            "Number",
+            "Expiry",
+            "CVV",
+            "Name on card",
+        ]
+    } else {
+        vec!["", "Name", "Color", "Last 4", "Expiry"]
+    };
+    table.set_header(
+        headers
+            .iter()
+            .map(|&h| header_cell(String::from(h)))
+            .collect::<Vec<Cell>>(),
+    );
+    for card in cards {
+        let columns = if show_cleartext {
+            vec![
+                Cell::new(index.to_string()).fg(Color::Yellow),
+                Cell::new(String::from(&card.name)),
+                Cell::new(String::from(if let Some(color) = &card.color {
+                    &color
+                } else {
+                    ""
+                })),
+                Cell::new(String::from(&card.number)),
+                Cell::new(String::from(format!("{}", &card.expiry))),
+                Cell::new(String::from(&card.cvv)),
+                Cell::new(String::from(&card.name_on_card)),
+            ]
+        } else {
+            vec![
+                Cell::new(index.to_string()).fg(Color::Yellow),
+                Cell::new(String::from(&card.name)),
+                Cell::new(card.color_str()),
+                Cell::new(card.last_four()),
+                Cell::new(card.expiry_str()),
+            ]
+        };
+        table.add_row(columns);
+        index += 1;
+    }
+    println!("{table}");
+}
+
+pub fn show_card(card: &PaymentCard) {
+    let mut table = Table::new();
+    let mut add_row = |label: &str, value: &str, color: Option<comfy_table::Color>| {
+        table.add_row(vec![
+            Cell::new(label).fg(if let Some(col) = color {
+                col
+            } else {
+                Color::Yellow
+            }),
+            Cell::new(value),
+        ]);
+    };
+    add_row("Name", &card.name, None);
+    add_row("Color", &card.color_str(), None);
+    add_row("Number", &card.number, None);
+    add_row("Expiry", &card.expiry_str(), None);
+    add_row("CVV", &card.cvv, None);
+    add_row("Name on card", &card.name_on_card, None);
+    if let Some(address) = &card.billing_address {
+        add_row("Billing address", "", Some(comfy_table::Color::Cyan));
+        add_row("Street", &address.street, Some(comfy_table::Color::Cyan));
+        add_row("Zip", &address.zip, Some(comfy_table::Color::Cyan));
+        add_row("City", &address.city, Some(comfy_table::Color::Cyan));
+        if let Some(state) = &address.state {
+            add_row("State", &state, Some(comfy_table::Color::Cyan));
+        }
+        add_row("Country", &address.country, Some(comfy_table::Color::Cyan));
+    }
+    println!("{table}");
+}
+
+pub fn ask_index(question: &str, maxIndex: i16) -> Result<usize, String> {
     let answer = ask(question);
     if answer == "q" {
         return Err(String::from("Quitting"));
@@ -116,7 +200,7 @@ pub fn ask_index(question: &str, credentials: &Vec<Credentials>) -> Result<usize
     }
     return match answer.parse::<i16>() {
         Ok(num) => {
-            if num >= 0 && num < credentials.len().try_into().unwrap() {
+            if num >= 0 && num <= maxIndex as i16 {
                 Ok(num.try_into().unwrap())
             } else {
                 Err(String::from("Invalid index"))
@@ -145,11 +229,7 @@ fn ask_address() -> AddressIn {
     AddressIn {
         street,
         city,
-        state: if state != "" {
-            Some(state)
-        } else {
-            None
-        },
+        state: if state != "" { Some(state) } else { None },
         zip,
         country,
     }
@@ -157,6 +237,7 @@ fn ask_address() -> AddressIn {
 
 pub fn ask_payment_info() -> PaymentCardIn {
     let name = ask("Enter card name:");
+    let color = ask("Enter card color (optional):");
     let number = ask("Enter card number:");
     let name_on_card = ask("Enter card holder name:");
     let card_expiration_month = ask_number("Enter card expiration month:");
@@ -168,6 +249,7 @@ pub fn ask_payment_info() -> PaymentCardIn {
     PaymentCardIn {
         iv,
         name,
+        color: if color != "" { Some(color) } else { None },
         number,
         name_on_card,
         expiry: ExpiryIn {
@@ -175,7 +257,6 @@ pub fn ask_payment_info() -> PaymentCardIn {
             year: card_expiration_year,
         },
         cvv,
-        color: None,
         billing_address: Some(address),
     }
 }
