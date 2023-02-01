@@ -173,6 +173,21 @@ pub mod queries {
     }
 
     #[derive(cynic::FragmentArguments, Debug)]
+    pub struct DeletePaymentCardMutationVariables {
+        pub id: i32,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "DeletePaymentCardMutationVariables"
+    )]
+    pub struct DeletePaymentCardMutation {
+        #[arguments(id = args.id)]
+        pub delete_payment_card: i32,
+    }
+
+    #[derive(cynic::FragmentArguments, Debug)]
     pub struct MigrateMutationVariables {
         pub new_key: String,
         pub old_key: String,
@@ -506,4 +521,26 @@ fn build_add_payment_card_mutation(
     AddPaymentCardMutation::build(&AddPaymentCardMutationVariables {
         input: queries::AddPaymentCardIn { payment, vault_id },
     })
+}
+
+pub async fn run_delete_payment_card_mutation(
+    access_token: &str,
+    id: i32,
+) -> cynic::GraphQlResponse<queries::DeletePaymentCardMutation> {
+    let operation: cynic::Operation<queries::DeletePaymentCardMutation> =
+        build_delete_payment_card_mutation(id);
+
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_delete_payment_card_mutation(
+    id: i32,
+) -> cynic::Operation<'static, queries::DeletePaymentCardMutation> {
+    use cynic::MutationBuilder;
+    use queries::{DeletePaymentCardMutation, DeletePaymentCardMutationVariables};
+
+    DeletePaymentCardMutation::build(&DeletePaymentCardMutationVariables { id })
 }

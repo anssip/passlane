@@ -122,6 +122,7 @@ type Mutation {
   deleteCredentials(input: DeleteCredentialsIn!): Int!
   migrate(oldKey: String!, newKey: String!): Int!
   addPaymentCard(input: AddPaymentCardIn!): PaymentCard!
+  deletePaymentCard(id: Int!): Int!
 }
 
 type Query {

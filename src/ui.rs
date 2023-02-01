@@ -190,7 +190,7 @@ pub fn show_card(card: &PaymentCard) {
     println!("{table}");
 }
 
-pub fn ask_index(question: &str, maxIndex: i16) -> Result<usize, String> {
+pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
     let answer = ask(question);
     if answer == "q" {
         return Err(String::from("Quitting"));
@@ -200,7 +200,7 @@ pub fn ask_index(question: &str, maxIndex: i16) -> Result<usize, String> {
     }
     return match answer.parse::<i16>() {
         Ok(num) => {
-            if num >= 0 && num <= maxIndex as i16 {
+            if num >= 0 && num <= max_index as i16 {
                 Ok(num.try_into().unwrap())
             } else {
                 Err(String::from("Invalid index"))

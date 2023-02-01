@@ -215,13 +215,15 @@ impl ShowAction {
             println!("No payment cards found");
         } else {
             println!("Found {} payment cards:", matches.len());
-            println!("{:?}", matches);
             ui::show_payment_cards_table(&matches, self.verbose);
 
             if matches.len() == 1 {
-                ui::show_card(&matches[0]);
-                copy_to_clipboard(&matches[0].number);
-                println!("Card number copied to clipboard!",);
+                let response = ui::ask("Do you want to see the card details? (y/n)");
+                if response == "y" {
+                    ui::show_card(&matches[0]);
+                    copy_to_clipboard(&matches[0].number);
+                    println!("Card number copied to clipboard!",);
+                }
             } else {
                 match ui::ask_index(
                     "Enter a row number from the table above, or press q to exit:",
@@ -269,19 +271,24 @@ impl Action for ShowAction {
 }
 
 pub struct DeleteAction {
-    pub grep: String,
+    pub grep: Option<String>,
+    pub payments: bool,
 }
 
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
-            grep: matches.get_one::<String>("REGEXP").expect("required").to_string(),
+            grep: matches.get_one::<String>("REGEXP").cloned(),
+            payments: *matches
+                .get_one::<bool>("payments")
+                .expect("defaulted to false by clap"),
+
         }
     }
 }
 
 
-async fn delete(grep: &str) -> anyhow::Result<()> {
+async fn delete_credentials(grep: &str) -> anyhow::Result<()> {
     let matches = find_credentials(grep).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
@@ -319,11 +326,53 @@ async fn delete(grep: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn delete_payment() -> anyhow::Result<()> {
+    let token = get_access_token().await?;
+    let cards = online_vault::find_payment_cards(&token.access_token).await?;
+    if cards.len() == 0 {
+        println!("No payment cards found");
+        return Ok(());
+    }
+    ui::show_payment_cards_table(&cards, false);
+    if cards.len() == 1 {
+        let response = ui::ask("Do you want to delete this card? (y/n)");
+        if response == "y" {
+            online_vault::delete_payment_card(&token.access_token, cards[0].id).await?;            
+            println!("Deleted card named '{}'!", cards[0].name);
+        }
+        return Ok(());
+    } 
+    match ui::ask_index(
+        "To delete, please enter a row number from the table above, or press q to abort:",
+        cards.len() as i16 - 1,
+    ) {
+        Ok(index) => {
+            if index == usize::MAX {
+                // ignore                   
+            } else {
+                online_vault::delete_payment_card(&token.access_token, cards[index].id).await?;            
+                println!("Deleted card named '{}'!", cards[index].name);
+            }
+        }
+        Err(message) => {
+            println!("{}", message);
+        }
+    }
+    Ok(())
+}
 
 #[async_trait]
 impl Action for DeleteAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        delete(&self.grep).await?;
+        if self.payments {
+            delete_payment().await?;
+        } else {
+            let grep = match &self.grep {
+                Some(grep) => grep,
+                None => panic!("-g <REGEXP> is required"),
+            };    
+            delete_credentials(grep).await?;
+        }
         Ok(())
     }
 }

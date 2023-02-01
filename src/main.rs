@@ -52,10 +52,16 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("delete")
-                .about("Deletes one or more credentials by searching with the specified regular expression.")
-                .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete."))
+                .about("Deletes one or more entries.")
+                .arg(arg!(
+                    -c --credentials "Delete credentials."
+                ).action(ArgAction::SetTrue).requires("search"))
+                .arg(arg!(
+                    -p --payments "Delete payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete.").group("search").required(false))
                 .arg_required_else_help(true)
-        )
+            )
         .subcommand(
             Command::new("show")
                 .about("Shows one or more entries.")
