@@ -25,7 +25,7 @@ fn cli() -> Command {
         .allow_external_subcommands(true)
         .subcommand(
             Command::new("login")
-                .about("Login to passlanevault.com")
+                .about("Login to the online vault.")
         )
         .subcommand(
             Command::new("password")
@@ -33,7 +33,7 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("add")
-                .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payemtn card.")
+                .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.")
                 .arg(arg!(
                     -p --payment "Add a payment card."
                 ).action(ArgAction::SetTrue))
@@ -78,11 +78,11 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("lock")
-                .about("Lock the vaults to prevent access to clear-text passwords")
+                .about("Lock the vaults to prevent all access")
         )
         .subcommand(
             Command::new("unlock")
-                .about("Opens the vaults and grants access to clear-text passwords")
+                .about("Opens the vaults and grants access to the entries")
         )
 }
 
