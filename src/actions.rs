@@ -1,5 +1,5 @@
 use crate::credentials::derive_encryption_key;
-use crate::online_vault::get_me;
+use crate::online_vault::get_plain_me;
 use crate::store::get_encryption_key;
 use crate::store::delete_encryption_key;
 use crate::AccessTokens;
@@ -445,7 +445,7 @@ async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
         let token = get_access_token().await?;
-        let me = get_me(&token.access_token).await?;
+        let me = get_plain_me(&token.access_token).await?;
         let salt = me.get_salt();
         let old_key = derive_encryption_key(&old_pwd, &salt);
         let new_key = derive_encryption_key(&new_pwd, &salt);
@@ -508,7 +508,7 @@ impl Action for UnlockAction {
     async fn execute(&self) -> anyhow::Result<()> {
         let token = get_access_token().await?;
         let master_password = ui::ask_master_password(None);
-        let me = online_vault::get_me(&token.access_token).await?;
+        let me = online_vault::get_plain_me(&token.access_token).await?;
 
         store::save_encryption_key(&me.get_encryption_key(&master_password))?;
         Ok(())

@@ -11,7 +11,6 @@ pub mod queries {
     use crate::credentials::{decrypt, encrypt};
     use core::fmt::Display;
     use core::fmt::Formatter;
-    use log::debug;
 
     #[derive(cynic::FragmentArguments, Debug)]
     pub struct CredentialsQueryVariables {
@@ -19,7 +18,7 @@ pub mod queries {
     }
 
     #[derive(cynic::FragmentArguments, Debug)]
-    pub struct PaymentCardsQueryVariables {}
+    pub struct EmptyQueryVariables {}
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(graphql_type = "Query", argument_struct = "CredentialsQueryVariables")]
@@ -28,9 +27,15 @@ pub mod queries {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Query", argument_struct = "PaymentCardsQueryVariables")]
+    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
     pub struct PaymentCardMeQuery {
         pub me: UserWithPaymentCards,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
+    pub struct PlainMeQuery {
+        pub me: PlainUser,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -47,7 +52,7 @@ pub mod queries {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "PaymentCardsQueryVariables", graphql_type = "User")]
+    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
     pub struct UserWithPaymentCards {
         pub auth_user_id: String,
         pub created: Date,
@@ -59,20 +64,26 @@ pub mod queries {
         pub vaults: Vec<VaultWithPaymentCards>,
     }
 
-    impl User {
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    pub struct PlainUser {
+        pub auth_user_id: String,
+        pub created: Date,
+        pub email: String,
+        pub first_name: String,
+        pub id: i32,
+        pub last_name: String,
+        pub modified: Option<Date>,
+    }
+
+    impl PlainUser {
         pub fn get_salt(&self) -> String {
             format!("{}-{}", self.id, self.created).replace(":", "")
         }
 
         pub fn get_encryption_key(&self, master_pwd: &str) -> String {
-            debug!("created: {}", self.created.to_string());
-
             let salt = self.get_salt();
-            debug!("salt: {}", salt);
-
-            let encryption_key = derive_encryption_key(&salt, master_pwd);
-            debug!("encryption_key: {}", encryption_key);
-            encryption_key
+            derive_encryption_key(&salt, master_pwd)
         }
     }
 
@@ -87,7 +98,7 @@ pub mod queries {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "PaymentCardsQueryVariables", graphql_type = "Vault")]
+    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
     pub struct VaultWithPaymentCards {
         pub id: i32,
         pub name: String,
@@ -417,7 +428,22 @@ pub async fn run_payment_card_query(
 
 fn build_payment_card_query() -> cynic::Operation<'static, queries::PaymentCardMeQuery> {
     use cynic::QueryBuilder;
-    queries::PaymentCardMeQuery::build(queries::PaymentCardsQueryVariables {})
+    queries::PaymentCardMeQuery::build(queries::EmptyQueryVariables {})
+}
+
+pub async fn run_plain_me_query(
+    access_token: &str,
+) -> cynic::GraphQlResponse<queries::PlainMeQuery> {
+    let operation = build_plain_me_query();
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_plain_me_query() -> cynic::Operation<'static, queries::PlainMeQuery> {
+    use cynic::QueryBuilder;
+    queries::PlainMeQuery::build(queries::EmptyQueryVariables {})
 }
 
 pub async fn run_add_credentials_group_mutation(

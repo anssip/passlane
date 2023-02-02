@@ -10,7 +10,8 @@ use crate::graphql::queries::MigrateMutation;
 use crate::graphql::queries::PaymentCard;
 use crate::graphql::queries::PaymentCardIn;
 use crate::graphql::queries::PaymentCardMeQuery;
-use crate::graphql::queries::User;
+use crate::graphql::queries::PlainMeQuery;
+use crate::graphql::queries::PlainUser;
 use crate::store::get_encryption_key;
 use anyhow::bail;
 use log::debug;
@@ -136,11 +137,10 @@ fn check_response_errors<T>(response: cynic::GraphQlResponse<T>) -> String {
     }
 }
 
-pub async fn get_me(access_token: &str) -> anyhow::Result<User> {
-    // TODO: should not run the normal me_query, but a new query wich does not query vaults or payment cards
-    let response = graphql::run_me_query(access_token, None).await;
+pub async fn get_plain_me(access_token: &str) -> anyhow::Result<PlainUser> {
+    let response = graphql::run_plain_me_query(access_token).await;
     match response.data {
-        Some(MeQuery { me }) => Ok(me),
+        Some(PlainMeQuery { me }) => Ok(me),
         None => bail!(check_response_errors(response)),
     }
 }
