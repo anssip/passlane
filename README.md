@@ -2,6 +2,8 @@
 
 Passlane is a password manager for the command line and for the Web. There is also a web interface at [passlanevault.com](https://passlanevault.com) that you can use to access your credentials on any device.
 
+Passlane also supports secure saving and managing of payment cards.
+
 Passlane CLI is written in Rust.
 
 ![Screenshot](https://i.imgur.com/TMB8DbS.webp)
@@ -11,6 +13,7 @@ Passlane CLI is written in Rust.
 - You control the encryption keys: Your keys, your data.
 - CLI and Web user interfaces (see below)
 - Generate and save passwords
+- Save and view payment card information
 - Full management features
 - Online storage with access from any device
 - Import passwords from CSV files
@@ -46,27 +49,23 @@ to connect the CLI with the vault. The connection will stay active after that. U
 
 ```bash
 $  passlane -h
-passlane
 A password manager and a CLI client for the online Passlane Vault
 
-USAGE:
-    passlane [SUBCOMMAND]
+Usage: passlane [COMMAND]
 
-OPTIONS:
-    -h, --help    Print help information
+Commands:
+  login     Login to the online vault.
+  password  Change the master password.
+  add       Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.
+  csv       Imports credentials from a CSV file.
+  delete    Deletes one or more entries.
+  show      Shows one or more entries.
+  lock      Lock the vaults to prevent all access
+  unlock    Opens the vaults and grants access to the entries
+  help      Print this message or the help of the given subcommand(s)
 
-SUBCOMMANDS:
-    add         Adds a new credential to the vault.
-    csv         Imports credentials from a CSV file.
-    delete      Deletes one or more credentials by searching with the specified regular
-                    expression.
-    help        Print this message or the help of the given subcommand(s)
-    lock        Lock the vaults to prevent access to clear-text passwords
-    login       Login to passlanevault.com
-    password    Change the master password.
-    show        Shows one or more credentials by searching with the specified regular
-                    expression.
-    unlock      Opens the vaults and grants access to clear-text passwords
+Options:
+  -h, --help  Print help
 ```
 
 ### Locking and unlocking
@@ -93,21 +92,27 @@ To generate a new password without saving it. The generated password value is al
 passlane
 ```
 
-To save a password from clipboard:
+To save new credentials by copying the password from clipboard:
 
 ```
-passlane add -c
+passlane add -c --clipboard
 ```
 
-To generate a new password and save it with one command:
+To generate a new password and save credentials with one command:
 
 ```
-passlane add -g
+passlane add -c -g
+```
+
+To save a payment card:
+
+```
+passlane add -p
 ```
 
 ### Using saved credentials
 
-You can search and show saved passwords with regular expressions
+You can search and show saved credentials with regular expressions
 
 ```
 passlane show <regexp>
@@ -136,6 +141,22 @@ the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
+### Using saved payment cards
+
+To list all your saved payment cards.
+
+```
+passlane show -p
+
+Found 1 payment cards:
++---+---------------+-------+--------+--------+
+|   | Name          | Color | Last 4 | Expiry |
++=============================================+
+| 0 | Personal Visa | White | 1234   | 9/25   |
++---+---------------+-------+--------+--------+
+Do you want to see the card details? (y/n) y
+```
+
 ### Migrating from 1Password, LastPass, Dashlane etc.
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
@@ -162,14 +183,8 @@ Here are links to instructions for doing the CSV export:
 
 ## Roadmap
 
-### 2.0
-
-Encryption keys
-
 ### Next
 
-- [x] Update Web UI. Check [this component](https://github.com/tbleckert/react-select-search).
-- [ ] Add payment methods
 - [ ] Add secure notes
 - [ ] Refactor: Remove Credentials struct and only use the graphql Credentials type (similar to PaymentCards)
 

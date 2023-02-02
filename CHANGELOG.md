@@ -1,5 +1,9 @@
 # Changelog
 
+# [2.1.0]
+
+- Added possibility to manage payment cards.
+
 ## [2.0.0]
 
 - Introduced encryption keys.
