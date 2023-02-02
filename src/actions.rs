@@ -98,6 +98,7 @@ impl Action for LoginAction {
 pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
+    pub add_payment: bool,
 }
 
 impl AddAction {
@@ -109,6 +110,10 @@ impl AddAction {
             clipboard: *matches
                 .get_one::<bool>("clipboard")
                 .expect("defaulted to false by clap"),
+            add_payment: *matches
+                .get_one::<bool>("payment")
+                .expect("defaulted to false by clap"),
+
         }
     }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
@@ -136,16 +141,12 @@ impl AddAction {
         println!("Saved.");
         Ok(())
     }
-}
-
-#[async_trait]
-impl Action for AddAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    async fn add_credential(&self) -> anyhow::Result<(), anyhow::Error> {
         let password = self.get_password().context(format!(
             "Failed to get password {}",
             if self.clipboard { "from clipboard" } else { "" }
         ))?;
-
+    
         let creds = ui::ask_credentials(&password);
         self.save(&creds)
             .await
@@ -154,6 +155,25 @@ impl Action for AddAction {
             copy_to_clipboard(&password);
             println!("Password - also copied to clipboard: {}", password);
         };
+        Ok(())
+    }
+    async fn add_payment(&self) -> anyhow::Result<()> {
+        let encryption_key = get_encryption_key()?;
+        let token = get_access_token().await?;
+        let payment = ui::ask_payment_info();
+        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await
+    }
+
+}
+
+#[async_trait]
+impl Action for AddAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        if self.add_payment {
+            self.add_payment().await?;
+        } else {
+            self.add_credential().await?;
+        }
         Ok(())
     }
 }
@@ -491,19 +511,6 @@ impl Action for UnlockAction {
         let me = online_vault::get_me(&token.access_token).await?;
 
         store::save_encryption_key(&me.get_encryption_key(&master_password))?;
-        Ok(())
-    }
-}
-
-pub struct SavePaymentCardAction {}
-
-#[async_trait]
-impl Action for SavePaymentCardAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        let encryption_key = get_encryption_key()?;
-        let token = get_access_token().await?;
-        let payment = ui::ask_payment_info();
-        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await?;     
         Ok(())
     }
 }

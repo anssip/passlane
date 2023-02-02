@@ -33,17 +33,16 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("add")
-                .about("Adds a new credential to the vault.")
+                .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payemtn card.")
+                .arg(arg!(
+                    -p --payment "Add a payment card."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -g --generate "Generate the password to be saved."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
-                    -c --clipboard "Get the password to save from the clipboard."
+                    -l --clipboard "Get the password to save from the clipboard."
                 ).action(ArgAction::SetTrue))
-        )
-        .subcommand(
-            Command::new("add-payment")
-                .about("Adds a new payment method.")
         )
         .subcommand(
             Command::new("csv")
@@ -95,7 +94,6 @@ async fn main() -> anyhow::Result<()> {
     match matches.subcommand() {
         Some(("login", _)) => actions::LoginAction::new().execute().await?,
         Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
-        Some(("add-payment", _)) => actions::SavePaymentCardAction {}.execute().await?,
         Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
         Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
         Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
