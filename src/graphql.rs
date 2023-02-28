@@ -44,9 +44,9 @@ pub mod queries {
         pub auth_user_id: String,
         pub created: Date,
         pub email: String,
-        pub first_name: String,
+        pub first_name: Option<String>,
+        pub last_name: Option<String>,
         pub id: i32,
-        pub last_name: String,
         pub modified: Option<Date>,
         pub vaults: Vec<Vault>,
     }
@@ -57,9 +57,9 @@ pub mod queries {
         pub auth_user_id: String,
         pub created: Date,
         pub email: String,
-        pub first_name: String,
+        pub first_name: Option<String>,
+        pub last_name: Option<String>,
         pub id: i32,
-        pub last_name: String,
         pub modified: Option<Date>,
         pub vaults: Vec<VaultWithPaymentCards>,
     }
@@ -70,9 +70,9 @@ pub mod queries {
         pub auth_user_id: String,
         pub created: Date,
         pub email: String,
-        pub first_name: String,
+        pub first_name: Option<String>,
+        pub last_name: Option<String>,
         pub id: i32,
-        pub last_name: String,
         pub modified: Option<Date>,
     }
 

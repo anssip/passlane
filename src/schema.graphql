@@ -3,8 +3,8 @@ scalar Date
 type User {
   id: Int!
   authUserId: String!
-  firstName: String!
-  lastName: String!
+  firstName: String
+  lastName: String
   email: String!
   vaults: [Vault!]!
   created: Date!

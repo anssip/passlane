@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.1]
+
+- Fixed to allow null values in the user account first name and last name. [#4](https://github.com/anssip/passlane/issues/4)
+
 ## [2.1.0]
 
 - Added possibility to manage payment cards.
