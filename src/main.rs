@@ -74,6 +74,9 @@ fn cli() -> Command {
                     -p --payments "Shows payment cards."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
+                    -n --notes "Shows secure notes."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
                     -c --credentials "Shows credentials by searching with the specified regular expression."
                 ).action(ArgAction::SetTrue).requires("search"))
                 .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))

@@ -34,6 +34,12 @@ pub mod queries {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
+    pub struct NotesMeQuery {
+        pub me: UserWithNotes,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
     pub struct PlainMeQuery {
         pub me: PlainUser,
     }
@@ -62,6 +68,19 @@ pub mod queries {
         pub id: i32,
         pub modified: Option<Date>,
         pub vaults: Vec<VaultWithPaymentCards>,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    pub struct UserWithNotes {
+        pub auth_user_id: String,
+        pub created: Date,
+        pub email: String,
+        pub first_name: Option<String>,
+        pub last_name: Option<String>,
+        pub id: i32,
+        pub modified: Option<Date>,
+        pub vaults: Vec<VaultWithNotes>,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
@@ -103,6 +122,15 @@ pub mod queries {
         pub id: i32,
         pub name: String,
         pub payment_cards: Option<Vec<Option<PaymentCard>>>,
+        pub personal: bool,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
+    pub struct VaultWithNotes {
+        pub id: i32,
+        pub name: String,
+        pub notes: Option<Vec<Option<Note>>>,
         pub personal: bool,
     }
 
@@ -485,6 +513,19 @@ pub async fn run_payment_card_query(
 fn build_payment_card_query() -> cynic::Operation<'static, queries::PaymentCardMeQuery> {
     use cynic::QueryBuilder;
     queries::PaymentCardMeQuery::build(queries::EmptyQueryVariables {})
+}
+
+pub async fn run_notes_query(access_token: &str) -> cynic::GraphQlResponse<queries::NotesMeQuery> {
+    let operation = build_notes_query();
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_notes_query() -> cynic::Operation<'static, queries::NotesMeQuery> {
+    use cynic::QueryBuilder;
+    queries::NotesMeQuery::build(queries::EmptyQueryVariables {})
 }
 
 pub async fn run_plain_me_query(

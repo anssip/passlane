@@ -196,6 +196,7 @@ pub struct ShowAction {
     pub grep: Option<String>,
     pub verbose: bool,
     pub payments: bool,
+    pub notes: bool,
 }
 
 impl ShowAction {
@@ -208,6 +209,9 @@ impl ShowAction {
             payments: *matches
                 .get_one::<bool>("payments")
                 .expect("defaulted to false by clap"),
+            notes: *matches
+                .get_one::<bool>("notes")
+                .expect("defaulted to false by clap")
         }
     }
     async fn show_credentials(&self) -> anyhow::Result<()> {
@@ -273,11 +277,42 @@ impl ShowAction {
                     }
                 }
             }
-
         }
         Ok(())
     }
 
+    async fn show_notes(&self) -> anyhow::Result<()> {
+        debug!("showing notes");
+        let token = get_access_token().await?;
+        let matches = online_vault::find_notes(&token.access_token).await?;
+        if matches.len() == 0 {
+            println!("No notes found");
+        } else {
+            println!("Found {} notes:", matches.len());
+            ui::show_notes_table(&matches, self.verbose);
+
+
+            if matches.len() == 1 {
+                let response = ui::ask("Do you want to see the full note? (y/n)");
+                if response == "y" {
+                    ui::show_note(&matches[0]);
+                }
+            } else {
+                match ui::ask_index(
+                    "Enter a row number from the table above, or press q to exit:",
+                    matches.len() as i16 - 1,
+                ) {
+                    Ok(index) => {
+                        ui::show_note(&matches[index]);
+                    }
+                    Err(message) => {
+                        println!("{}", message);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 async fn find_credentials(
@@ -297,6 +332,8 @@ impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
         if self.payments {
             self.show_payments().await?;
+        } else if self.notes {
+            self.show_notes().await?;
         } else {
             self.show_credentials().await?;
         }

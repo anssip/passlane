@@ -10,6 +10,7 @@ use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::MigrateMutation;
 use crate::graphql::queries::Note;
 use crate::graphql::queries::NoteIn;
+use crate::graphql::queries::NotesMeQuery;
 use crate::graphql::queries::PaymentCard;
 use crate::graphql::queries::PaymentCardIn;
 use crate::graphql::queries::PaymentCardMeQuery;
@@ -178,4 +179,28 @@ pub async fn save_note(access_token: &str, note: &NoteIn) -> anyhow::Result<Note
         Some(AddNoteMutation { add_note }) => Ok(add_note),
         None => bail!(check_response_errors(response)),
     }
+}
+
+pub(crate) async fn find_notes(access_token: &str) -> anyhow::Result<Vec<Note>> {
+    let response = graphql::run_notes_query(access_token).await;
+    let me = match response.data {
+        Some(NotesMeQuery { me }) => me,
+        None => bail!(check_response_errors(response)),
+    };
+    debug!("me: {:?}", me);
+    let encryption_key = get_encryption_key()?;
+    let result_notes = &mut Vec::new();
+
+    for vault in me.vaults {
+        if let Some(notes) = vault.notes {
+            for notes in notes {
+                if let Some(note) = notes {
+                    let decrypted = note.decrypt(&encryption_key)?;
+                    result_notes.push(decrypted);
+                }
+            }
+        }
+    }
+    debug!("result_notes: {:?}", result_notes);
+    Ok(result_notes.to_vec())
 }

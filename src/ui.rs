@@ -3,7 +3,7 @@ use std::io;
 use std::io::Write;
 
 use crate::credentials::{get_random_key, Credentials};
-use crate::graphql::queries::{AddressIn, ExpiryIn, NoteIn, PaymentCard, PaymentCardIn};
+use crate::graphql::queries::{AddressIn, ExpiryIn, Note, NoteIn, PaymentCard, PaymentCardIn};
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
@@ -106,10 +106,13 @@ pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: boo
     println!("{table}");
 }
 
+fn header_cell(label: String) -> Cell {
+    Cell::new(label).fg(Color::Green)
+}
+
 pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) {
     let mut table = Table::new();
     let mut index: i16 = 0;
-    let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_cleartext {
         vec![
             "",
@@ -272,4 +275,44 @@ pub(crate) fn ask_note_info() -> NoteIn {
         content,
         vault_id: None,
     }
+}
+
+pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
+    let mut table = Table::new();
+    let mut index: i16 = 0;
+    let headers = if show_cleartext {
+        vec!["", "Title", "Note"]
+    } else {
+        vec!["", "Title"]
+    };
+    table.set_header(
+        headers
+            .iter()
+            .map(|&h| header_cell(String::from(h)))
+            .collect::<Vec<Cell>>(),
+    );
+    for note in notes {
+        let columns = if show_cleartext {
+            vec![
+                Cell::new(index.to_string()).fg(Color::Yellow),
+                Cell::new(String::from(&note.title)),
+                Cell::new(String::from(&note.content)),
+            ]
+        } else {
+            vec![
+                Cell::new(index.to_string()).fg(Color::Yellow),
+                Cell::new(String::from(&note.title)),
+            ]
+        };
+        table.add_row(columns);
+        index += 1;
+    }
+    println!("{table}");
+}
+
+pub(crate) fn show_note(note: &Note) {
+    println!("---------------------------");
+    println!("{}\n", note.title);
+    println!("{}", note.content);
+    println!("---------------------------");
 }
