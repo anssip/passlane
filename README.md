@@ -2,7 +2,7 @@
 
 Passlane is a password manager for the command line and for the Web. There is also a web interface at [passlanevault.com](https://passlanevault.com) that you can use to access your credentials on any device.
 
-Passlane also supports secure saving and managing of payment cards.
+Passlane also supports secure saving and managing of **payment cards** and **secure notes**.
 
 Passlane CLI is written in Rust.
 
