@@ -388,6 +388,62 @@ pub mod queries {
         })]
         pub add_payment_card: PaymentCard,
     }
+
+    #[derive(cynic::QueryFragment, Debug, Clone)]
+    pub struct Note {
+        pub id: i32,
+        pub iv: String,
+        pub title: String,
+        pub content: String,
+        pub created: Date,
+        pub modified: Option<Date>,
+    }
+    impl Note {
+        pub fn decrypt(&self, key: &str) -> anyhow::Result<Note> {
+            Ok(Note {
+                id: self.id,
+                iv: self.iv.clone(),
+                title: decrypt((key, &self.iv), &self.title)?,
+                content: decrypt((key, &self.iv), &self.content)?,
+                created: self.created.clone(),
+                modified: if let Some(modified) = &self.modified {
+                    Some(modified.clone())
+                } else {
+                    None
+                },
+            })
+        }
+    }
+
+    #[derive(cynic::FragmentArguments, cynic::InputObject, Debug, Clone)]
+    pub struct NoteIn {
+        pub iv: String,
+        pub title: String,
+        pub content: String,
+        pub vault_id: Option<i32>,
+    }
+    impl NoteIn {
+        pub fn encrypt(&self, key: &str) -> NoteIn {
+            NoteIn {
+                iv: self.iv.clone(),
+                title: encrypt(key, &self.iv, &self.title),
+                content: encrypt(key, &self.iv, &self.content),
+                vault_id: self.vault_id,
+            }
+        }
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(graphql_type = "Mutation", argument_struct = "NoteIn")]
+    pub struct AddNoteMutation {
+        #[arguments(input = NoteIn {
+            iv: args.iv.clone(),
+            title: args.title.clone(),
+            content: args.content.clone(),
+            vault_id: args.vault_id
+        })]
+        pub add_note: Note,
+    }
 }
 
 mod schema {
@@ -569,4 +625,25 @@ fn build_delete_payment_card_mutation(
     use queries::{DeletePaymentCardMutation, DeletePaymentCardMutationVariables};
 
     DeletePaymentCardMutation::build(&DeletePaymentCardMutationVariables { id })
+}
+
+pub async fn run_add_note_mutation(
+    access_token: &str,
+    note: &queries::NoteIn,
+) -> cynic::GraphQlResponse<queries::AddNoteMutation> {
+    let operation: cynic::Operation<queries::AddNoteMutation> = build_add_note_mutation(note);
+
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_add_note_mutation(
+    note: &queries::NoteIn,
+) -> cynic::Operation<'static, queries::AddNoteMutation> {
+    use cynic::MutationBuilder;
+    use queries::AddNoteMutation;
+
+    AddNoteMutation::build(note)
 }

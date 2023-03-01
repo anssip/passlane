@@ -38,6 +38,9 @@ fn cli() -> Command {
                     -p --payment "Add a payment card."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
+                    -n --note "Add a secure note."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
                     -g --generate "Generate the password to be saved."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(

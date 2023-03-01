@@ -99,6 +99,7 @@ pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
     pub add_payment: bool,
+    pub add_note: bool
 }
 
 impl AddAction {
@@ -112,6 +113,9 @@ impl AddAction {
                 .expect("defaulted to false by clap"),
             add_payment: *matches
                 .get_one::<bool>("payment")
+                .expect("defaulted to false by clap"),
+            add_note: *matches
+                .get_one::<bool>("note")
                 .expect("defaulted to false by clap"),
 
         }
@@ -163,6 +167,14 @@ impl AddAction {
         let payment = ui::ask_payment_info();
         online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await
     }
+    async fn add_note(&self) -> anyhow::Result<()> {
+        let encryption_key = get_encryption_key()?;
+        let token = get_access_token().await?;
+        let note = ui::ask_note_info();
+        online_vault::save_note(&token.access_token, &note.encrypt(&encryption_key)).await?;
+        println!("Note saved.");
+        Ok(())
+    }
 
 }
 
@@ -171,6 +183,8 @@ impl Action for AddAction {
     async fn execute(&self) -> anyhow::Result<()> {
         if self.add_payment {
             self.add_payment().await?;
+        } else if self.add_note {
+            self.add_note().await?;
         } else {
             self.add_credential().await?;
         }

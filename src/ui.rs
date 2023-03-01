@@ -3,7 +3,7 @@ use std::io;
 use std::io::Write;
 
 use crate::credentials::{get_random_key, Credentials};
-use crate::graphql::queries::{AddressIn, ExpiryIn, PaymentCard, PaymentCardIn};
+use crate::graphql::queries::{AddressIn, ExpiryIn, NoteIn, PaymentCard, PaymentCardIn};
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
@@ -258,5 +258,18 @@ pub fn ask_payment_info() -> PaymentCardIn {
         },
         cvv,
         billing_address: Some(address),
+    }
+}
+
+pub(crate) fn ask_note_info() -> NoteIn {
+    let title = ask("Enter note title:");
+    let content = ask("Enter note content:");
+    let iv = get_random_key();
+
+    NoteIn {
+        iv,
+        title,
+        content,
+        vault_id: None,
     }
 }

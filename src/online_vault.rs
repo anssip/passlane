@@ -1,12 +1,15 @@
 use crate::credentials::Credentials as CredentialsModel;
 use crate::graphql;
 use crate::graphql::queries::AddGredentialsGroupMutation;
+use crate::graphql::queries::AddNoteMutation;
 use crate::graphql::queries::AddPaymentCardMutation;
 use crate::graphql::queries::CredentialsIn;
 use crate::graphql::queries::DeleteCredentialsMutation;
 use crate::graphql::queries::DeletePaymentCardMutation;
 use crate::graphql::queries::MeQuery;
 use crate::graphql::queries::MigrateMutation;
+use crate::graphql::queries::Note;
+use crate::graphql::queries::NoteIn;
 use crate::graphql::queries::PaymentCard;
 use crate::graphql::queries::PaymentCardIn;
 use crate::graphql::queries::PaymentCardMeQuery;
@@ -165,6 +168,14 @@ pub async fn delete_payment_card(access_token: &str, id: i32) -> anyhow::Result<
         Some(DeletePaymentCardMutation {
             delete_payment_card,
         }) => Ok(delete_payment_card),
+        None => bail!(check_response_errors(response)),
+    }
+}
+
+pub async fn save_note(access_token: &str, note: &NoteIn) -> anyhow::Result<Note> {
+    let response = graphql::run_add_note_mutation(access_token, note).await;
+    match response.data {
+        Some(AddNoteMutation { add_note }) => Ok(add_note),
         None => bail!(check_response_errors(response)),
     }
 }

@@ -17,6 +17,7 @@ type Vault {
   name: String!
   credentials(grep: String): [Credentials]
   paymentCards: [PaymentCard]
+  notes: [Note]
 }
 
 type Credentials {
@@ -115,6 +116,23 @@ input DeleteCredentialsIn {
   index: Int
 }
 
+type Note {
+  id: Int!
+  iv: String!
+  vaultId: Int!
+  title: String!
+  content: String!
+  created: Date!
+  modified: Date
+}
+
+input NoteIn {
+  iv: String!
+  vaultId: Int
+  content: String!
+  title: String!
+}
+
 type Mutation {
   addCredentials(input: AddCredentialsIn!): Credentials!
   addCredentialsGroup(input: AddCredentialsGroupIn!): Int!
@@ -123,6 +141,8 @@ type Mutation {
   migrate(oldKey: String!, newKey: String!): Int!
   addPaymentCard(input: AddPaymentCardIn!): PaymentCard!
   deletePaymentCard(id: Int!): Int!
+  addNote(input: NoteIn!): Note!
+  deleteNote(id: Int!): Int!
 }
 
 type Query {
