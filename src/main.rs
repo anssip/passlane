@@ -61,6 +61,9 @@ fn cli() -> Command {
                 .arg(arg!(
                     -p --payments "Delete payment cards."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -n --notes "Delete secure notes."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete.").group("search").required(false))
                 .arg_required_else_help(true)
             )

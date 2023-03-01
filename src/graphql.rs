@@ -472,6 +472,21 @@ pub mod queries {
         })]
         pub add_note: Note,
     }
+
+    #[derive(cynic::FragmentArguments, Debug)]
+    pub struct DeleteNoteMutationVariables {
+        pub id: i32,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(
+        graphql_type = "Mutation",
+        argument_struct = "DeleteNoteMutationVariables"
+    )]
+    pub struct DeleteNoteMutation {
+        #[arguments(id = args.id)]
+        pub delete_note: i32,
+    }
 }
 
 mod schema {
@@ -687,4 +702,22 @@ fn build_add_note_mutation(
     use queries::AddNoteMutation;
 
     AddNoteMutation::build(note)
+}
+
+pub async fn run_delete_note_mutation(
+    access_token: &str,
+    id: i32,
+) -> cynic::GraphQlResponse<queries::DeleteNoteMutation> {
+    let operation = build_delete_note_mutation(id);
+    new_request(access_token)
+        .run_graphql(operation)
+        .await
+        .unwrap()
+}
+
+fn build_delete_note_mutation(id: i32) -> cynic::Operation<'static, queries::DeleteNoteMutation> {
+    use cynic::MutationBuilder;
+    use queries::{DeleteNoteMutation, DeleteNoteMutationVariables};
+
+    DeleteNoteMutation::build(&DeleteNoteMutationVariables { id })
 }

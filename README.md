@@ -185,7 +185,8 @@ Here are links to instructions for doing the CSV export:
 
 ### Next
 
-- [ ] Add secure notes
+- [x] Add secure notes
+- [ ] Refactor: remove repetitive code in actions.rs and in graphql.rs
 - [ ] Refactor: Remove Credentials struct and only use the graphql Credentials type (similar to PaymentCards)
 
 ### 3.0

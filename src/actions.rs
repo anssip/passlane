@@ -344,6 +344,7 @@ impl Action for ShowAction {
 pub struct DeleteAction {
     pub grep: Option<String>,
     pub payments: bool,
+    pub notes: bool,
 }
 
 impl DeleteAction {
@@ -352,6 +353,9 @@ impl DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
             payments: *matches
                 .get_one::<bool>("payments")
+                .expect("defaulted to false by clap"),
+            notes: *matches
+                .get_one::<bool>("notes")
                 .expect("defaulted to false by clap"),
 
         }
@@ -432,11 +436,48 @@ async fn delete_payment() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn delete_note() -> anyhow::Result<()> {
+    let token = get_access_token().await?;
+    let notes = online_vault::find_notes(&token.access_token).await?;
+    if notes.len() == 0 {
+        println!("No notes found");
+        return Ok(());
+    }
+    ui::show_notes_table(&notes, false);
+    if notes.len() == 1 {
+        let response = ui::ask("Do you want to delete this note? (y/n)");
+        if response == "y" {
+            online_vault::delete_note(&token.access_token, notes[0].id).await?;            
+            println!("Deleted note with title '{}'!", notes[0].title);
+        }
+        return Ok(());
+    } 
+    match ui::ask_index(
+        "To delete, please enter a row number from the table above, or press q to abort:",
+        notes.len() as i16 - 1,
+    ) {
+        Ok(index) => {
+            if index == usize::MAX {
+                // ignore                   
+            } else {
+                online_vault::delete_note(&token.access_token, notes[index].id).await?;            
+                println!("Deleted note with title '{}'!", notes[index].title);
+            }
+        }
+        Err(message) => {
+            println!("{}", message);
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Action for DeleteAction {
     async fn execute(&self) -> anyhow::Result<()> {
         if self.payments {
             delete_payment().await?;
+        } else if self.notes {
+            delete_note().await?;
         } else {
             let grep = match &self.grep {
                 Some(grep) => grep,
