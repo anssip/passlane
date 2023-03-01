@@ -14,6 +14,7 @@ Passlane CLI is written in Rust.
 - CLI and Web user interfaces (see below)
 - Generate and save passwords
 - Save and view payment card information
+- Save and view secure notes
 - Full management features
 - Online storage with access from any device
 - Import passwords from CSV files
@@ -155,6 +156,28 @@ Found 1 payment cards:
 | 0 | Personal Visa | White | 1234   | 9/25   |
 +---+---------------+-------+--------+--------+
 Do you want to see the card details? (y/n) y
+```
+
+### Secure notes
+
+You can also save and manage **secure notes** in Passlane. The contents of notes, the title and the note text itself, are all fully encrypted and only visible to you.
+
+To add a secure note:
+
+```
+passlane add -n
+```
+
+To delete secure notes:
+
+```
+passlane delete -n
+```
+
+To show secure notes:
+
+```
+passlane show -n
 ```
 
 ### Migrating from 1Password, LastPass, Dashlane etc.

@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.0]
+
+- Added secure notes
+
 ## [2.1.1]
 
 - Fixed to allow null values in the user account first name and last name. [#4](https://github.com/anssip/passlane/issues/4)
