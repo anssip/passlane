@@ -5,7 +5,7 @@ use crate::auth::AccessTokens;
 use clap::{arg, ArgAction, Command};
 
 use crate::actions::Action;
-use crate::credentials::Credentials;
+use crate::graphql::queries::types::*;
 
 mod actions;
 mod auth;

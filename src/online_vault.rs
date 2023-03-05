@@ -1,27 +1,10 @@
-use crate::credentials::Credentials as CredentialsModel;
 use crate::graphql;
-use crate::graphql::queries::AddGredentialsGroupMutation;
-use crate::graphql::queries::AddNoteMutation;
-use crate::graphql::queries::AddPaymentCardMutation;
-use crate::graphql::queries::CredentialsIn;
-use crate::graphql::queries::DeleteCredentialsMutation;
-use crate::graphql::queries::DeleteNoteMutation;
-use crate::graphql::queries::DeletePaymentCardMutation;
-use crate::graphql::queries::MeQuery;
-use crate::graphql::queries::MigrateMutation;
-use crate::graphql::queries::Note;
-use crate::graphql::queries::NoteIn;
-use crate::graphql::queries::NotesMeQuery;
-use crate::graphql::queries::PaymentCard;
-use crate::graphql::queries::PaymentCardIn;
-use crate::graphql::queries::PaymentCardMeQuery;
-use crate::graphql::queries::PlainMeQuery;
-use crate::graphql::queries::PlainUser;
+use crate::graphql::queries::types::*;
 use crate::store::get_encryption_key;
 use anyhow::bail;
 use log::debug;
 
-pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<CredentialsModel>> {
+pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credentials>> {
     let response = graphql::run_me_query(access_token, Some(grep.to_string())).await;
     let me = match response.data {
         Some(MeQuery { me }) => me,
@@ -37,13 +20,7 @@ pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credenti
         if let Some(credentials) = vault.credentials {
             for creds in credentials {
                 if let Some(cred) = creds {
-                    let model = CredentialsModel {
-                        password: cred.password,
-                        iv: cred.iv,
-                        username: cred.username,
-                        service: cred.service,
-                    };
-                    result_credentials.push(model.decrypt(&encryption_key)?);
+                    result_credentials.push(cred.decrypt(&encryption_key)?);
                 }
             }
         }
@@ -79,21 +56,12 @@ pub async fn find_payment_cards(access_token: &str) -> anyhow::Result<Vec<Paymen
 
 pub async fn push_credentials(
     access_token: &str,
-    credentials: &Vec<CredentialsModel>,
+    credentials: &Vec<CredentialsIn>,
     vault_id: Option<i32>,
 ) -> anyhow::Result<i32> {
-    let credentials_in: Vec<CredentialsIn> = credentials
-        .into_iter()
-        .map(|c| CredentialsIn {
-            password_encrypted: String::from(&c.password),
-            iv: String::from(c.iv.as_ref().unwrap()),
-            service: String::from(&c.service),
-            username: String::from(&c.username),
-        })
-        .collect();
-
     let response =
-        graphql::run_add_credentials_group_mutation(access_token, credentials_in, vault_id).await;
+        graphql::run_add_credentials_group_mutation(access_token, credentials.clone(), vault_id)
+            .await;
     match response.data {
         Some(AddGredentialsGroupMutation {
             add_credentials_group,
@@ -104,7 +72,7 @@ pub async fn push_credentials(
 
 pub async fn push_one_credential(
     access_token: &str,
-    credentials: &CredentialsModel,
+    credentials: &CredentialsIn,
     vault_id: Option<i32>,
 ) -> anyhow::Result<i32> {
     let vec = &mut Vec::new();

@@ -2,8 +2,8 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::credentials::{get_random_key, Credentials};
-use crate::graphql::queries::{AddressIn, ExpiryIn, Note, NoteIn, PaymentCard, PaymentCardIn};
+use crate::credentials::get_random_key;
+use crate::graphql::queries::types::*;
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
@@ -33,14 +33,15 @@ pub fn ask_number(question: &str) -> i32 {
     }
 }
 
-pub fn ask_credentials(password: &str) -> Credentials {
+pub fn ask_credentials(password: &str) -> CredentialsIn {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-    Credentials {
+
+    CredentialsIn {
         service,
         username,
-        password: password.into(),
-        iv: None,
+        password_encrypted: password.into(), // maybe rename the field because its not encrypted at this point
+        iv: get_random_key(),
     }
 }
 

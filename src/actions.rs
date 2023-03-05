@@ -1,4 +1,5 @@
 use crate::credentials::derive_encryption_key;
+use crate::graphql::queries::types::CredentialsIn;
 use crate::online_vault::get_plain_me;
 use crate::store::get_encryption_key;
 use crate::store::delete_encryption_key;
@@ -45,7 +46,7 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
 }
 
 async fn push_one_credential(
-    credentials: &Credentials,
+    credentials: &CredentialsIn,
 ) -> anyhow::Result<i32> {
     let token = get_access_token().await?;
     let encryption_key = get_encryption_key()?;
@@ -139,7 +140,7 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    async fn save(&self, creds: &Credentials) -> anyhow::Result<()> {
+    async fn save(&self, creds: &CredentialsIn) -> anyhow::Result<()> {
         info!("saving to online vault");
         push_one_credential(&creds).await?;
         println!("Saved.");
@@ -509,14 +510,16 @@ async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
     let token = get_access_token().await?;
-    let credentials = store::read_from_csv(file_path)?;
+    let input = store::read_from_csv(file_path)?;
+    let creds = input.into_iter().map(|c| c.to_credentials_in().encrypt(master_pwd)).collect();
+
     online_vault::push_credentials(
         &token.access_token,
-        &credentials::encrypt_all(master_pwd, &credentials),
+        &creds,
         None,
     )
     .await?;
-    let num_imported = credentials.len();
+    let num_imported = creds.len();
     Ok(num_imported.try_into().unwrap())
 }
 
@@ -546,8 +549,6 @@ async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
             online_vault::migrate(&token.access_token, &old_key, &new_key).await?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
-    } else {
-        store::update_master_password(old_pwd, new_pwd)?;
     }
     Ok(true)
 }
