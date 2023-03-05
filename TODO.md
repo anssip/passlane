@@ -1,6 +1,7 @@
 # TODO
 
-- test CSV import
+- enum "Entities": credential, note, payment
+   - use in main, actions
 
 ## Roadmap
 
