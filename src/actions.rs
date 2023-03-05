@@ -503,9 +503,9 @@ impl ImportCsvAction {
 }
 
 async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
-    let master_pwd = ui::ask_master_password(None);
+    let encryption_key = get_encryption_key()?;
     info!("importing to the online vault");
-    push_from_csv(&master_pwd, file_path).await
+    push_from_csv(&encryption_key, file_path).await
 }
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {

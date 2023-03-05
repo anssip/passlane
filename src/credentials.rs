@@ -8,7 +8,6 @@ use pbkdf2::{
 use rand::thread_rng;
 use rand::Rng;
 
-use crate::graphql::queries::types::CredentialsIn;
 extern crate base64;
 
 pub fn generate() -> String {
