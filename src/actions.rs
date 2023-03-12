@@ -102,23 +102,26 @@ pub enum ItemType {
     Note,
 }
 
+impl ItemType {
+    pub fn new_from_args(matches: &ArgMatches) -> ItemType {
+        if *matches
+            .get_one::<bool>("payments")
+            .expect("defaulted to false by clap") {
+                ItemType::Payment
+            } else if *matches.get_one("notes").expect("defaulted to false by clap") {
+                ItemType::Note
+            } else {
+                ItemType::Credential
+            }
+    }
+}
+
 pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
     pub item_type: ItemType
 }
 
-fn get_item_type_from_args(matches: &ArgMatches) -> ItemType {
-    if *matches
-        .get_one::<bool>("payments")
-        .expect("defaulted to false by clap") {
-            ItemType::Payment
-        } else if *matches.get_one("notes").expect("defaulted to false by clap") {
-            ItemType::Note
-        } else {
-            ItemType::Credential
-        }
-}
 
 impl AddAction {
     pub fn new(matches: &ArgMatches) -> AddAction {
@@ -129,7 +132,7 @@ impl AddAction {
             clipboard: *matches
                 .get_one::<bool>("clipboard")
                 .expect("defaulted to false by clap"),
-            item_type: get_item_type_from_args(matches)
+            item_type: ItemType::new_from_args(matches)
         }
     }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
@@ -215,7 +218,7 @@ impl ShowAction {
             verbose: *matches
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap"),
-            item_type: get_item_type_from_args(matches)
+            item_type: ItemType::new_from_args(matches)
         }
     }
     async fn show_credentials(&self) -> anyhow::Result<()> {
@@ -352,7 +355,7 @@ impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
-            item_type: get_item_type_from_args(matches)
+            item_type: ItemType::new_from_args(matches)
         }
     }
 }
