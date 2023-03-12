@@ -35,10 +35,10 @@ fn cli() -> Command {
             Command::new("add")
                 .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.")
                 .arg(arg!(
-                    -p --payment "Add a payment card."
+                    -p --payments "Add a payment card."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
-                    -n --note "Add a secure note."
+                    -n --notes "Add a secure note."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -g --generate "Generate the password to be saved."

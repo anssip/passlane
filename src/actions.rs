@@ -96,11 +96,28 @@ impl Action for LoginAction {
     }
 }
 
+pub enum ItemType {
+    Credential,
+    Payment,
+    Note,
+}
+
 pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
-    pub add_payment: bool,
-    pub add_note: bool
+    pub item_type: ItemType
+}
+
+fn get_item_type_from_args(matches: &ArgMatches) -> ItemType {
+    if *matches
+        .get_one::<bool>("payments")
+        .expect("defaulted to false by clap") {
+            ItemType::Payment
+        } else if *matches.get_one("notes").expect("defaulted to false by clap") {
+            ItemType::Note
+        } else {
+            ItemType::Credential
+        }
 }
 
 impl AddAction {
@@ -112,13 +129,7 @@ impl AddAction {
             clipboard: *matches
                 .get_one::<bool>("clipboard")
                 .expect("defaulted to false by clap"),
-            add_payment: *matches
-                .get_one::<bool>("payment")
-                .expect("defaulted to false by clap"),
-            add_note: *matches
-                .get_one::<bool>("note")
-                .expect("defaulted to false by clap"),
-
+            item_type: get_item_type_from_args(matches)
         }
     }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
@@ -182,13 +193,11 @@ impl AddAction {
 #[async_trait]
 impl Action for AddAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.add_payment {
-            self.add_payment().await?;
-        } else if self.add_note {
-            self.add_note().await?;
-        } else {
-            self.add_credential().await?;
-        }
+        match self.item_type {
+            ItemType::Credential => self.add_credential().await?,
+            ItemType::Payment => self.add_payment().await?,
+            ItemType::Note => self.add_note().await?
+        };
         Ok(())
     }
 }
@@ -196,8 +205,7 @@ impl Action for AddAction {
 pub struct ShowAction {
     pub grep: Option<String>,
     pub verbose: bool,
-    pub payments: bool,
-    pub notes: bool,
+    pub item_type: ItemType
 }
 
 impl ShowAction {
@@ -207,12 +215,7 @@ impl ShowAction {
             verbose: *matches
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap"),
-            payments: *matches
-                .get_one::<bool>("payments")
-                .expect("defaulted to false by clap"),
-            notes: *matches
-                .get_one::<bool>("notes")
-                .expect("defaulted to false by clap")
+            item_type: get_item_type_from_args(matches)
         }
     }
     async fn show_credentials(&self) -> anyhow::Result<()> {
@@ -331,34 +334,25 @@ async fn find_credentials(
 #[async_trait]
 impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.payments {
-            self.show_payments().await?;
-        } else if self.notes {
-            self.show_notes().await?;
-        } else {
-            self.show_credentials().await?;
-        }
+        match self.item_type {
+            ItemType::Credential => self.show_credentials().await?,
+            ItemType::Payment => self.show_payments().await?,
+            ItemType::Note => self.show_notes().await?
+        };
         Ok(())
     }
 }
 
 pub struct DeleteAction {
     pub grep: Option<String>,
-    pub payments: bool,
-    pub notes: bool,
+    pub item_type: ItemType
 }
 
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
-            payments: *matches
-                .get_one::<bool>("payments")
-                .expect("defaulted to false by clap"),
-            notes: *matches
-                .get_one::<bool>("notes")
-                .expect("defaulted to false by clap"),
-
+            item_type: get_item_type_from_args(matches)
         }
     }
 }
@@ -475,17 +469,21 @@ async fn delete_note() -> anyhow::Result<()> {
 #[async_trait]
 impl Action for DeleteAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.payments {
-            delete_payment().await?;
-        } else if self.notes {
-            delete_note().await?;
-        } else {
-            let grep = match &self.grep {
-                Some(grep) => grep,
-                None => panic!("-g <REGEXP> is required"),
-            };    
-            delete_credentials(grep).await?;
-        }
+        match self.item_type {
+            ItemType::Credential => {
+                let grep = match &self.grep {
+                    Some(grep) => grep,
+                    None => panic!("-g <REGEXP> is required"),
+                };    
+                delete_credentials(grep).await?;
+            },
+            ItemType::Payment => {
+                delete_payment().await?;
+            },
+            ItemType::Note => {
+                delete_note().await?;
+            }
+        };
         Ok(())
     }
 }

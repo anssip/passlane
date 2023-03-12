@@ -37,6 +37,9 @@ pub fn ask_credentials(password: &str) -> CredentialsIn {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
 
+    // TODO: rename field
+    // TODO: add constructor
+
     CredentialsIn {
         service,
         username,
