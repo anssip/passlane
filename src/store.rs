@@ -1,5 +1,6 @@
 use crate::auth::AccessTokens;
-use crate::credentials::Credentials;
+use crate::credentials::get_random_key;
+use crate::graphql::queries::types::*;
 use crate::ui::ask_password;
 use anyhow;
 use anyhow::bail;
@@ -7,15 +8,33 @@ use chrono::Duration;
 use csv::ReaderBuilder;
 use log::debug;
 use pwhash::bcrypt;
+use serde::Deserialize;
+use serde::Serialize;
 use std::fs::create_dir;
 use std::fs::remove_file;
-use std::fs::rename;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CSVInputCredentials {
+    pub service: String,
+    pub username: String,
+    pub password: String,
+}
+impl CSVInputCredentials {
+    pub fn to_credentials_in(&self) -> CredentialsIn {
+        CredentialsIn {
+            service: self.service.clone(),
+            username: self.username.clone(),
+            password_encrypted: self.password.clone(),
+            iv: get_random_key(),
+        }
+    }
+}
 
 fn home_dir() -> PathBuf {
     match dirs::home_dir() {
@@ -80,39 +99,7 @@ fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, St
     }
 }
 
-fn open_password_file(writable: bool) -> (File, PathBuf, bool) {
-    let path = PathBuf::from(dir_path()).join(".store");
-    let exists = path.exists();
-    let file = OpenOptions::new()
-        .read(true)
-        .write(writable)
-        .append(writable)
-        .create_new(!exists)
-        .open(&path)
-        .expect("Unable to open password file");
-    (file, path, exists)
-}
-
-pub fn update_master_password(old_password: &str, new_password: &str) -> anyhow::Result<bool> {
-    let file;
-    (file, ..) = open_password_file(false);
-    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
-    let path = PathBuf::from(dir_path()).join(".store_new");
-    let mut wtr = csv::Writer::from_path(path).expect("Unable to open output file");
-
-    for result in reader.deserialize() {
-        let creds: Credentials = result.expect("unable to deserialize passwords CSV file");
-        let decrypted = creds.decrypt(old_password)?;
-        wtr.serialize(decrypted.encrypt(new_password))
-            .expect("Unable to store credentials to temp file");
-    }
-    save_master_password(new_password);
-    rename(dir_path().join(".store_new"), dir_path().join(".store"))
-        .expect("Unable to rename password file");
-    Ok(true)
-}
-
-pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credentials>> {
+pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);

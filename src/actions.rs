@@ -1,4 +1,5 @@
 use crate::credentials::derive_encryption_key;
+use crate::graphql::queries::types::CredentialsIn;
 use crate::online_vault::get_plain_me;
 use crate::store::get_encryption_key;
 use crate::store::delete_encryption_key;
@@ -45,7 +46,7 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
 }
 
 async fn push_one_credential(
-    credentials: &Credentials,
+    credentials: &CredentialsIn,
 ) -> anyhow::Result<i32> {
     let token = get_access_token().await?;
     let encryption_key = get_encryption_key()?;
@@ -95,12 +96,32 @@ impl Action for LoginAction {
     }
 }
 
+pub enum ItemType {
+    Credential,
+    Payment,
+    Note,
+}
+
+impl ItemType {
+    pub fn new_from_args(matches: &ArgMatches) -> ItemType {
+        if *matches
+            .get_one::<bool>("payments")
+            .expect("defaulted to false by clap") {
+                ItemType::Payment
+            } else if *matches.get_one("notes").expect("defaulted to false by clap") {
+                ItemType::Note
+            } else {
+                ItemType::Credential
+            }
+    }
+}
+
 pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
-    pub add_payment: bool,
-    pub add_note: bool
+    pub item_type: ItemType
 }
+
 
 impl AddAction {
     pub fn new(matches: &ArgMatches) -> AddAction {
@@ -111,13 +132,7 @@ impl AddAction {
             clipboard: *matches
                 .get_one::<bool>("clipboard")
                 .expect("defaulted to false by clap"),
-            add_payment: *matches
-                .get_one::<bool>("payment")
-                .expect("defaulted to false by clap"),
-            add_note: *matches
-                .get_one::<bool>("note")
-                .expect("defaulted to false by clap"),
-
+            item_type: ItemType::new_from_args(matches)
         }
     }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
@@ -139,7 +154,7 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    async fn save(&self, creds: &Credentials) -> anyhow::Result<()> {
+    async fn save(&self, creds: &CredentialsIn) -> anyhow::Result<()> {
         info!("saving to online vault");
         push_one_credential(&creds).await?;
         println!("Saved.");
@@ -165,7 +180,8 @@ impl AddAction {
         let encryption_key = get_encryption_key()?;
         let token = get_access_token().await?;
         let payment = ui::ask_payment_info();
-        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await
+        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await?;
+        Ok(())
     }
     async fn add_note(&self) -> anyhow::Result<()> {
         let encryption_key = get_encryption_key()?;
@@ -181,13 +197,11 @@ impl AddAction {
 #[async_trait]
 impl Action for AddAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.add_payment {
-            self.add_payment().await?;
-        } else if self.add_note {
-            self.add_note().await?;
-        } else {
-            self.add_credential().await?;
-        }
+        match self.item_type {
+            ItemType::Credential => self.add_credential().await?,
+            ItemType::Payment => self.add_payment().await?,
+            ItemType::Note => self.add_note().await?
+        };
         Ok(())
     }
 }
@@ -195,8 +209,7 @@ impl Action for AddAction {
 pub struct ShowAction {
     pub grep: Option<String>,
     pub verbose: bool,
-    pub payments: bool,
-    pub notes: bool,
+    pub item_type: ItemType
 }
 
 impl ShowAction {
@@ -206,12 +219,7 @@ impl ShowAction {
             verbose: *matches
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap"),
-            payments: *matches
-                .get_one::<bool>("payments")
-                .expect("defaulted to false by clap"),
-            notes: *matches
-                .get_one::<bool>("notes")
-                .expect("defaulted to false by clap")
+            item_type: ItemType::new_from_args(matches)
         }
     }
     async fn show_credentials(&self) -> anyhow::Result<()> {
@@ -330,34 +338,25 @@ async fn find_credentials(
 #[async_trait]
 impl Action for ShowAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.payments {
-            self.show_payments().await?;
-        } else if self.notes {
-            self.show_notes().await?;
-        } else {
-            self.show_credentials().await?;
-        }
+        match self.item_type {
+            ItemType::Credential => self.show_credentials().await?,
+            ItemType::Payment => self.show_payments().await?,
+            ItemType::Note => self.show_notes().await?
+        };
         Ok(())
     }
 }
 
 pub struct DeleteAction {
     pub grep: Option<String>,
-    pub payments: bool,
-    pub notes: bool,
+    pub item_type: ItemType
 }
 
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
-            payments: *matches
-                .get_one::<bool>("payments")
-                .expect("defaulted to false by clap"),
-            notes: *matches
-                .get_one::<bool>("notes")
-                .expect("defaulted to false by clap"),
-
+            item_type: ItemType::new_from_args(matches)
         }
     }
 }
@@ -474,17 +473,21 @@ async fn delete_note() -> anyhow::Result<()> {
 #[async_trait]
 impl Action for DeleteAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        if self.payments {
-            delete_payment().await?;
-        } else if self.notes {
-            delete_note().await?;
-        } else {
-            let grep = match &self.grep {
-                Some(grep) => grep,
-                None => panic!("-g <REGEXP> is required"),
-            };    
-            delete_credentials(grep).await?;
-        }
+        match self.item_type {
+            ItemType::Credential => {
+                let grep = match &self.grep {
+                    Some(grep) => grep,
+                    None => panic!("-g <REGEXP> is required"),
+                };    
+                delete_credentials(grep).await?;
+            },
+            ItemType::Payment => {
+                delete_payment().await?;
+            },
+            ItemType::Note => {
+                delete_note().await?;
+            }
+        };
         Ok(())
     }
 }
@@ -502,21 +505,23 @@ impl ImportCsvAction {
 }
 
 async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
-    let master_pwd = ui::ask_master_password(None);
+    let encryption_key = get_encryption_key()?;
     info!("importing to the online vault");
-    push_from_csv(&master_pwd, file_path).await
+    push_from_csv(&encryption_key, file_path).await
 }
 
 async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
     let token = get_access_token().await?;
-    let credentials = store::read_from_csv(file_path)?;
+    let input = store::read_from_csv(file_path)?;
+    let creds = input.into_iter().map(|c| c.to_credentials_in().encrypt(master_pwd)).collect();
+
     online_vault::push_credentials(
         &token.access_token,
-        &credentials::encrypt_all(master_pwd, &credentials),
+        &creds,
         None,
     )
     .await?;
-    let num_imported = credentials.len();
+    let num_imported = creds.len();
     Ok(num_imported.try_into().unwrap())
 }
 
@@ -546,8 +551,6 @@ async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
             online_vault::migrate(&token.access_token, &old_key, &new_key).await?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
-    } else {
-        store::update_master_password(old_pwd, new_pwd)?;
     }
     Ok(true)
 }

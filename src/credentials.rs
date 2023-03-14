@@ -1,5 +1,3 @@
-use core::fmt::Display;
-use core::fmt::Formatter;
 use hex::{self};
 use magic_crypt::MagicCryptTrait;
 use pbkdf2::Params;
@@ -9,68 +7,8 @@ use pbkdf2::{
 };
 use rand::thread_rng;
 use rand::Rng;
-use serde::Deserialize;
-use serde::Serialize;
+
 extern crate base64;
-use log::debug;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Credentials {
-    pub username: String,
-    pub password: String,
-    pub iv: Option<String>,
-    pub service: String,
-}
-
-impl Credentials {
-    fn clone_with_password(&self, password_and_iv: (&str, &str)) -> Credentials {
-        Credentials {
-            password: String::from(password_and_iv.0),
-            iv: Some(String::from(password_and_iv.1)),
-            username: String::from(&self.username),
-            service: String::from(&self.service),
-        }
-    }
-    pub fn encrypt(&self, key: &str) -> Credentials {
-        let iv = get_random_key();
-        let password= encrypt(key, &iv, &self.password);
-        debug!("encrypt() key: {}, iv {}", &key, &iv);
-        self.clone_with_password((&password, &iv))
-    }
-    pub fn decrypt(&self, key: &str) -> anyhow::Result<Credentials> {
-        let iv = &self.iv.as_ref().expect("Cannot decrypt without iv");
-        debug!("decrypt() key: {}, iv {}", &key, &iv);
-        debug!("decrypt() encrypted: {}", &self.password);
-        let decrypted_passwd = decrypt((key, iv), &self.password)?;
-        Ok(self.clone_with_password((&decrypted_passwd, iv)))
-    }
-}
-
-impl Display for Credentials {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{} - username: {}", self.service, self.username)
-    }
-}
-
-impl PartialEq for Credentials {
-    fn eq(&self, other: &Self) -> bool {
-        self.username == other.username && self.service == other.service
-    }
-}
-
-impl Clone for Credentials {
-    fn clone(&self) -> Self {
-        Credentials {
-            password: String::from(&self.password),
-            iv: match &self.iv {
-                Some(iv) => Some(String::from(iv)),
-                None => None,
-            },
-            username: String::from(&self.username),
-            service: String::from(&self.service),
-        }
-    }
-}
 
 pub fn generate() -> String {
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
@@ -148,8 +86,4 @@ pub fn encrypt(key: &str, iv: &str, value: &str) -> String {
 pub fn decrypt(key_and_iv: (&str, &str), value: &String) -> anyhow::Result<String> {
     let mc = new_magic_crypt!(String::from(key_and_iv.0), 256, String::from(key_and_iv.1));
     Ok(mc.decrypt_base64_to_string(value)?)
-}
-
-pub fn encrypt_all(key: &str, credentials: &Vec<Credentials>) -> Vec<Credentials> {
-    credentials.into_iter().map(|c| c.encrypt(&key)).collect()
 }
