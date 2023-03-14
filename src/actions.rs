@@ -180,7 +180,8 @@ impl AddAction {
         let encryption_key = get_encryption_key()?;
         let token = get_access_token().await?;
         let payment = ui::ask_payment_info();
-        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await
+        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await?;
+        Ok(())
     }
     async fn add_note(&self) -> anyhow::Result<()> {
         let encryption_key = get_encryption_key()?;
