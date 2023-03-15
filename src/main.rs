@@ -2,9 +2,9 @@ extern crate clipboard;
 #[macro_use]
 extern crate magic_crypt;
 use crate::auth::AccessTokens;
+use actions::*;
 use clap::{arg, ArgAction, Command};
 
-use crate::actions::Action;
 use crate::graphql::queries::types::*;
 
 mod actions;
@@ -15,7 +15,6 @@ mod online_vault;
 mod store;
 mod ui;
 use std::env;
-use std::io;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -96,29 +95,32 @@ fn cli() -> Command {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> () {
     env_logger::init();
     let matches = cli().get_matches();
 
-    match matches.subcommand() {
-        Some(("login", _)) => actions::LoginAction::new().execute().await?,
-        Some(("add", sub_matches)) => actions::AddAction::new(sub_matches).execute().await?,
-        Some(("show", sub_matches)) => actions::ShowAction::new(sub_matches).execute().await?,
-        Some(("delete", sub_matches)) => actions::DeleteAction::new(sub_matches).execute().await?,
-        Some(("csv", sub_matches)) => actions::ImportCsvAction::new(sub_matches).execute().await?,
-        Some(("password", _)) => actions::UpdateMasterPasswordAction {}.execute().await?,
-        Some(("lock", _)) => actions::LockAction {}.execute().await?,
-        Some(("unlock", _)) => actions::UnlockAction {}.execute().await?,
+    let action: Box<dyn Action> = match matches.subcommand() {
+        Some(("login", _)) => Box::new(LoginAction::new()),
+        Some(("add", sub_matches)) => Box::new(AddAction::new(sub_matches)),
+        Some(("show", sub_matches)) => Box::new(ShowAction::new(sub_matches)),
+        Some(("delete", sub_matches)) => Box::new(DeleteAction::new(sub_matches)),
+        Some(("csv", sub_matches)) => Box::new(ImportCsvAction::new(sub_matches)),
+        Some(("password", _)) => Box::new(UpdateMasterPasswordAction {}),
+        Some(("lock", _)) => Box::new(LockAction {}),
+        Some(("unlock", _)) => Box::new(UnlockAction {}),
         _ => {
             if env::args().len() == 1 {
-                actions::GeneratePasswordAction {}.execute().await?;
+                Box::new(GeneratePasswordAction {})
             } else {
-                let mut out = io::stdout();
-                cli()
-                    .write_help(&mut out)
-                    .expect("failed to write to stdout");
+                Box::new(PrintHelpAction::new(cli()))
             }
         }
-    }
-    Ok(())
+    };
+    match action.execute().await {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 }
