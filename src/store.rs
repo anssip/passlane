@@ -1,5 +1,5 @@
 use crate::auth::AccessTokens;
-use crate::credentials::get_random_key;
+use crate::crypto::get_random_key;
 use crate::graphql::queries::types::*;
 use crate::ui::ask_password;
 use anyhow;

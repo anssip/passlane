@@ -5,8 +5,8 @@ mod schema {
 #[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod types {
     use super::schema;
-    use crate::credentials::derive_encryption_key;
-    use crate::credentials::{decrypt, encrypt};
+    use crate::crypto::derive_encryption_key;
+    use crate::crypto::{decrypt, encrypt};
     use core::fmt::Display;
     use core::fmt::Formatter;
     use log::debug;

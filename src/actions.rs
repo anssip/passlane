@@ -1,4 +1,4 @@
-use crate::credentials::derive_encryption_key;
+use crate::crypto::derive_encryption_key;
 use crate::graphql::queries::types::CredentialsIn;
 use crate::online_vault::get_plain_me;
 use crate::store::get_encryption_key;
@@ -12,7 +12,7 @@ use clipboard::ClipboardProvider;
 
 use crate::auth;
 use crate::online_vault;
-use crate::credentials;
+use crate::crypto;
 use crate::store;
 use crate::ui;
 use anyhow::{bail, Context};
@@ -143,14 +143,14 @@ impl AddAction {
         let value = ctx
             .get_contents()
             .expect("Unable to retrieve value from clipboard");
-        if !credentials::validate_password(&value) {
+        if !crypto::validate_password(&value) {
             bail!("The text in clipboard is not a valid password");
         }
         Result::Ok(value)
     }
     fn get_password(&self) -> anyhow::Result<String> {
         if self.generate {
-            Ok(credentials::generate())
+            Ok(crypto::generate())
         } else if self.clipboard {
             self.password_from_clipboard()
         } else {
@@ -582,7 +582,7 @@ pub struct GeneratePasswordAction {}
 #[async_trait]
 impl Action for GeneratePasswordAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        let password = credentials::generate();
+        let password = crypto::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
         Ok(())

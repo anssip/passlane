@@ -9,7 +9,7 @@ use crate::graphql::queries::types::*;
 
 mod actions;
 mod auth;
-mod credentials;
+mod crypto;
 mod graphql;
 mod online_vault;
 mod store;

@@ -2,7 +2,7 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::credentials::get_random_key;
+use crate::crypto::get_random_key;
 use crate::graphql::queries::types::*;
 use crate::store;
 use anyhow::bail;
