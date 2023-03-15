@@ -6,6 +6,7 @@ use crate::store::delete_encryption_key;
 use crate::AccessTokens;
 use crate::Credentials;
 use async_trait::async_trait;
+use clap::Command;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
 
@@ -18,6 +19,8 @@ use anyhow::{bail, Context};
 use clap::ArgMatches;
 use log::{debug, info, warn};
 use tokio::task;
+use std::io;
+
 
 pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
     debug!("get_access_token()");
@@ -608,4 +611,26 @@ impl Action for UnlockAction {
         store::save_encryption_key(&me.get_encryption_key(&master_password))?;
         Ok(())
     }
+}
+
+pub struct PrintHelpAction {
+    cli: Command
+}
+
+impl PrintHelpAction {
+    pub fn new(cli: Command) -> PrintHelpAction {
+        PrintHelpAction {
+            cli
+        }
+    }
+}
+
+#[async_trait]
+impl Action for PrintHelpAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        let mut out = io::stdout();
+        self.cli.clone().write_help(&mut out).context("Failed to display help!")?;
+        Ok(())
+    }
+
 }
