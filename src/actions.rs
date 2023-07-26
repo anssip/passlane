@@ -38,7 +38,7 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
             }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                let token = task::spawn_blocking(move || auth::login()).await??;
+                let token = task::spawn_blocking(move || auth::login()).await?.await?;
                 store::store_access_token(&token)?;
                 Ok(token)
             }
@@ -76,7 +76,7 @@ impl LoginAction {
         LoginAction {}
     }
     async fn login(&self) -> anyhow::Result<bool> {
-        let token = task::spawn_blocking(move || auth::login()).await??;
+        let token = task::spawn_blocking(move || auth::login()).await?.await?;
         let first_login = !store::has_logged_in();
         store::store_access_token(&token)?;
         Ok(first_login)
@@ -146,7 +146,7 @@ impl AddAction {
         if !crypto::validate_password(&value) {
             bail!("The text in clipboard is not a valid password");
         }
-        Result::Ok(value)
+        Ok(value)
     }
     fn get_password(&self) -> anyhow::Result<String> {
         if self.generate {
@@ -561,7 +561,7 @@ async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
 #[async_trait]                                                                      
 impl Action for UpdateMasterPasswordAction {
     async fn execute(&self) -> anyhow::Result<()> {
-        let old_pwd = ui::ask_master_password("Enter current master password: ".into());
+        let old_pwd = ui::ask_master_password(Some("Enter current master password: "));
         let new_pwd = ui::ask_new_password();
 
 
@@ -606,7 +606,7 @@ impl Action for UnlockAction {
     async fn execute(&self) -> anyhow::Result<()> {
         let token = get_access_token().await?;
         let master_password = ui::ask_master_password(None);
-        let me = online_vault::get_plain_me(&token.access_token).await?;
+        let me = get_plain_me(&token.access_token).await?;
 
         store::save_encryption_key(&me.get_encryption_key(&master_password))?;
         Ok(())

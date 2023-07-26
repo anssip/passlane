@@ -70,8 +70,8 @@ pub async fn run_add_credentials_group_mutation(
 ) -> anyhow::Result<AddGredentialsGroupMutation> {
     let operation = AddGredentialsGroupMutation::build(&AddGredentialsGroupMutationVariables {
         input: AddCredentialsGroupIn {
-            credentials: credentials,
-            vault_id: vault_id,
+            credentials,
+            vault_id,
         },
     });
     run_request(access_token, operation).await
@@ -83,9 +83,9 @@ pub async fn run_delete_credentials_mutation(
     index: Option<i32>,
 ) -> anyhow::Result<DeleteCredentialsMutation> {
     let operation = {
-        let grep = grep.into();
+        let grep = String::from(grep);
         DeleteCredentialsMutation::build(&DeleteCredentialsMutationVariables {
-            input: DeleteCredentialsIn { grep, index: index },
+            input: DeleteCredentialsIn { grep, index },
         })
     };
     run_request(access_token, operation).await
@@ -108,11 +108,11 @@ pub async fn run_add_payment_card_mutation(
     payment: PaymentCardIn,
     vault_id: Option<i32>,
 ) -> anyhow::Result<AddPaymentCardMutation> {
-    let operation: cynic::Operation<AddPaymentCardMutation> =
+    let operation: Operation<AddPaymentCardMutation> =
         AddPaymentCardMutation::build(&AddPaymentCardMutationVariables {
             input: AddPaymentCardIn {
-                payment: payment,
-                vault_id: vault_id,
+                payment,
+                vault_id,
             },
         });
     run_request(access_token, operation).await
@@ -122,8 +122,8 @@ pub async fn run_delete_payment_card_mutation(
     access_token: &str,
     id: i32,
 ) -> anyhow::Result<DeletePaymentCardMutation> {
-    let operation: cynic::Operation<DeletePaymentCardMutation> =
-        DeletePaymentCardMutation::build(&DeletePaymentCardMutationVariables { id: id });
+    let operation: Operation<DeletePaymentCardMutation> =
+        DeletePaymentCardMutation::build(&DeletePaymentCardMutationVariables { id });
     run_request(access_token, operation).await
 }
 
@@ -131,7 +131,7 @@ pub async fn run_add_note_mutation(
     access_token: &str,
     note: &NoteIn,
 ) -> anyhow::Result<AddNoteMutation> {
-    let operation: cynic::Operation<AddNoteMutation> = AddNoteMutation::build(note);
+    let operation: Operation<AddNoteMutation> = AddNoteMutation::build(note);
     run_request(access_token, operation).await
 }
 
