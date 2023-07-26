@@ -19,6 +19,24 @@ pub fn ask(question: &str) -> String {
     buffer.trim().to_string()
 }
 
+pub fn ask_multiline(question: &str) -> String {
+    // read multiple lines from stdin
+    println!("{} (press Ctrl+D when done)", question);
+    let mut buffer = String::new();
+    loop {
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => buffer.push_str(&line),
+            Err(error) => {
+                println!("error: {}", error);
+                break;
+            }
+        }
+    }
+    buffer.trim().to_string()
+}
+
 pub fn ask_password(question: &str) -> String {
     rpassword::prompt_password(question).unwrap()
 }
@@ -36,14 +54,10 @@ pub fn ask_number(question: &str) -> i32 {
 pub fn ask_credentials(password: &str) -> CredentialsIn {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-
-    // TODO: rename field
-    // TODO: add constructor
-
     CredentialsIn {
         service,
         username,
-        password_encrypted: password.into(), // maybe rename the field because its not encrypted at this point
+        password_encrypted: String::from(password), // maybe rename the field because its not encrypted at this point
         iv: get_random_key(),
     }
 }
@@ -270,7 +284,7 @@ pub fn ask_payment_info() -> PaymentCardIn {
 
 pub(crate) fn ask_note_info() -> NoteIn {
     let title = ask("Enter note title:");
-    let content = ask("Enter note content:");
+    let content = ask_multiline("Enter note content:");
     let iv = get_random_key();
 
     NoteIn {
