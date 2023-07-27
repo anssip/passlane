@@ -92,6 +92,17 @@ fn cli() -> Command {
             Command::new("unlock")
                 .about("Opens the vaults and grants access to the entries")
         )
+        .subcommand(
+            Command::new("export")
+                .about("Exports the vault contents to a CSV file.")
+                .arg(arg!(
+                    -p --payments "Exporet payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -n --notes "Export secure notes."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(<file_path> "The the CSV file to export to."))
+        )
 }
 
 #[tokio::main]
@@ -108,13 +119,14 @@ async fn main() -> () {
         Some(("password", _)) => Box::new(UpdateMasterPasswordAction {}),
         Some(("lock", _)) => Box::new(LockAction {}),
         Some(("unlock", _)) => Box::new(UnlockAction {}),
+        Some(("export", sub_matches)) => Box::new(ExportAction::new(sub_matches)),
         _ => {
             if env::args().len() == 1 {
                 Box::new(GeneratePasswordAction {})
             } else {
                 Box::new(PrintHelpAction::new(cli()))
             }
-        }
+        },
     };
     match action.execute().await {
         Ok(_) => (),

@@ -351,6 +351,15 @@ pub mod types {
             })
         }
     }
+    impl Display for Address {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{}, {}, {}, {}",
+                self.street, self.zip, self.city, self.country
+            )
+        }
+    }
 
     #[derive(cynic::InputObject, Debug, Clone)]
     pub struct PaymentCardIn {

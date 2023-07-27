@@ -4,8 +4,8 @@ use crate::store::get_encryption_key;
 use anyhow::Context;
 use log::debug;
 
-pub async fn grep(access_token: &str, grep: &str) -> anyhow::Result<Vec<Credentials>> {
-    let me = graphql::run_me_query(access_token, Some(grep.to_string()))
+pub async fn grep(access_token: &str, grep: Option<String>) -> anyhow::Result<Vec<Credentials>> {
+    let me = graphql::run_me_query(access_token, grep)
         .await
         .context("Failed to fetch credentials")?
         .me;

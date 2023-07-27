@@ -5,7 +5,7 @@ use crate::ui::ask_password;
 use anyhow;
 use anyhow::bail;
 use chrono::Duration;
-use csv::ReaderBuilder;
+use csv::{ReaderBuilder, Writer};
 use log::debug;
 use pwhash::bcrypt;
 use serde::Deserialize;
@@ -34,6 +34,26 @@ impl CSVInputCredentials {
             iv: get_random_key(),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CSVPaymentCard {
+    pub name: String,
+    pub name_on_card: String,
+    pub number: String,
+    pub cvv: String,
+    pub expiry: String,
+    pub color: String,
+    pub billing_address: String,
+
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CSVSecureNote {
+    pub title: String,
+    pub note: String,
+    pub created: String,
+    pub modified: String
 }
 
 fn home_dir() -> PathBuf {
@@ -76,7 +96,7 @@ pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result
             return Err(String::from("Passwords did not match"));
         }
     }
-    Result::Ok(true)
+    Ok(true)
 }
 
 pub fn save_master_password(master_pwd: &str) {
@@ -93,7 +113,7 @@ fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, St
     file.read_to_string(&mut file_content)
         .expect("Unable to read master password file");
     if bcrypt::verify(master_pwd, &file_content) {
-        Result::Ok(true)
+        Ok(true)
     } else {
         Err(String::from("Incorrect password"))
     }
@@ -175,7 +195,7 @@ pub fn get_access_token() -> anyhow::Result<AccessTokens> {
         } else {
             None
         },
-        created_timestamp: parts[3].into(),
+        created_timestamp: String::from(parts[3]),
     })
 }
 
@@ -215,4 +235,48 @@ pub fn delete_encryption_key() -> anyhow::Result<bool> {
     }
     remove_file(path)?;
     Ok(true)
+}
+
+pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credentials>) -> anyhow::Result<i64> {
+    let mut wtr = Writer::from_path(file_path)?;
+    for cred in creds {
+        wtr.serialize(CSVInputCredentials {
+            service: String::from(&cred.service),
+            username: String::from( &cred.username),
+            password: String::from(&cred.password),
+        })?;
+    }
+    wtr.flush()?;
+    Ok(creds.len() as i64)
+}
+
+pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> anyhow::Result<i64> {
+    let mut wtr = Writer::from_path(file_path)?;
+    for card in cards {
+        wtr.serialize(CSVPaymentCard {
+            name: String::from(&card.name),
+            name_on_card: String::from(&card.name_on_card),
+            number: String::from(&card.number),
+            cvv: String::from(&card.cvv),
+            expiry: format!("{}", card.expiry),
+            color: match &card.color { Some(color) => String::from(color), None => String::from("") },
+            billing_address: match &card.billing_address { Some(address) => format!("{}", address), None => String::from("") }
+        })?;
+    }
+    wtr.flush()?;
+    Ok(cards.len() as i64)
+}
+
+pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> anyhow::Result<i64> {
+    let mut wtr = Writer::from_path(file_path)?;
+    for note in notes {
+        wtr.serialize(CSVSecureNote {
+            title: String::from(&note.title),
+            note: String::from(&note.content),
+            created: format!("{}", note.created),
+            modified: match &note.modified { Some(modified) => format!("{}", modified), None => String::from("") }
+        })?;
+    }
+    wtr.flush()?;
+    Ok(notes.len() as i64)
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.1]
+
+- Fix to allow multiline notes
+- Export of vault contents (credentials, secure notes, payment cards)
+
 ## [2.2.0]
 
 - Added secure notes

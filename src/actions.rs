@@ -99,6 +99,7 @@ impl Action for LoginAction {
     }
 }
 
+#[derive(PartialEq)]
 pub enum ItemType {
     Credential,
     Payment,
@@ -227,7 +228,7 @@ impl ShowAction {
     }
     async fn show_credentials(&self) -> anyhow::Result<()> {
         let grep = match &self.grep {
-            Some(grep) => grep,
+            Some(grep) => Some(String::from(grep)),
             None => panic!("-g <REGEXP> is required"),
         };
         let matches = find_credentials(grep).await.context("Failed to find matches. Invalid password? Try unlocking agin.")?;
@@ -327,11 +328,11 @@ impl ShowAction {
 }
 
 async fn find_credentials(
-    grep_value: &str,
+    grep: Option<String>,
 ) -> anyhow::Result<Vec<Credentials>> {
     info!("searching from online vault");
     let token = get_access_token().await?;
-    let matches =  online_vault::grep(&token.access_token, &grep_value).await?;
+    let matches =  online_vault::grep(&token.access_token, grep).await?;
     if matches.len() == 0 {
         println!("No matches found");
     }
@@ -346,6 +347,49 @@ impl Action for ShowAction {
             ItemType::Payment => self.show_payments().await?,
             ItemType::Note => self.show_notes().await?
         };
+        Ok(())
+    }
+}
+
+pub struct ExportAction {
+    pub file_path: String,
+    pub item_type: ItemType
+}
+
+impl ExportAction {
+    pub fn new(matches: &ArgMatches) -> ExportAction {
+        ExportAction {
+            file_path: matches.get_one::<String>("file_path").expect("required").to_string(),
+            item_type: ItemType::new_from_args(matches)
+        }
+    }
+    pub async fn export_csv(&self) -> anyhow::Result<i64> {
+        debug!("exporting to csv");
+        return if self.item_type == ItemType::Credential {
+            let creds = find_credentials(None).await?;
+            store::write_credentials_to_csv(&self.file_path, &creds)
+        } else if self.item_type == ItemType::Payment {
+            let token = get_access_token().await?;
+            let cards = online_vault::find_payment_cards(&token.access_token).await?;
+            store::write_payment_cards_to_csv(&self.file_path, &cards)
+        } else if self.item_type == ItemType::Note {
+            let token = get_access_token().await?;
+            let notes = online_vault::find_notes(&token.access_token).await?;
+            store::write_secure_notes_to_csv(&self.file_path, &notes)
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+
+#[async_trait]
+impl Action for ExportAction {
+    async fn execute(&self) -> anyhow::Result<()> {
+        match self.export_csv().await {
+            Err(message) => println!("Failed to export: {}", message),
+            Ok(count) => println!("Exported {} entries", count),
+        }
         Ok(())
     }
 }
@@ -366,7 +410,7 @@ impl DeleteAction {
 
 
 async fn delete_credentials(grep: &str) -> anyhow::Result<()> {
-    let matches = find_credentials(grep).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
+    let matches = find_credentials(Some(String::from(grep))).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
