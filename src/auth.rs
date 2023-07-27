@@ -17,7 +17,6 @@ use oauth2::EmptyExtraTokenFields;
 use oauth2::RefreshToken;
 use oauth2::StandardTokenResponse;
 use serde::Deserialize;
-use std::env;
 use std::net::SocketAddr;
 use std::time::UNIX_EPOCH;
 use tower_service::Service;
@@ -89,14 +88,6 @@ pub struct Server {
     document: Vec<u8>,
 }
 
-async fn file_send(filename: &str) -> anyhow::Result<Vec<u8>> {
-    if let Ok(contents) = tokio::fs::read(filename).await {
-        let body = contents.into();
-        return Ok(body);
-    }
-    bail!("file not found")
-}
-
 impl Service<Request<Body>> for Server {
     type Response = Response<Body>;
     type Error = anyhow::Error;
@@ -121,12 +112,12 @@ impl Service<Request<Body>> for Server {
 
 fn new_client() -> anyhow::Result<BasicClient> {
     let client = BasicClient::new(
-        ClientId::new(env::var("AUTH_CLIENT_ID")?),
+        ClientId::new("fZILwNkyzH09Vc4n1VQ0SsDWenMZlOBY".to_string()),
         None,
-        AuthUrl::new(env::var("AUTH_AUTHORIZE_URL")?)?,
-        Some(TokenUrl::new(env::var("AUTH_TOKEN_URL")?)?),
+        AuthUrl::new("https://passlane.eu.auth0.com/authorize".to_string())?,
+        Some(TokenUrl::new("https://passlane.eu.auth0.com/oauth/token".to_string())?),
     )
-    .set_redirect_uri(RedirectUrl::new(env::var("AUTH_REDIRECT_URL")?)?)
+    .set_redirect_uri(RedirectUrl::new("http://localhost:8080/login".to_string())?)
     .set_auth_type(AuthType::RequestBody);
     Ok(client)
 }
@@ -201,12 +192,27 @@ async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
 
     let (tx, rx) = oneshot::channel::<ReceivedCode>();
     let mut channel = Some(tx);
-    let document = file_send("resources/auth_success.html").await?;
+    let document = b"<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Success!</title>
+</head>
+
+<body>
+    <h1>You are now logged in to the Passlane Vault</h1>
+    <p>The passlane client now uses the Vault as storage</p>
+</body>
+
+</html>
+";
+
+    log::debug!("html document sent");
     let server_future = server::Server::bind(&addr).serve(service::make_service_fn(move |_| {
         let channel = channel.take().expect("channel is not available");
         let mut server = Server {
             channel: Some(channel),
-            document: document.clone(),
+            document: document.to_vec(),
         };
         let service = service::service_fn(move |req| server.call(req));
 

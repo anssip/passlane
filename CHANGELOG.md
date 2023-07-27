@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.2]
+
+- Fix login
+
 ## [2.2.1]
 
 - Fix to allow multiline notes
