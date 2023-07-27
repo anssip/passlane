@@ -18,6 +18,7 @@ Passlane CLI is written in Rust.
 - Full management features
 - Online storage with access from any device
 - Import passwords from CSV files
+- Export vault contents to CSV files
 
 ## Installation
 
@@ -63,6 +64,7 @@ Commands:
   show      Shows one or more entries.
   lock      Lock the vaults to prevent all access
   unlock    Opens the vaults and grants access to the entries
+  export    Exports the vault contents to a CSV file.
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -203,3 +205,25 @@ Here are links to instructions for doing the CSV export:
 - [LastPass](https://support.lastpass.com/help/how-do-i-nbsp-export-stored-data-from-lastpass-using-a-generic-csv-file)
 - [1Password](https://support.1password.com/export/)
 - [Dashlane](https://support.dashlane.com/hc/en-us/articles/202625092-Export-your-passwords-from-Dashlane)
+
+### Export to CSV
+
+You can export all your vault contents to CSV files. The exported files can be imported to other password managers or to a spreadsheet program.
+
+To export credentials to a file called creds.csv
+
+```bash
+passlane export creds.csv
+```
+
+To export payment cards to a file called cards.csv.
+
+```bash
+passlane export -p cards.csv
+```
+
+To export secure notes to a file called notes.csv
+
+```bash
+passlane export -n notes.csv
+```
