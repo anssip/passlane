@@ -1,14 +1,15 @@
 use hex::{self};
 use magic_crypt::MagicCryptTrait;
-use pbkdf2::Params;
+
 use pbkdf2::{
     password_hash::{PasswordHasher, Salt},
     Pbkdf2,
+    Params,
 };
 use rand::thread_rng;
 use rand::Rng;
 
-use base64;
+use base64::{engine::general_purpose, Engine as _};
 
 pub fn generate() -> String {
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
@@ -40,7 +41,7 @@ pub fn validate_password(value: &String) -> bool {
 }
 
 fn random_index(range: usize) -> usize {
-    let mut rng = rand::thread_rng();
+    let mut rng = thread_rng();
     rng.gen_range(0..range.try_into().unwrap())
 }
 
@@ -67,10 +68,10 @@ pub fn derive_encryption_key(salt: &str, master_password: &str) -> String {
         rounds: 4096,
         output_length: 32,
     };
-    let salt_bytes = base64::encode(salt.as_bytes());
-    let salt = Salt::new(&salt_bytes).unwrap();
+    let salt_b64 = general_purpose::STANDARD.encode(salt.as_bytes());
+    let salt = Salt::from_b64(&salt_b64).unwrap();
+
     let hash = Pbkdf2
-        // .hash_password(master_password.as_bytes(), Salt::new(salt).unwrap())
         .hash_password_customized(master_password.as_bytes(), None, None, params, salt)
         .unwrap();
 
