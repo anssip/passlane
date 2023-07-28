@@ -11,5 +11,6 @@
 
 ### 3.0
 
+- [ ] edit functionality
 - [ ] push to vault from keychain
 - [ ] multiple users & vaults support ?
