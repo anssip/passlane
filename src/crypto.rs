@@ -8,7 +8,7 @@ use pbkdf2::{
 use rand::thread_rng;
 use rand::Rng;
 
-extern crate base64;
+use base64;
 
 pub fn generate() -> String {
     let low_case = "abcdefghijklmnopqrstuvxyz".to_string();

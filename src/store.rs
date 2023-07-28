@@ -231,7 +231,7 @@ pub fn get_encryption_key() -> anyhow::Result<String> {
 pub fn delete_encryption_key() -> anyhow::Result<bool> {
     let path = PathBuf::from(dir_path()).join(".encryption_key");
     if !path.exists() {
-        bail!("Vault is already unlocked.");
+        bail!("Vault is already locked.");
     }
     remove_file(path)?;
     Ok(true)
