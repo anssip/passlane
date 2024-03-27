@@ -90,7 +90,7 @@ impl Action for LoginAction {
             Ok(is_first_login) => {
                 println!("Logged in successfully. Online vaults in use.");
                 if is_first_login {
-                    println!("You can push all your locally stored credentials to the Online Vault with: passlane push");
+                    println!("Use 'passlane unlock' to unlock the vault.");
                 }
             }
             Err(message) => println!("Login failed: {}", message),

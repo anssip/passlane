@@ -68,7 +68,8 @@ pub fn derive_encryption_key(salt: &str, master_password: &str) -> String {
         rounds: 4096,
         output_length: 32,
     };
-    let salt_b64 = general_purpose::STANDARD.encode(salt.as_bytes());
+    let sanitized = salt.replace("-", "").replace(":", "").replace(".", "");
+    let salt_b64 = general_purpose::STANDARD.encode(sanitized.as_bytes());
     let salt = Salt::from_b64(&salt_b64).unwrap();
 
     let hash = Pbkdf2

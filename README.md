@@ -45,6 +45,14 @@ Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **
 passlane login
 ```
 
+after logging in, unlock the vault. The first time you run this, it will ask you to pick up a master password. 
+The master password is used to generate an encryption key that is used to encrypt and decrypt the vault contents.
+
+```bash
+passlane unlock
+```
+
+
 to connect the CLI with the vault. The connection will stay active after that. Use the `lock` and `unlock` commands to open and close access to the vault contents after you have logged in.
 
 ## Usage
