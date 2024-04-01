@@ -83,7 +83,7 @@ Options:
 
 Before accessing your passwords you should unlock:
 
-```
+```bash
 passlane unlock
 ```
 
@@ -91,7 +91,7 @@ This will ask for your master password which is then used to generate an encrypt
 
 At the end of the session, lock the vaults and nobody can access the data.
 
-```
+```bash
 passlane lock
 ```
 
@@ -99,33 +99,27 @@ passlane lock
 
 To generate a new password without saving it. The generated password value is also copied to the clipboard.
 
-```
+```bash
 passlane
 ```
 
 To save new credentials by copying the password from clipboard:
 
-```
+```bash
 passlane add -c --clipboard
 ```
 
 To generate a new password and save credentials with one command:
 
-```
+```bash
 passlane add -c -g
-```
-
-To save a payment card:
-
-```
-passlane add -p
 ```
 
 ### Using saved credentials
 
 You can search and show saved credentials with regular expressions
 
-```
+```bash
 passlane show <regexp>
 ```
 
@@ -152,11 +146,11 @@ the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
-### Using saved payment cards
+### Payment cards
 
 To list all your saved payment cards.
 
-```
+```bash
 passlane show -p
 
 Found 1 payment cards:
@@ -167,6 +161,15 @@ Found 1 payment cards:
 +---+---------------+-------+--------+--------+
 Do you want to see the card details? (y/n) y
 ```
+
+To save a payment card:
+
+```bash
+passlane add -p
+```
+
+You can delete a note with the delete command and the -n option.
+
 
 ### Secure notes
 
