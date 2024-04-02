@@ -1,4 +1,3 @@
-use hex::{self};
 use magic_crypt::MagicCryptTrait;
 
 use pbkdf2::{

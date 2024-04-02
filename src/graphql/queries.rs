@@ -45,6 +45,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "CredentialsQueryVariables")]
+    #[allow(dead_code)]
     pub struct User {
         pub auth_user_id: String,
         pub created: Date,
@@ -58,6 +59,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[allow(dead_code)]
     pub struct UserWithPaymentCards {
         pub auth_user_id: String,
         pub created: Date,
@@ -71,6 +73,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[allow(dead_code)]
     pub struct UserWithNotes {
         pub auth_user_id: String,
         pub created: Date,
@@ -84,6 +87,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[allow(dead_code)]
     pub struct PlainUser {
         pub auth_user_id: String,
         pub created: Date,
@@ -107,6 +111,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "CredentialsQueryVariables")]
+    #[allow(dead_code)]
     pub struct Vault {
         pub id: i32,
         pub name: String,
@@ -117,6 +122,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
+    #[allow(dead_code)]
     pub struct VaultWithPaymentCards {
         pub id: i32,
         pub name: String,
@@ -126,6 +132,7 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
+    #[allow(dead_code)]
     pub struct VaultWithNotes {
         pub id: i32,
         pub name: String,

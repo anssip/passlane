@@ -21,7 +21,6 @@ use std::net::SocketAddr;
 use std::time::UNIX_EPOCH;
 use tower_service::Service;
 
-use anyhow;
 use anyhow::bail;
 use log::error;
 use oauth2::basic::BasicClient;
@@ -129,19 +128,9 @@ fn create_access_tokens(
     let since_the_epoch = timestamp.duration_since(UNIX_EPOCH).unwrap();
     AccessTokens {
         access_token: String::from(token_response.access_token().secret()),
-        refresh_token: if let Some(token) = token_response.refresh_token() {
-            Some(String::from(token.secret()))
-        } else {
-            None
-        },
-        expires_in: if let Some(duration) = token_response.expires_in() {
-            Some(
-                Duration::from_std(duration)
-                    .expect("Oauth returned expiration value larger than life"),
-            )
-        } else {
-            None
-        },
+        refresh_token: token_response.refresh_token().map(|token| String::from(token.secret())),
+        expires_in: token_response.expires_in().map(|duration| Duration::from_std(duration)
+                    .expect("Oauth returned expiration value larger than life")),
         created_timestamp: format!("{}", since_the_epoch.as_secs()),
     }
 }

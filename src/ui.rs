@@ -7,7 +7,6 @@ use crate::graphql::queries::types::*;
 use crate::store;
 use anyhow::bail;
 use std::cmp::min;
-use webbrowser;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
