@@ -33,6 +33,16 @@ Passlane CLI is written in Rust.
 3. Run build: `cargo build --release`
 4. Add the built `passlane` binary to your `$PATH`
 
+### Nix
+
+Run with nix  - following creates a new password:
+
+```bash
+nix run github:anssip/passlane
+```
+
+See below for more information on how to use the CLI.
+
 ### Create an account
 
 The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted.
