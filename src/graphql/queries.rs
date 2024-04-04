@@ -1,8 +1,6 @@
-mod schema {
-    cynic::use_schema!(r#"src/schema.graphql"#);
-}
+#[cynic::schema("passlane")]
+mod schema {}
 
-#[cynic::schema_for_derives(file = r#"src/schema.graphql"#, module = "schema")]
 pub mod types {
     use super::schema;
     use crate::crypto::derive_encryption_key;
@@ -11,40 +9,40 @@ pub mod types {
     use core::fmt::Formatter;
     use log::debug;
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct CredentialsQueryVariables {
         pub grep: Option<String>,
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct EmptyQueryVariables {}
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Query", argument_struct = "CredentialsQueryVariables")]
+    #[cynic(graphql_type = "Query", variables = "CredentialsQueryVariables")]
     pub struct MeQuery {
         pub me: User,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
+    #[cynic(graphql_type = "Query", variables = "EmptyQueryVariables")]
     pub struct PaymentCardMeQuery {
         pub me: UserWithPaymentCards,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
+    #[cynic(graphql_type = "Query", variables = "EmptyQueryVariables")]
     pub struct NotesMeQuery {
         pub me: UserWithNotes,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Query", argument_struct = "EmptyQueryVariables")]
+    #[cynic(graphql_type = "Query", variables = "EmptyQueryVariables")]
     pub struct PlainMeQuery {
         pub me: PlainUser,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "CredentialsQueryVariables")]
+    #[cynic(variables = "CredentialsQueryVariables")]
     #[allow(dead_code)]
     pub struct User {
         pub auth_user_id: String,
@@ -58,7 +56,7 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "User")]
     #[allow(dead_code)]
     pub struct UserWithPaymentCards {
         pub auth_user_id: String,
@@ -72,7 +70,7 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "User")]
     #[allow(dead_code)]
     pub struct UserWithNotes {
         pub auth_user_id: String,
@@ -86,7 +84,7 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "User")]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "User")]
     #[allow(dead_code)]
     pub struct PlainUser {
         pub auth_user_id: String,
@@ -110,18 +108,18 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "CredentialsQueryVariables")]
+    #[cynic(variables = "CredentialsQueryVariables")]
     #[allow(dead_code)]
     pub struct Vault {
         pub id: i32,
         pub name: String,
-        #[arguments(grep = &args.grep)]
+        #[arguments(grep: $grep)]
         pub credentials: Option<Vec<Option<Credentials>>>,
         pub personal: bool,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "Vault")]
     #[allow(dead_code)]
     pub struct VaultWithPaymentCards {
         pub id: i32,
@@ -131,13 +129,20 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(argument_struct = "EmptyQueryVariables", graphql_type = "Vault")]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "Vault")]
     #[allow(dead_code)]
     pub struct VaultWithNotes {
         pub id: i32,
         pub name: String,
         pub notes: Option<Vec<Option<Note>>>,
         pub personal: bool,
+    }
+
+    #[derive(cynic::QueryFragment, Debug)]
+    #[cynic(variables = "EmptyQueryVariables", graphql_type = "Vault")]
+    #[allow(dead_code)]
+    pub struct VaultWithCredentials {
+        pub id: i32,
     }
 
     #[derive(cynic::QueryFragment, Debug, Clone)]
@@ -192,6 +197,7 @@ pub mod types {
         pub service: String,
         pub username: String,
     }
+
     impl CredentialsIn {
         pub fn encrypt(&self, key: &str) -> CredentialsIn {
             let password = encrypt(key, &self.iv, &self.password_encrypted);
@@ -215,19 +221,21 @@ pub mod types {
         }
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
-    pub struct AddGredentialsGroupMutationVariables {
-        pub input: AddCredentialsGroupIn,
+    #[derive(cynic::QueryVariables, Debug)]
+    pub struct AddCredentialsGroupMutationVariables {
+        pub credentials: Vec<CredentialsIn>,
+        pub vault_id: Option<i32>,
     }
+
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
-        graphql_type = "Mutation",
-        argument_struct = "AddGredentialsGroupMutationVariables"
+    graphql_type = "Mutation",
+    variables = "AddCredentialsGroupMutationVariables"
     )]
-    pub struct AddGredentialsGroupMutation {
-        #[arguments(input = AddCredentialsGroupIn {
-            credentials: args.input.credentials.clone(),
-            vault_id: args.input.vault_id
+    pub struct AddCredentialsGroupMutation {
+        #[arguments(input: {
+            credentials: $credentials,
+            vaultId: $vault_id
         })]
         pub add_credentials_group: i32,
     }
@@ -238,7 +246,7 @@ pub mod types {
         pub vault_id: Option<i32>,
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct DeleteCredentialsMutationVariables {
         pub input: DeleteCredentialsIn,
     }
@@ -252,33 +260,30 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
-        graphql_type = "Mutation",
-        argument_struct = "DeleteCredentialsMutationVariables"
+    graphql_type = "Mutation",
+    variables = "DeleteCredentialsMutationVariables"
     )]
     pub struct DeleteCredentialsMutation {
-        #[arguments(input = DeleteCredentialsIn {
-            grep: args.input.grep.clone(),
-            index: args.input.index
-        })]
+        #[arguments(input: $input)]
         pub delete_credentials: i32,
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct DeletePaymentCardMutationVariables {
         pub id: i32,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
-        graphql_type = "Mutation",
-        argument_struct = "DeletePaymentCardMutationVariables"
+    graphql_type = "Mutation",
+    variables = "DeletePaymentCardMutationVariables"
     )]
     pub struct DeletePaymentCardMutation {
-        #[arguments(id = args.id)]
+        #[arguments(id: $id)]
         pub delete_payment_card: i32,
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct MigrateMutationVariables {
         pub new_key: String,
         pub old_key: String,
@@ -286,23 +291,26 @@ pub mod types {
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
-        graphql_type = "Mutation",
-        argument_struct = "MigrateMutationVariables"
+    graphql_type = "Mutation",
+    variables = "MigrateMutationVariables"
     )]
     pub struct MigrateMutation {
-        #[arguments(new_key = args.new_key.clone(), old_key = args.old_key.clone())]
+        #[arguments(newKey: $new_key, oldKey: $old_key)]
         pub migrate: i32,
     }
+
     #[derive(cynic::InputObject, Debug, Clone)]
     pub struct ExpiryIn {
         pub month: i32,
         pub year: i32,
     }
+
     #[derive(cynic::QueryFragment, Debug, Clone)]
     pub struct Expiry {
         pub month: i32,
         pub year: i32,
     }
+
     impl Display for Expiry {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             write!(f, "{}/{}", self.month, self.year)
@@ -317,6 +325,7 @@ pub mod types {
         pub state: Option<String>,
         pub zip: String,
     }
+
     impl AddressIn {
         pub fn encrypt(&self, key: &str, iv: &str) -> AddressIn {
             AddressIn {
@@ -342,6 +351,7 @@ pub mod types {
         pub state: Option<String>,
         pub zip: String,
     }
+
     impl Address {
         pub fn decrypt(&self, key: &str, iv: &str) -> anyhow::Result<Address> {
             Ok(Address {
@@ -358,6 +368,7 @@ pub mod types {
             })
         }
     }
+
     impl Display for Address {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             write!(
@@ -415,6 +426,7 @@ pub mod types {
         pub color: Option<String>,
         pub billing_address: Option<Address>,
     }
+
     impl PaymentCard {
         pub fn last_four(&self) -> String {
             self.number
@@ -455,25 +467,29 @@ pub mod types {
             })
         }
     }
+
     #[derive(cynic::InputObject, Debug, Clone)]
     pub struct AddPaymentCardIn {
         pub payment: PaymentCardIn,
         pub vault_id: Option<i32>,
     }
-    #[derive(cynic::FragmentArguments, Debug)]
+
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct AddPaymentCardMutationVariables {
-        pub input: AddPaymentCardIn,
+        pub payment: PaymentCardIn,
+        pub vault_id: Option<i32>,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
+        schema = "passlane",
         graphql_type = "Mutation",
-        argument_struct = "AddPaymentCardMutationVariables"
+        variables = "AddPaymentCardMutationVariables"
     )]
     pub struct AddPaymentCardMutation {
-        #[arguments(input = AddPaymentCardIn {
-            payment: args.input.payment.clone(),
-            vault_id: args.input.vault_id
+        #[arguments(input: {
+            payment: $payment,
+            vaultId: $vault_id
         })]
         pub add_payment_card: PaymentCard,
     }
@@ -487,6 +503,7 @@ pub mod types {
         pub created: Date,
         pub modified: Option<Date>,
     }
+
     impl Note {
         pub fn decrypt(&self, key: &str) -> anyhow::Result<Note> {
             Ok(Note {
@@ -504,13 +521,14 @@ pub mod types {
         }
     }
 
-    #[derive(cynic::FragmentArguments, cynic::InputObject, Debug, Clone)]
+    #[derive(cynic::QueryVariables, Debug, Clone)]
     pub struct NoteIn {
         pub iv: String,
         pub title: String,
         pub content: String,
         pub vault_id: Option<i32>,
     }
+
     impl NoteIn {
         pub fn encrypt(&self, key: &str) -> NoteIn {
             NoteIn {
@@ -523,29 +541,29 @@ pub mod types {
     }
 
     #[derive(cynic::QueryFragment, Debug)]
-    #[cynic(graphql_type = "Mutation", argument_struct = "NoteIn")]
+    #[cynic(graphql_type = "Mutation", variables = "NoteIn")]
     pub struct AddNoteMutation {
-        #[arguments(input = NoteIn {
-            iv: args.iv.clone(),
-            title: args.title.clone(),
-            content: args.content.clone(),
-            vault_id: args.vault_id
+        #[arguments(input: {
+            iv: $iv,
+            title: $title,
+            content: $content,
+            vaultId: $vault_id
         })]
         pub add_note: Note,
     }
 
-    #[derive(cynic::FragmentArguments, Debug)]
+    #[derive(cynic::QueryVariables, Debug)]
     pub struct DeleteNoteMutationVariables {
         pub id: i32,
     }
 
     #[derive(cynic::QueryFragment, Debug)]
     #[cynic(
-        graphql_type = "Mutation",
-        argument_struct = "DeleteNoteMutationVariables"
+    graphql_type = "Mutation",
+    variables = "DeleteNoteMutationVariables"
     )]
     pub struct DeleteNoteMutation {
-        #[arguments(id = args.id)]
+        #[arguments(id: $id)]
         pub delete_note: i32,
     }
 }

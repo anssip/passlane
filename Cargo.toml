@@ -1,6 +1,6 @@
 [package]
 name = "passlane"
-version = "2.2.2"
+version = "2.2.3-rc.1"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
@@ -10,8 +10,11 @@ homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
 keywords = ["cli", "password", "credentials"]
 categories = ["command-line-utilities"]
+build = "build.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[build-dependencies]
+cynic-codegen = { version = "3" }
+insta = "1"
 
 [dependencies]
 proc-macro2 = "1.0.79"
@@ -35,8 +38,8 @@ tower-service = "0.3.1"
 log = "0.4.16"
 anyhow = "1.0.56"
 webbrowser = "0.8.10"
-reqwest = "0.11.11"
-cynic = { version = "1.0.0", features = ["reqwest"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+cynic = { version = "3", features = ["http-reqwest"] }
 chrono = "0.4.19"
 env_logger = "0.10.0"
 serde_json = "1.0.83"

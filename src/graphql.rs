@@ -1,10 +1,12 @@
 use anyhow::bail;
+use cynic::{MutationBuilder};
 use cynic::http::ReqwestExt;
-use cynic::MutationBuilder;
 use cynic::Operation;
 use cynic::QueryBuilder;
 use log::debug;
 use reqwest::header;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::graphql::queries::types::*;
 
@@ -29,11 +31,13 @@ fn new_request(access_token: &str) -> reqwest::RequestBuilder {
         .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
 }
 
-async fn run_request<'a, R: 'a>(
+async fn run_request<R: DeserializeOwned + 'static, V: Serialize>(
     access_token: &str,
-    operation: Operation<'a, R>,
+    operation: Operation<R, V>,
 ) -> anyhow::Result<R> {
-    let response = new_request(access_token).run_graphql(operation).await;
+    let request = new_request(access_token);
+    let response = request.run_graphql(operation).await;
+
     match response {
         Ok(response) => match response.data {
             Some(data) => Ok(data),
@@ -67,12 +71,10 @@ pub async fn run_add_credentials_group_mutation(
     access_token: &str,
     credentials: Vec<CredentialsIn>,
     vault_id: Option<i32>,
-) -> anyhow::Result<AddGredentialsGroupMutation> {
-    let operation = AddGredentialsGroupMutation::build(&AddGredentialsGroupMutationVariables {
-        input: AddCredentialsGroupIn {
-            credentials,
-            vault_id,
-        },
+) -> anyhow::Result<AddCredentialsGroupMutation> {
+    let operation = AddCredentialsGroupMutation::build(AddCredentialsGroupMutationVariables {
+        credentials,
+        vault_id,
     });
     run_request(access_token, operation).await
 }
@@ -84,7 +86,7 @@ pub async fn run_delete_credentials_mutation(
 ) -> anyhow::Result<DeleteCredentialsMutation> {
     let operation = {
         let grep = String::from(grep);
-        DeleteCredentialsMutation::build(&DeleteCredentialsMutationVariables {
+        DeleteCredentialsMutation::build(DeleteCredentialsMutationVariables {
             input: DeleteCredentialsIn { grep, index },
         })
     };
@@ -96,7 +98,7 @@ pub async fn run_migrate_mutation(
     old_key: &str,
     new_key: &str,
 ) -> anyhow::Result<MigrateMutation> {
-    let operation = MigrateMutation::build(&MigrateMutationVariables {
+    let operation = MigrateMutation::build(MigrateMutationVariables {
         old_key: String::from(old_key),
         new_key: String::from(new_key),
     });
@@ -108,13 +110,10 @@ pub async fn run_add_payment_card_mutation(
     payment: PaymentCardIn,
     vault_id: Option<i32>,
 ) -> anyhow::Result<AddPaymentCardMutation> {
-    let operation: Operation<AddPaymentCardMutation> =
-        AddPaymentCardMutation::build(&AddPaymentCardMutationVariables {
-            input: AddPaymentCardIn {
-                payment,
-                vault_id,
-            },
-        });
+    let operation = AddPaymentCardMutation::build(AddPaymentCardMutationVariables {
+        payment,
+        vault_id,
+    });
     run_request(access_token, operation).await
 }
 
@@ -122,8 +121,8 @@ pub async fn run_delete_payment_card_mutation(
     access_token: &str,
     id: i32,
 ) -> anyhow::Result<DeletePaymentCardMutation> {
-    let operation: Operation<DeletePaymentCardMutation> =
-        DeletePaymentCardMutation::build(&DeletePaymentCardMutationVariables { id });
+    let operation =
+        DeletePaymentCardMutation::build(DeletePaymentCardMutationVariables { id });
     run_request(access_token, operation).await
 }
 
@@ -131,7 +130,12 @@ pub async fn run_add_note_mutation(
     access_token: &str,
     note: &NoteIn,
 ) -> anyhow::Result<AddNoteMutation> {
-    let operation: Operation<AddNoteMutation> = AddNoteMutation::build(note);
+    let operation = AddNoteMutation::build(NoteIn {
+        iv: note.iv.clone(),
+        title: note.title.clone(),
+        content: note.content.clone(),
+        vault_id: note.vault_id,
+    });
     run_request(access_token, operation).await
 }
 
@@ -139,6 +143,6 @@ pub async fn run_delete_note_mutation(
     access_token: &str,
     id: i32,
 ) -> anyhow::Result<DeleteNoteMutation> {
-    let operation = DeleteNoteMutation::build(&DeleteNoteMutationVariables { id });
+    let operation = DeleteNoteMutation::build(DeleteNoteMutationVariables { id });
     run_request(access_token, operation).await
 }
