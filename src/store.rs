@@ -73,8 +73,12 @@ fn dir_path() -> PathBuf {
 
 fn access_token_path() -> PathBuf {
     let path = dir_path();
-    let path = path.join(".access_token");
-    path
+    path.join(".access_token")
+}
+
+fn encryption_key_path() -> PathBuf {
+    let path = dir_path();
+    path.join(".encryption_key")
 }
 
 fn master_password_file_path() -> PathBuf {
@@ -278,4 +282,8 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> a
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
+}
+
+pub(crate) fn is_unlocked() -> bool {
+    encryption_key_path().exists()
 }

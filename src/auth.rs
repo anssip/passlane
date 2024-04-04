@@ -1,8 +1,8 @@
 use crate::ui;
-use chrono::DateTime;
+use chrono::{LocalResult};
 use chrono::Duration;
 use chrono::Local;
-use chrono::NaiveDateTime;
+use chrono::TimeZone;
 use chrono::Utc;
 use core::fmt::Display;
 use core::fmt::Formatter;
@@ -42,10 +42,16 @@ impl AccessTokens {
     fn seconds_since_creation(&self) -> i64 {
         match self.created_timestamp.parse::<i64>() {
             Ok(ts) => {
-                let naive = NaiveDateTime::from_timestamp(ts, 0);
-                let created_datetime: DateTime<Utc> = DateTime::from_utc(naive, Utc);
-                let now = Local::now();
-                now.signed_duration_since(created_datetime).num_seconds()
+                match Utc.timestamp_opt(ts, 0) {
+                    LocalResult::Single(created_datetime) => {
+                        let now = Local::now();
+                        now.signed_duration_since(created_datetime).num_seconds()
+                    },
+                    _ => {
+                        error!("Out-of-range timestamp");
+                        0
+                    }
+                }
             }
             Err(err) => {
                 error!("failed to parse access_token timestamp: {}", err);

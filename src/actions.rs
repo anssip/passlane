@@ -77,9 +77,10 @@ impl LoginAction {
     }
     async fn login(&self) -> anyhow::Result<bool> {
         let token = task::spawn_blocking(move || auth::login()).await?.await?;
-        let first_login = !store::has_logged_in();
         store::store_access_token(&token)?;
-        Ok(first_login)
+        
+        let is_unlocked = store::is_unlocked();
+        Ok(is_unlocked)
     }
 }
 
@@ -87,9 +88,9 @@ impl LoginAction {
 impl Action for LoginAction {
     async fn execute(&self) -> anyhow::Result<()> {
         match self.login().await {
-            Ok(is_first_login) => {
+            Ok(is_unlocked) => {
                 println!("Logged in successfully. Online vaults in use.");
-                if is_first_login {
+                if !is_unlocked {
                     println!("Use 'passlane unlock' to unlock the vault.");
                 }
             }
@@ -231,7 +232,7 @@ impl ShowAction {
             Some(grep) => Some(String::from(grep)),
             None => panic!("-g <REGEXP> is required"),
         };
-        let matches = find_credentials(grep).await.context("Failed to find matches. Invalid password? Try unlocking agin.")?;
+        let matches = find_credentials(grep).await.context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
 
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
