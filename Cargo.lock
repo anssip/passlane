@@ -1581,6 +1581,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.21.7",
+ "bytes",
  "chrono",
  "clap",
  "clipboard",
@@ -1592,7 +1593,6 @@ dependencies = [
  "env_logger",
  "futures",
  "hex",
- "hyper 0.14.28",
  "insta",
  "log",
  "magic-crypt",
@@ -1610,6 +1610,7 @@ dependencies = [
  "serde_urlencoded",
  "tokio",
  "tower-service",
+ "url",
  "webbrowser",
 ]
 

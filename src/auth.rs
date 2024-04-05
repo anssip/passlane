@@ -6,30 +6,25 @@ use chrono::TimeZone;
 use chrono::Utc;
 use core::fmt::Display;
 use core::fmt::Formatter;
-use futures::{
-    channel::oneshot,
-    prelude::*,
-    task::{Context, Poll},
-};
-use hyper::{body::Body, server, service, Request, Response};
 use oauth2::basic::BasicTokenType;
 use oauth2::EmptyExtraTokenFields;
 use oauth2::RefreshToken;
 use oauth2::StandardTokenResponse;
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::time::UNIX_EPOCH;
-use tower_service::Service;
 
 use anyhow::bail;
 use log::error;
 use oauth2::basic::BasicClient;
-use oauth2::reqwest::async_http_client;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
     RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use std::time::SystemTime;
+use std::io::{BufRead, BufReader, Write};
+use url::Url;
+// use oauth2::reqwest;
 
 pub struct AccessTokens {
     pub access_token: String,
@@ -46,7 +41,7 @@ impl AccessTokens {
                     LocalResult::Single(created_datetime) => {
                         let now = Local::now();
                         now.signed_duration_since(created_datetime).num_seconds()
-                    },
+                    }
                     _ => {
                         error!("Out-of-range timestamp");
                         0
@@ -85,34 +80,7 @@ impl Display for AccessTokens {
 
 #[derive(Deserialize)]
 pub struct ReceivedCode {
-    pub code: AuthorizationCode,
-    pub state: CsrfToken,
-}
-pub struct Server {
-    channel: Option<oneshot::Sender<ReceivedCode>>,
-    document: Vec<u8>,
-}
-
-impl Service<Request<Body>> for Server {
-    type Response = Response<Body>;
-    type Error = anyhow::Error;
-    type Future = future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    // Handle the request
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        if let Ok(code) =
-            serde_urlencoded::from_str::<ReceivedCode>(req.uri().query().unwrap_or(""))
-        {
-            if let Some(channel) = self.channel.take() {
-                let _ = channel.send(code);
-            }
-        }
-        Box::pin(future::ok(Response::new(Body::from(self.document.clone()))))
-    }
+    pub code: AuthorizationCode
 }
 
 fn new_client() -> anyhow::Result<BasicClient> {
@@ -122,8 +90,8 @@ fn new_client() -> anyhow::Result<BasicClient> {
         AuthUrl::new("https://passlane.eu.auth0.com/authorize".to_string())?,
         Some(TokenUrl::new("https://passlane.eu.auth0.com/oauth/token".to_string())?),
     )
-    .set_redirect_uri(RedirectUrl::new("http://localhost:8080/login".to_string())?)
-    .set_auth_type(AuthType::RequestBody);
+        .set_redirect_uri(RedirectUrl::new("http://localhost:8080/login".to_string())?)
+        .set_auth_type(AuthType::RequestBody);
     Ok(client)
 }
 
@@ -136,12 +104,12 @@ fn create_access_tokens(
         access_token: String::from(token_response.access_token().secret()),
         refresh_token: token_response.refresh_token().map(|token| String::from(token.secret())),
         expires_in: token_response.expires_in().map(|duration| Duration::from_std(duration)
-                    .expect("Oauth returned expiration value larger than life")),
+            .expect("Oauth returned expiration value larger than life")),
         created_timestamp: format!("{}", since_the_epoch.as_secs()),
     }
 }
 
-pub async fn login() -> Result<AccessTokens, anyhow::Error> {
+pub fn login() -> Result<AccessTokens, anyhow::Error> {
     let client = new_client()?;
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let csrf_token = CsrfToken::new_random_len(256);
@@ -166,28 +134,51 @@ pub async fn login() -> Result<AccessTokens, anyhow::Error> {
     )? {
         bail!("Failed to open login page in browser");
     }
-    let received: ReceivedCode = listen_for_code(8080).await?;
-    if received.state.secret() != csrf_state.secret() {
-        bail!("CSRF token mismatch :(");
-    }
+    let received: ReceivedCode = listen_for_code(8080, &csrf_state)?;
+
     let token_result = client
         .exchange_code(AuthorizationCode::new(received.code.secret().to_string()))
         .set_pkce_verifier(pkce_verifier)
-        .request_async(async_http_client)
-        .await?;
+        .request(oauth2::reqwest::http_client)?;
 
     Ok(create_access_tokens(token_result))
 }
 
-async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
+fn listen_for_code(port: u32, csrf_state: &CsrfToken) -> Result<ReceivedCode, anyhow::Error> {
     let bind = format!("127.0.0.1:{}", port);
     log::info!("Listening on: http://{}", bind);
-
     let addr: SocketAddr = str::parse(&bind)?;
 
-    let (tx, rx) = oneshot::channel::<ReceivedCode>();
-    let mut channel = Some(tx);
-    let document = b"<!DOCTYPE html>
+    let (code, state) = {
+        // A very naive implementation of the redirect server.
+        let listener = TcpListener::bind(addr).unwrap();
+
+        // The server will terminate itself after collecting the first code.
+        let Some(mut stream) = listener.incoming().flatten().next() else {
+            panic!("listener terminated without accepting a connection");
+        };
+
+        let mut reader = BufReader::new(&stream);
+
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).unwrap();
+
+        let redirect_url = request_line.split_whitespace().nth(1).unwrap();
+        let url = Url::parse(&("http://localhost".to_string() + redirect_url)).unwrap();
+
+        let code = url
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .map(|(_, code)| AuthorizationCode::new(code.into_owned()))
+            .unwrap();
+
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, state)| CsrfToken::new(state.into_owned()))
+            .unwrap();
+
+        let document = "<!DOCTYPE html>
 <html>
 
 <head>
@@ -201,35 +192,35 @@ async fn listen_for_code(port: u32) -> Result<ReceivedCode, anyhow::Error> {
 
 </html>
 ";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
+            document.len(),
+            document
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        log::debug!("html document sent");
 
-    log::debug!("html document sent");
-    let server_future = server::Server::bind(&addr).serve(service::make_service_fn(move |_| {
-        let channel = channel.take().expect("channel is not available");
-        let mut server = Server {
-            channel: Some(channel),
-            document: document.to_vec(),
-        };
-        let service = service::service_fn(move |req| server.call(req));
+        (code, state)
+    };
 
-        async move { Ok::<_, hyper::Error>(service) }
-    }));
-
-    let mut server_future = server_future.fuse();
-    let mut rx = rx.fuse();
-
-    futures::select! {
-        _ = server_future => panic!("server exited for some reason"),
-        received = rx => Ok(received?),
+    log::debug!("Github returned the following code:\n{}\n", code.secret());
+    log::debug!(
+        "Github returned the following state:\n{} (expected `{}`)\n",
+        state.secret(),
+        csrf_state.secret()
+    );
+    if state.secret() != csrf_state.secret() {
+        bail!("CSRF token mismatch :(");
     }
+    Ok(ReceivedCode { code })
 }
 
-pub async fn exchange_refresh_token(token: AccessTokens) -> anyhow::Result<AccessTokens> {
+pub fn exchange_refresh_token(token: AccessTokens) -> anyhow::Result<AccessTokens> {
     let client = new_client()?;
     if let Some(refresh_token) = token.refresh_token {
         let token_result = client
             .exchange_refresh_token(&RefreshToken::new(refresh_token))
-            .request_async(async_http_client)
-            .await?;
+            .request(oauth2::reqwest::http_client)?;
         Ok(create_access_tokens(token_result))
     } else {
         bail!("no refresh token available")

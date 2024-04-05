@@ -31,14 +31,14 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
     debug!("Token expired? {}", token.is_expired());
     debug!("Token {}", token);
     if token.is_expired() {
-        match auth::exchange_refresh_token(token).await {
+        match auth::exchange_refresh_token(token) {
             Ok(token) => {
                 store::store_access_token(&token)?;
                 Ok(token)
             }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                let token = task::spawn_blocking(move || auth::login()).await?.await?;
+                let token = task::spawn_blocking(auth::login).await??;
                 store::store_access_token(&token)?;
                 Ok(token)
             }
@@ -76,7 +76,7 @@ impl LoginAction {
         LoginAction {}
     }
     async fn login(&self) -> anyhow::Result<bool> {
-        let token = task::spawn_blocking(move || auth::login()).await?.await?;
+        let token = task::spawn_blocking(auth::login).await??;
         store::store_access_token(&token)?;
         
         let is_unlocked = store::is_unlocked();
