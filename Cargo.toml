@@ -30,7 +30,6 @@ regex = "1.5.5"
 rpassword = "7.2.0"
 comfy-table = "7.0.1"
 oauth2 = {version =  "4.2.3", features = ["reqwest"] }
-tokio = { version = "1.17.0", features = ["full"] }
 serde_urlencoded = "0.7.1"
 futures = "0.3.21"
 tower-service = "0.3.1"

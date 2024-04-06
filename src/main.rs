@@ -105,8 +105,7 @@ fn cli() -> Command {
         )
 }
 
-#[tokio::main]
-async fn main() -> () {
+fn main() {
     env_logger::init();
     let matches = cli().get_matches();
 
@@ -128,7 +127,7 @@ async fn main() -> () {
             }
         },
     };
-    match action.execute().await {
+    match action.execute() {
         Ok(_) => (),
         Err(e) => {
             eprintln!("{}", e);

@@ -5,7 +5,6 @@ use crate::store::get_encryption_key;
 use crate::store::delete_encryption_key;
 use crate::AccessTokens;
 use crate::Credentials;
-use async_trait::async_trait;
 use clap::Command;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -18,11 +17,10 @@ use crate::ui;
 use anyhow::{bail, Context};
 use clap::ArgMatches;
 use log::{debug, info, warn};
-use tokio::task;
 use std::io;
 
 
-pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
+pub fn get_access_token() -> anyhow::Result<AccessTokens> {
     debug!("get_access_token()");
     if !store::has_logged_in() {
         bail!("You are not logged in to the Passlane Online Vault. Please run `passlane login` to login (or signup) first.");
@@ -38,7 +36,7 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
             }
             Err(err) => {
                 warn!("failed to refresh access token: {}", err);
-                let token = task::spawn_blocking(auth::login).await??;
+                let token = auth::login()?;
                 store::store_access_token(&token)?;
                 Ok(token)
             }
@@ -48,15 +46,14 @@ pub async fn get_access_token() -> anyhow::Result<AccessTokens> {
     }
 }
 
-async fn push_one_credential(
+fn push_one_credential(
     credentials: &CredentialsIn,
 ) -> anyhow::Result<i32> {
-    let token = get_access_token().await?;
+    let token = get_access_token()?;
     let encryption_key = get_encryption_key()?;
     debug!("saving with encryption_key: {}", encryption_key);
 
     online_vault::push_one_credential(&token.access_token, &credentials.encrypt(&encryption_key), None)
-        .await
 }
 
 pub fn copy_to_clipboard(value: &String) {
@@ -64,9 +61,8 @@ pub fn copy_to_clipboard(value: &String) {
     ctx.set_contents(String::from(value)).unwrap();
 }
 
-#[async_trait]
 pub trait Action {
-    async fn execute(&self) -> anyhow::Result<()>;
+    fn execute(&self) -> anyhow::Result<()>;
 }
 
 pub struct LoginAction {}
@@ -75,19 +71,18 @@ impl LoginAction {
     pub fn new() -> LoginAction {
         LoginAction {}
     }
-    async fn login(&self) -> anyhow::Result<bool> {
-        let token = task::spawn_blocking(auth::login).await??;
+    fn login(&self) -> anyhow::Result<bool> {
+        let token = auth::login()?;
         store::store_access_token(&token)?;
-        
+
         let is_unlocked = store::is_unlocked();
         Ok(is_unlocked)
     }
 }
 
-#[async_trait]
 impl Action for LoginAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        match self.login().await {
+    fn execute(&self) -> anyhow::Result<()> {
+        match self.login() {
             Ok(is_unlocked) => {
                 println!("Logged in successfully. Online vaults in use.");
                 if !is_unlocked {
@@ -112,19 +107,19 @@ impl ItemType {
         if *matches
             .get_one::<bool>("payments")
             .expect("defaulted to false by clap") {
-                ItemType::Payment
-            } else if *matches.get_one("notes").expect("defaulted to false by clap") {
-                ItemType::Note
-            } else {
-                ItemType::Credential
-            }
+            ItemType::Payment
+        } else if *matches.get_one("notes").expect("defaulted to false by clap") {
+            ItemType::Note
+        } else {
+            ItemType::Credential
+        }
     }
 }
 
 pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
-    pub item_type: ItemType
+    pub item_type: ItemType,
 }
 
 
@@ -137,7 +132,7 @@ impl AddAction {
             clipboard: *matches
                 .get_one::<bool>("clipboard")
                 .expect("defaulted to false by clap"),
-            item_type: ItemType::new_from_args(matches)
+            item_type: ItemType::new_from_args(matches),
         }
     }
     fn password_from_clipboard(&self) -> anyhow::Result<String> {
@@ -159,21 +154,20 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    async fn save(&self, creds: &CredentialsIn) -> anyhow::Result<()> {
+    fn save(&self, creds: &CredentialsIn) -> anyhow::Result<()> {
         info!("saving to online vault");
-        push_one_credential(&creds).await?;
+        push_one_credential(&creds)?;
         println!("Saved.");
         Ok(())
     }
-    async fn add_credential(&self) -> anyhow::Result<(), anyhow::Error> {
+    fn add_credential(&self) -> anyhow::Result<(), anyhow::Error> {
         let password = self.get_password().context(format!(
             "Failed to get password {}",
             if self.clipboard { "from clipboard" } else { "" }
         ))?;
-    
+
         let creds = ui::ask_credentials(&password);
         self.save(&creds)
-            .await
             .context("failed to save")?;
         if !self.clipboard {
             copy_to_clipboard(&password);
@@ -181,31 +175,29 @@ impl AddAction {
         };
         Ok(())
     }
-    async fn add_payment(&self) -> anyhow::Result<()> {
+    fn add_payment(&self) -> anyhow::Result<()> {
         let encryption_key = get_encryption_key()?;
-        let token = get_access_token().await?;
+        let token = get_access_token()?;
         let payment = ui::ask_payment_info();
-        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None).await?;
+        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None)?;
         Ok(())
     }
-    async fn add_note(&self) -> anyhow::Result<()> {
+    fn add_note(&self) -> anyhow::Result<()> {
         let encryption_key = get_encryption_key()?;
-        let token = get_access_token().await?;
+        let token = get_access_token()?;
         let note = ui::ask_note_info();
-        online_vault::save_note(&token.access_token, &note.encrypt(&encryption_key)).await?;
+        online_vault::save_note(&token.access_token, &note.encrypt(&encryption_key))?;
         println!("Note saved.");
         Ok(())
     }
-
 }
 
-#[async_trait]
 impl Action for AddAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         match self.item_type {
-            ItemType::Credential => self.add_credential().await?,
-            ItemType::Payment => self.add_payment().await?,
-            ItemType::Note => self.add_note().await?
+            ItemType::Credential => self.add_credential()?,
+            ItemType::Payment => self.add_payment()?,
+            ItemType::Note => self.add_note()?
         };
         Ok(())
     }
@@ -214,7 +206,7 @@ impl Action for AddAction {
 pub struct ShowAction {
     pub grep: Option<String>,
     pub verbose: bool,
-    pub item_type: ItemType
+    pub item_type: ItemType,
 }
 
 impl ShowAction {
@@ -224,22 +216,22 @@ impl ShowAction {
             verbose: *matches
                 .get_one::<bool>("verbose")
                 .expect("defaulted to false by clap"),
-            item_type: ItemType::new_from_args(matches)
+            item_type: ItemType::new_from_args(matches),
         }
     }
-    async fn show_credentials(&self) -> anyhow::Result<()> {
+    fn show_credentials(&self) -> anyhow::Result<()> {
         let grep = match &self.grep {
             Some(grep) => Some(String::from(grep)),
             None => panic!("-g <REGEXP> is required"),
         };
-        let matches = find_credentials(grep).await.context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
+        let matches = find_credentials(grep).context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
 
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
             ui::show_credentials_table(&matches, self.verbose);
             if matches.len() == 1 {
                 copy_to_clipboard(&matches[0].password);
-                println!("Password copied to clipboard!",);
+                println!("Password copied to clipboard!", );
             } else {
                 match ui::ask_index(
                     "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
@@ -258,10 +250,10 @@ impl ShowAction {
         Ok(())
     }
 
-    async fn show_payments(&self) -> anyhow::Result<()> {
+    fn show_payments(&self) -> anyhow::Result<()> {
         debug!("showing payments");
-        let token = get_access_token().await?;
-        let matches = online_vault::find_payment_cards(&token.access_token).await?;
+        let token = get_access_token()?;
+        let matches = online_vault::find_payment_cards(&token.access_token)?;
         if matches.len() == 0 {
             println!("No payment cards found");
         } else {
@@ -273,7 +265,7 @@ impl ShowAction {
                 if response == "y" {
                     ui::show_card(&matches[0]);
                     copy_to_clipboard(&matches[0].number);
-                    println!("Card number copied to clipboard!",);
+                    println!("Card number copied to clipboard!", );
                 }
             } else {
                 match ui::ask_index(
@@ -294,10 +286,10 @@ impl ShowAction {
         Ok(())
     }
 
-    async fn show_notes(&self) -> anyhow::Result<()> {
+    fn show_notes(&self) -> anyhow::Result<()> {
         debug!("showing notes");
-        let token = get_access_token().await?;
-        let matches = online_vault::find_notes(&token.access_token).await?;
+        let token = get_access_token()?;
+        let matches = online_vault::find_notes(&token.access_token)?;
         if matches.len() == 0 {
             println!("No notes found");
         } else {
@@ -328,25 +320,24 @@ impl ShowAction {
     }
 }
 
-async fn find_credentials(
+fn find_credentials(
     grep: Option<String>,
 ) -> anyhow::Result<Vec<Credentials>> {
     info!("searching from online vault");
-    let token = get_access_token().await?;
-    let matches =  online_vault::grep(&token.access_token, grep).await?;
+    let token = get_access_token()?;
+    let matches = online_vault::grep(&token.access_token, grep)?;
     if matches.len() == 0 {
         println!("No matches found");
     }
     Ok(matches)
 }
 
-#[async_trait]
 impl Action for ShowAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         match self.item_type {
-            ItemType::Credential => self.show_credentials().await?,
-            ItemType::Payment => self.show_payments().await?,
-            ItemType::Note => self.show_notes().await?
+            ItemType::Credential => self.show_credentials()?,
+            ItemType::Payment => self.show_payments()?,
+            ItemType::Note => self.show_notes()?
         };
         Ok(())
     }
@@ -354,40 +345,39 @@ impl Action for ShowAction {
 
 pub struct ExportAction {
     pub file_path: String,
-    pub item_type: ItemType
+    pub item_type: ItemType,
 }
 
 impl ExportAction {
     pub fn new(matches: &ArgMatches) -> ExportAction {
         ExportAction {
             file_path: matches.get_one::<String>("file_path").expect("required").to_string(),
-            item_type: ItemType::new_from_args(matches)
+            item_type: ItemType::new_from_args(matches),
         }
     }
-    pub async fn export_csv(&self) -> anyhow::Result<i64> {
+    pub fn export_csv(&self) -> anyhow::Result<i64> {
         debug!("exporting to csv");
         return if self.item_type == ItemType::Credential {
-            let creds = find_credentials(None).await?;
+            let creds = find_credentials(None)?;
             store::write_credentials_to_csv(&self.file_path, &creds)
         } else if self.item_type == ItemType::Payment {
-            let token = get_access_token().await?;
-            let cards = online_vault::find_payment_cards(&token.access_token).await?;
+            let token = get_access_token()?;
+            let cards = online_vault::find_payment_cards(&token.access_token)?;
             store::write_payment_cards_to_csv(&self.file_path, &cards)
         } else if self.item_type == ItemType::Note {
-            let token = get_access_token().await?;
-            let notes = online_vault::find_notes(&token.access_token).await?;
+            let token = get_access_token()?;
+            let notes = online_vault::find_notes(&token.access_token)?;
             store::write_secure_notes_to_csv(&self.file_path, &notes)
         } else {
             Ok(0)
-        }
+        };
     }
 }
 
 
-#[async_trait]
 impl Action for ExportAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        match self.export_csv().await {
+    fn execute(&self) -> anyhow::Result<()> {
+        match self.export_csv() {
             Err(message) => println!("Failed to export: {}", message),
             Ok(count) => println!("Exported {} entries", count),
         }
@@ -397,29 +387,29 @@ impl Action for ExportAction {
 
 pub struct DeleteAction {
     pub grep: Option<String>,
-    pub item_type: ItemType
+    pub item_type: ItemType,
 }
 
 impl DeleteAction {
     pub fn new(matches: &ArgMatches) -> DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
-            item_type: ItemType::new_from_args(matches)
+            item_type: ItemType::new_from_args(matches),
         }
     }
 }
 
 
-async fn delete_credentials(grep: &str) -> anyhow::Result<()> {
-    let matches = find_credentials(Some(String::from(grep))).await.context("Unable to get matches. Invalid password? Try unlocking again.")?;
+fn delete_credentials(grep: &str) -> anyhow::Result<()> {
+    let matches = find_credentials(Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
         return Ok(());
     }
     if matches.len() == 1 {
-        let token = get_access_token().await?;
-        online_vault::delete_credentials(&token.access_token, grep, Some(0)).await?;
+        let token = get_access_token()?;
+        online_vault::delete_credentials(&token.access_token, grep, Some(0))?;
         println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
@@ -430,13 +420,12 @@ async fn delete_credentials(grep: &str) -> anyhow::Result<()> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    let token = get_access_token().await?;
-                    online_vault::delete_credentials(&token.access_token, grep, None).await?;            
+                    let token = get_access_token()?;
+                    online_vault::delete_credentials(&token.access_token, grep, None)?;
                     println!("Deleted all {} matches!", matches.len());
-                    
                 } else {
-                    let token = get_access_token().await?;
-                    online_vault::delete_credentials(&token.access_token, grep, Some(index as i32)).await?;            
+                    let token = get_access_token()?;
+                    online_vault::delete_credentials(&token.access_token, grep, Some(index as i32))?;
                     println!("Deleted credentials of row {}!", index);
                 }
             }
@@ -448,9 +437,9 @@ async fn delete_credentials(grep: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn delete_payment() -> anyhow::Result<()> {
-    let token = get_access_token().await?;
-    let cards = online_vault::find_payment_cards(&token.access_token).await?;
+fn delete_payment() -> anyhow::Result<()> {
+    let token = get_access_token()?;
+    let cards = online_vault::find_payment_cards(&token.access_token)?;
     if cards.len() == 0 {
         println!("No payment cards found");
         return Ok(());
@@ -459,11 +448,11 @@ async fn delete_payment() -> anyhow::Result<()> {
     if cards.len() == 1 {
         let response = ui::ask("Do you want to delete this card? (y/n)");
         if response == "y" {
-            online_vault::delete_payment_card(&token.access_token, cards[0].id).await?;            
+            online_vault::delete_payment_card(&token.access_token, cards[0].id)?;
             println!("Deleted card named '{}'!", cards[0].name);
         }
         return Ok(());
-    } 
+    }
     match ui::ask_index(
         "To delete, please enter a row number from the table above, or press q to abort:",
         cards.len() as i16 - 1,
@@ -472,7 +461,7 @@ async fn delete_payment() -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                online_vault::delete_payment_card(&token.access_token, cards[index].id).await?;            
+                online_vault::delete_payment_card(&token.access_token, cards[index].id)?;
                 println!("Deleted card named '{}'!", cards[index].name);
             }
         }
@@ -483,9 +472,9 @@ async fn delete_payment() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn delete_note() -> anyhow::Result<()> {
-    let token = get_access_token().await?;
-    let notes = online_vault::find_notes(&token.access_token).await?;
+fn delete_note() -> anyhow::Result<()> {
+    let token = get_access_token()?;
+    let notes = online_vault::find_notes(&token.access_token)?;
     if notes.len() == 0 {
         println!("No notes found");
         return Ok(());
@@ -494,11 +483,11 @@ async fn delete_note() -> anyhow::Result<()> {
     if notes.len() == 1 {
         let response = ui::ask("Do you want to delete this note? (y/n)");
         if response == "y" {
-            online_vault::delete_note(&token.access_token, notes[0].id).await?;            
+            online_vault::delete_note(&token.access_token, notes[0].id)?;
             println!("Deleted note with title '{}'!", notes[0].title);
         }
         return Ok(());
-    } 
+    }
     match ui::ask_index(
         "To delete, please enter a row number from the table above, or press q to abort:",
         notes.len() as i16 - 1,
@@ -507,7 +496,7 @@ async fn delete_note() -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                online_vault::delete_note(&token.access_token, notes[index].id).await?;            
+                online_vault::delete_note(&token.access_token, notes[index].id)?;
                 println!("Deleted note with title '{}'!", notes[index].title);
             }
         }
@@ -518,22 +507,22 @@ async fn delete_note() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[async_trait]
+
 impl Action for DeleteAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => {
                 let grep = match &self.grep {
                     Some(grep) => grep,
                     None => panic!("-g <REGEXP> is required"),
-                };    
-                delete_credentials(grep).await?;
-            },
+                };
+                delete_credentials(grep)?;
+            }
             ItemType::Payment => {
-                delete_payment().await?;
-            },
+                delete_payment()?;
+            }
             ItemType::Note => {
-                delete_note().await?;
+                delete_note()?;
             }
         };
         Ok(())
@@ -552,14 +541,14 @@ impl ImportCsvAction {
     }
 }
 
-async fn import_csv(file_path: &str) -> anyhow::Result<i64> {
+fn import_csv(file_path: &str) -> anyhow::Result<i64> {
     let encryption_key = get_encryption_key()?;
     info!("importing to the online vault");
-    push_from_csv(&encryption_key, file_path).await
+    push_from_csv(&encryption_key, file_path)
 }
 
-async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
-    let token = get_access_token().await?;
+fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
+    let token = get_access_token()?;
     let input = store::read_from_csv(file_path)?;
     let creds = input.into_iter().map(|c| c.to_credentials_in().encrypt(master_pwd)).collect();
 
@@ -568,15 +557,15 @@ async fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64>
         &creds,
         None,
     )
-    .await?;
+        ?;
     let num_imported = creds.len();
     Ok(num_imported.try_into().unwrap())
 }
 
-#[async_trait]
+
 impl Action for ImportCsvAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        match import_csv(&self.file_path).await {
+    fn execute(&self) -> anyhow::Result<()> {
+        match import_csv(&self.file_path) {
             Err(message) => println!("Failed to import: {}", message),
             Ok(count) => println!("Imported {} entries", count),
         }
@@ -584,35 +573,33 @@ impl Action for ImportCsvAction {
     }
 }
 
-pub struct UpdateMasterPasswordAction { }
+pub struct UpdateMasterPasswordAction {}
 
-async fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
+fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
     if store::has_logged_in() {
         debug!("Updating master password in online vault!");
-        let token = get_access_token().await?;
-        let me = get_plain_me(&token.access_token).await?;
+        let token = get_access_token()?;
+        let me = get_plain_me(&token.access_token)?;
         let salt = me.get_salt();
         let old_key = derive_encryption_key(&old_pwd, &salt);
         let new_key = derive_encryption_key(&new_pwd, &salt);
 
         let count =
-            online_vault::migrate(&token.access_token, &old_key, &new_key).await?;
+            online_vault::migrate(&token.access_token, &old_key, &new_key)?;
         store::save_master_password(new_pwd);
         debug!("Updated {} passwords", count);
     }
     Ok(true)
 }
 
-#[async_trait]                                                                      
+
 impl Action for UpdateMasterPasswordAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         let old_pwd = ui::ask_master_password(Some("Enter current master password: "));
         let new_pwd = ui::ask_new_password();
 
 
-        let success = migrate(&old_pwd, &new_pwd)
-            .await
-            .context("Failed to update master password")?;
+        let success = migrate(&old_pwd, &new_pwd).context("Failed to update master password")?;
         if success {
             println!("Password changed");
         } else {
@@ -624,9 +611,9 @@ impl Action for UpdateMasterPasswordAction {
 
 pub struct GeneratePasswordAction {}
 
-#[async_trait]
+
 impl Action for GeneratePasswordAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         let password = crypto::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
@@ -636,9 +623,9 @@ impl Action for GeneratePasswordAction {
 
 pub struct LockAction {}
 
-#[async_trait]
+
 impl Action for LockAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         delete_encryption_key()?;
         Ok(())
     }
@@ -646,12 +633,12 @@ impl Action for LockAction {
 
 pub struct UnlockAction {}
 
-#[async_trait]
+
 impl Action for UnlockAction {
-    async fn execute(&self) -> anyhow::Result<()> {
-        let token = get_access_token().await?;
+    fn execute(&self) -> anyhow::Result<()> {
+        let token = get_access_token()?;
         let master_password = ui::ask_master_password(None);
-        let me = get_plain_me(&token.access_token).await?;
+        let me = get_plain_me(&token.access_token)?;
 
         store::save_encryption_key(&me.get_encryption_key(&master_password))?;
         Ok(())
@@ -659,7 +646,7 @@ impl Action for UnlockAction {
 }
 
 pub struct PrintHelpAction {
-    cli: Command
+    cli: Command,
 }
 
 impl PrintHelpAction {
@@ -670,12 +657,11 @@ impl PrintHelpAction {
     }
 }
 
-#[async_trait]
+
 impl Action for PrintHelpAction {
-    async fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> anyhow::Result<()> {
         let mut out = io::stdout();
         self.cli.clone().write_help(&mut out).context("Failed to display help!")?;
         Ok(())
     }
-
 }
