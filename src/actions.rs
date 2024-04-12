@@ -1,98 +1,65 @@
-use crate::crypto::derive_encryption_key;
-use crate::graphql::queries::types::CredentialsIn;
-use crate::online_vault::get_plain_me;
-use crate::store::get_encryption_key;
-use crate::store::delete_encryption_key;
-use crate::AccessTokens;
-use crate::Credentials;
 use clap::Command;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
-
-use crate::auth;
-use crate::online_vault;
-use crate::crypto;
+use crate::{crypto, keychain};
 use crate::store;
 use crate::ui;
 use anyhow::{bail, Context};
 use clap::ArgMatches;
 use log::{debug, info, warn};
 use std::io;
+use crate::vault::entities::{Credential};
+use crate::vault::keepass_vault::KeepassVault;
+use crate::vault::vault_trait::Vault;
+use anyhow::Result;
 
 
-pub fn get_access_token() -> anyhow::Result<AccessTokens> {
-    debug!("get_access_token()");
-    if !store::has_logged_in() {
-        bail!("You are not logged in to the Passlane Online Vault. Please run `passlane login` to login (or signup) first.");
+pub trait Action {
+    fn execute(&self) -> anyhow::Result<()> {
+        self.run()
     }
-    let token = store::get_access_token()?;
-    debug!("Token expired? {}", token.is_expired());
-    debug!("Token {}", token);
-    if token.is_expired() {
-        match auth::exchange_refresh_token(token) {
-            Ok(token) => {
-                store::store_access_token(&token)?;
-                Ok(token)
-            }
-            Err(err) => {
-                warn!("failed to refresh access token: {}", err);
-                let token = auth::login()?;
-                store::store_access_token(&token)?;
-                Ok(token)
-            }
-        }
-    } else {
-        Ok(token)
+
+    fn run(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
-fn push_one_credential(
-    credentials: &CredentialsIn,
-) -> anyhow::Result<i32> {
-    let token = get_access_token()?;
-    let encryption_key = get_encryption_key()?;
-    debug!("saving with encryption_key: {}", encryption_key);
+trait UnlockingAction: Action {
+    fn execute(&self) -> anyhow::Result<()> {
+        info!("Unlocking vault...");
+        let vault = self.unlock();
+        vault.and_then(|vault| self.run_with_vault(vault))
+    }
 
-    online_vault::push_one_credential(&token.access_token, &credentials.encrypt(&encryption_key), None)
+    fn run_with_vault(&self, _: Box<dyn Vault>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn get_vault(&self, password: &str, filepath: &str, keyfile_path: Option<String>) -> anyhow::Result<Box<dyn Vault>> {
+        // we could return some other Vault implementation here
+        let vault = KeepassVault::new(password, filepath, keyfile_path);
+        match vault {
+            Ok(v) => Ok(Box::new(v)),
+            Err(e) => {
+                bail!("Failed to open vault: {}", e);
+            }
+        }
+    }
+    fn unlock(&self) -> Result<Box<dyn Vault>> {
+        let stored_password = store::get_master_password();
+        if stored_password.is_none() {
+            debug!("No master password found.");
+        }
+        let master_pwd = stored_password.unwrap_or_else(|| ui::ask_master_password(None));
+        let filepath = store::get_vault_path();
+        let keyfile_path = store::get_keyfile_path();
+        self.get_vault(&master_pwd, &filepath, keyfile_path)
+    }
 }
 
 pub fn copy_to_clipboard(value: &String) {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     ctx.set_contents(String::from(value)).unwrap();
-}
-
-pub trait Action {
-    fn execute(&self) -> anyhow::Result<()>;
-}
-
-pub struct LoginAction {}
-
-impl LoginAction {
-    pub fn new() -> LoginAction {
-        LoginAction {}
-    }
-    fn login(&self) -> anyhow::Result<bool> {
-        let token = auth::login()?;
-        store::store_access_token(&token)?;
-
-        let is_unlocked = store::is_unlocked();
-        Ok(is_unlocked)
-    }
-}
-
-impl Action for LoginAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        match self.login() {
-            Ok(is_unlocked) => {
-                println!("Logged in successfully. Online vaults in use.");
-                if !is_unlocked {
-                    println!("Use 'passlane unlock' to unlock the vault.");
-                }
-            }
-            Err(message) => println!("Login failed: {}", message),
-        };
-        Ok(())
-    }
 }
 
 #[derive(PartialEq)]
@@ -154,20 +121,20 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    fn save(&self, creds: &CredentialsIn) -> anyhow::Result<()> {
+    fn save(&self, creds: &Credential, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         info!("saving to online vault");
-        push_one_credential(&creds)?;
+        vault.push_one_credential(&creds);
         println!("Saved.");
         Ok(())
     }
-    fn add_credential(&self) -> anyhow::Result<(), anyhow::Error> {
+    fn add_credential(&self, vault: Box<dyn Vault>) -> anyhow::Result<(), anyhow::Error> {
         let password = self.get_password().context(format!(
             "Failed to get password {}",
             if self.clipboard { "from clipboard" } else { "" }
         ))?;
 
         let creds = ui::ask_credentials(&password);
-        self.save(&creds)
+        self.save(&creds, vault)
             .context("failed to save")?;
         if !self.clipboard {
             copy_to_clipboard(&password);
@@ -175,29 +142,27 @@ impl AddAction {
         };
         Ok(())
     }
-    fn add_payment(&self) -> anyhow::Result<()> {
-        let encryption_key = get_encryption_key()?;
-        let token = get_access_token()?;
+    fn add_payment(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
-        online_vault::save_payment(&token.access_token, payment.encrypt(&encryption_key), None)?;
+        vault.save_payment(payment);
         Ok(())
     }
-    fn add_note(&self) -> anyhow::Result<()> {
-        let encryption_key = get_encryption_key()?;
-        let token = get_access_token()?;
+    fn add_note(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         let note = ui::ask_note_info();
-        online_vault::save_note(&token.access_token, &note.encrypt(&encryption_key))?;
+        vault.save_note(&note);
         println!("Note saved.");
         Ok(())
     }
 }
 
-impl Action for AddAction {
-    fn execute(&self) -> anyhow::Result<()> {
+impl Action for AddAction {}
+
+impl UnlockingAction for AddAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
-            ItemType::Credential => self.add_credential()?,
-            ItemType::Payment => self.add_payment()?,
-            ItemType::Note => self.add_note()?
+            ItemType::Credential => self.add_credential(vault)?,
+            ItemType::Payment => self.add_payment(vault)?,
+            ItemType::Note => self.add_note(vault)?
         };
         Ok(())
     }
@@ -219,12 +184,12 @@ impl ShowAction {
             item_type: ItemType::new_from_args(matches),
         }
     }
-    fn show_credentials(&self) -> anyhow::Result<()> {
+    fn show_credentials(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         let grep = match &self.grep {
             Some(grep) => Some(String::from(grep)),
             None => panic!("-g <REGEXP> is required"),
         };
-        let matches = find_credentials(grep).context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
+        let matches = find_credentials(&vault, grep).context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
 
         if matches.len() >= 1 {
             println!("Found {} matches:", matches.len());
@@ -250,10 +215,9 @@ impl ShowAction {
         Ok(())
     }
 
-    fn show_payments(&self) -> anyhow::Result<()> {
+    fn show_payments(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         debug!("showing payments");
-        let token = get_access_token()?;
-        let matches = online_vault::find_payment_cards(&token.access_token)?;
+        let matches = vault.find_payment_cards();
         if matches.len() == 0 {
             println!("No payment cards found");
         } else {
@@ -286,10 +250,9 @@ impl ShowAction {
         Ok(())
     }
 
-    fn show_notes(&self) -> anyhow::Result<()> {
+    fn show_notes(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         debug!("showing notes");
-        let token = get_access_token()?;
-        let matches = online_vault::find_notes(&token.access_token)?;
+        let matches = vault.find_notes();
         if matches.len() == 0 {
             println!("No notes found");
         } else {
@@ -321,23 +284,29 @@ impl ShowAction {
 }
 
 fn find_credentials(
+    vault: &Box<dyn Vault>,
     grep: Option<String>,
-) -> anyhow::Result<Vec<Credentials>> {
+) -> anyhow::Result<Vec<Credential>> {
     info!("searching from online vault");
-    let token = get_access_token()?;
-    let matches = online_vault::grep(&token.access_token, grep)?;
-    if matches.len() == 0 {
+    let matches = vault.grep(grep);
+    if matches.is_empty() {
         println!("No matches found");
     }
     Ok(matches)
 }
 
 impl Action for ShowAction {
-    fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self) -> Result<()> {
+        todo!()
+    }
+}
+
+impl UnlockingAction for ShowAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
-            ItemType::Credential => self.show_credentials()?,
-            ItemType::Payment => self.show_payments()?,
-            ItemType::Note => self.show_notes()?
+            ItemType::Credential => self.show_credentials(vault)?,
+            ItemType::Payment => self.show_payments(vault)?,
+            ItemType::Note => self.show_notes(vault)?
         };
         Ok(())
     }
@@ -355,18 +324,16 @@ impl ExportAction {
             item_type: ItemType::new_from_args(matches),
         }
     }
-    pub fn export_csv(&self) -> anyhow::Result<i64> {
+    pub fn export_csv(&self, vault: Box<dyn Vault>) -> anyhow::Result<i64> {
         debug!("exporting to csv");
         return if self.item_type == ItemType::Credential {
-            let creds = find_credentials(None)?;
+            let creds = find_credentials(&vault, None)?;
             store::write_credentials_to_csv(&self.file_path, &creds)
         } else if self.item_type == ItemType::Payment {
-            let token = get_access_token()?;
-            let cards = online_vault::find_payment_cards(&token.access_token)?;
+            let cards = vault.find_payment_cards();
             store::write_payment_cards_to_csv(&self.file_path, &cards)
         } else if self.item_type == ItemType::Note {
-            let token = get_access_token()?;
-            let notes = online_vault::find_notes(&token.access_token)?;
+            let notes = vault.find_notes();
             store::write_secure_notes_to_csv(&self.file_path, &notes)
         } else {
             Ok(0)
@@ -375,9 +342,11 @@ impl ExportAction {
 }
 
 
-impl Action for ExportAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        match self.export_csv() {
+impl Action for ExportAction {}
+
+impl UnlockingAction for ExportAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+        match self.export_csv(vault) {
             Err(message) => println!("Failed to export: {}", message),
             Ok(count) => println!("Exported {} entries", count),
         }
@@ -399,17 +368,15 @@ impl DeleteAction {
     }
 }
 
-
-fn delete_credentials(grep: &str) -> anyhow::Result<()> {
-    let matches = find_credentials(Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
+fn delete_credentials(vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
+    let matches = find_credentials(&vault, Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.len() == 0 {
         debug!("no matches found to delete");
         return Ok(());
     }
     if matches.len() == 1 {
-        let token = get_access_token()?;
-        online_vault::delete_credentials(&token.access_token, grep, Some(0))?;
+        vault.delete_credentials(grep, Some(0));
         println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
@@ -420,12 +387,10 @@ fn delete_credentials(grep: &str) -> anyhow::Result<()> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    let token = get_access_token()?;
-                    online_vault::delete_credentials(&token.access_token, grep, None)?;
+                    vault.delete_credentials(grep, None);
                     println!("Deleted all {} matches!", matches.len());
                 } else {
-                    let token = get_access_token()?;
-                    online_vault::delete_credentials(&token.access_token, grep, Some(index as i32))?;
+                    vault.delete_credentials(grep, Some(index as i32));
                     println!("Deleted credentials of row {}!", index);
                 }
             }
@@ -437,9 +402,8 @@ fn delete_credentials(grep: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn delete_payment() -> anyhow::Result<()> {
-    let token = get_access_token()?;
-    let cards = online_vault::find_payment_cards(&token.access_token)?;
+fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    let cards = vault.find_payment_cards();
     if cards.len() == 0 {
         println!("No payment cards found");
         return Ok(());
@@ -448,7 +412,7 @@ fn delete_payment() -> anyhow::Result<()> {
     if cards.len() == 1 {
         let response = ui::ask("Do you want to delete this card? (y/n)");
         if response == "y" {
-            online_vault::delete_payment_card(&token.access_token, cards[0].id)?;
+            vault.delete_payment(cards[0].id);
             println!("Deleted card named '{}'!", cards[0].name);
         }
         return Ok(());
@@ -461,7 +425,7 @@ fn delete_payment() -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                online_vault::delete_payment_card(&token.access_token, cards[index].id)?;
+                vault.delete_payment(cards[index].id);
                 println!("Deleted card named '{}'!", cards[index].name);
             }
         }
@@ -472,9 +436,8 @@ fn delete_payment() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn delete_note() -> anyhow::Result<()> {
-    let token = get_access_token()?;
-    let notes = online_vault::find_notes(&token.access_token)?;
+fn delete_note(vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    let notes = vault.find_notes();
     if notes.len() == 0 {
         println!("No notes found");
         return Ok(());
@@ -483,7 +446,7 @@ fn delete_note() -> anyhow::Result<()> {
     if notes.len() == 1 {
         let response = ui::ask("Do you want to delete this note? (y/n)");
         if response == "y" {
-            online_vault::delete_note(&token.access_token, notes[0].id)?;
+            vault.delete_note(notes[0].id);
             println!("Deleted note with title '{}'!", notes[0].title);
         }
         return Ok(());
@@ -496,7 +459,7 @@ fn delete_note() -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                online_vault::delete_note(&token.access_token, notes[index].id)?;
+                vault.delete_note(notes[index].id);
                 println!("Deleted note with title '{}'!", notes[index].title);
             }
         }
@@ -508,21 +471,23 @@ fn delete_note() -> anyhow::Result<()> {
 }
 
 
-impl Action for DeleteAction {
-    fn execute(&self) -> anyhow::Result<()> {
+impl Action for DeleteAction {}
+
+impl UnlockingAction for DeleteAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => {
                 let grep = match &self.grep {
                     Some(grep) => grep,
                     None => panic!("-g <REGEXP> is required"),
                 };
-                delete_credentials(grep)?;
+                delete_credentials(vault, grep)?;
             }
             ItemType::Payment => {
-                delete_payment()?;
+                delete_payment(vault)?;
             }
             ItemType::Note => {
-                delete_note()?;
+                delete_note(vault)?;
             }
         };
         Ok(())
@@ -541,31 +506,26 @@ impl ImportCsvAction {
     }
 }
 
-fn import_csv(file_path: &str) -> anyhow::Result<i64> {
-    let encryption_key = get_encryption_key()?;
+fn import_csv(vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
     info!("importing to the online vault");
-    push_from_csv(&encryption_key, file_path)
+    push_from_csv(vault, file_path)
 }
 
-fn push_from_csv(master_pwd: &str, file_path: &str) -> anyhow::Result<i64> {
-    let token = get_access_token()?;
+fn push_from_csv(vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
     let input = store::read_from_csv(file_path)?;
-    let creds = input.into_iter().map(|c| c.to_credentials_in().encrypt(master_pwd)).collect();
+    let creds = input.into_iter().map(|c| c.to_credential()).collect();
 
-    online_vault::push_credentials(
-        &token.access_token,
-        &creds,
-        None,
-    )
-        ?;
+    vault.push_credentials(&creds);
     let num_imported = creds.len();
     Ok(num_imported.try_into().unwrap())
 }
 
 
-impl Action for ImportCsvAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        match import_csv(&self.file_path) {
+impl Action for ImportCsvAction {}
+
+impl UnlockingAction for ImportCsvAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+        match import_csv(vault, &self.file_path) {
             Err(message) => println!("Failed to import: {}", message),
             Ok(count) => println!("Imported {} entries", count),
         }
@@ -573,47 +533,10 @@ impl Action for ImportCsvAction {
     }
 }
 
-pub struct UpdateMasterPasswordAction {}
-
-fn migrate(old_pwd: &str, new_pwd: &str) -> anyhow::Result<bool> {
-    if store::has_logged_in() {
-        debug!("Updating master password in online vault!");
-        let token = get_access_token()?;
-        let me = get_plain_me(&token.access_token)?;
-        let salt = me.get_salt();
-        let old_key = derive_encryption_key(&old_pwd, &salt);
-        let new_key = derive_encryption_key(&new_pwd, &salt);
-
-        let count =
-            online_vault::migrate(&token.access_token, &old_key, &new_key)?;
-        store::save_master_password(new_pwd);
-        debug!("Updated {} passwords", count);
-    }
-    Ok(true)
-}
-
-
-impl Action for UpdateMasterPasswordAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        let old_pwd = ui::ask_master_password(Some("Enter current master password: "));
-        let new_pwd = ui::ask_new_password();
-
-
-        let success = migrate(&old_pwd, &new_pwd).context("Failed to update master password")?;
-        if success {
-            println!("Password changed");
-        } else {
-            println!("Failed to change master password");
-        }
-        Ok(())
-    }
-}
-
 pub struct GeneratePasswordAction {}
 
-
 impl Action for GeneratePasswordAction {
-    fn execute(&self) -> anyhow::Result<()> {
+    fn run(&self) -> anyhow::Result<()> {
         let password = crypto::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
@@ -623,24 +546,20 @@ impl Action for GeneratePasswordAction {
 
 pub struct LockAction {}
 
-
 impl Action for LockAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        delete_encryption_key()?;
+    fn run(&self) -> anyhow::Result<()> {
+        keychain::delete_master_password()?;
         Ok(())
     }
 }
 
 pub struct UnlockAction {}
 
+impl Action for UnlockAction {}
 
-impl Action for UnlockAction {
-    fn execute(&self) -> anyhow::Result<()> {
-        let token = get_access_token()?;
-        let master_password = ui::ask_master_password(None);
-        let me = get_plain_me(&token.access_token)?;
-
-        store::save_encryption_key(&me.get_encryption_key(&master_password))?;
+impl UnlockingAction for UnlockAction {
+    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+        keychain::save_master_password(&vault.get_master_password())?;
         Ok(())
     }
 }
@@ -657,9 +576,8 @@ impl PrintHelpAction {
     }
 }
 
-
 impl Action for PrintHelpAction {
-    fn execute(&self) -> anyhow::Result<()> {
+    fn run(&self) -> anyhow::Result<()> {
         let mut out = io::stdout();
         self.cli.clone().write_help(&mut out).context("Failed to display help!")?;
         Ok(())

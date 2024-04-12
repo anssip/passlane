@@ -3,10 +3,8 @@ use std::io;
 use std::io::Write;
 
 use crate::crypto::get_random_key;
-use crate::graphql::queries::types::*;
-use crate::store;
-use anyhow::bail;
 use std::cmp::min;
+use crate::vault::entities::{Address, Credential, Date, Expiry, Note, PaymentCard};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -50,14 +48,16 @@ pub fn ask_number(question: &str) -> i32 {
     }
 }
 
-pub fn ask_credentials(password: &str) -> CredentialsIn {
+pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-    CredentialsIn {
+    Credential {
+        created: Date(chrono::Local::now().to_string()),
         service,
         username,
-        password_encrypted: String::from(password), // maybe rename the field because its not encrypted at this point
-        iv: get_random_key(),
+        password: String::from(password), // maybe rename the field because its not encrypted at this point
+        modified: None,
+        notes: None,
     }
 }
 
@@ -73,21 +73,14 @@ pub fn ask_new_password() -> String {
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
-    let master_pwd = if let Some(q) = question {
+    if let Some(q) = question {
         ask_password(q)
     } else {
         ask_password("Please enter master password: ")
-    };
-    match store::verify_master_password(&master_pwd, true) {
-        Ok(_) => master_pwd,
-        Err(message) => {
-            println!("{}", message);
-            std::process::exit(1);
-        }
     }
 }
 
-pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: bool) {
+pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool) {
     let mut table = Table::new();
     let mut index: i16 = 0;
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
@@ -230,15 +223,7 @@ pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
     };
 }
 
-pub fn open_browser(url: &str, prompt: &str) -> Result<bool, anyhow::Error> {
-    if ask(prompt) == "q" {
-        bail!("Aborted")
-    } else {
-        Ok(webbrowser::open(url).is_ok())
-    }
-}
-
-fn ask_address() -> AddressIn {
+fn ask_address() -> Address {
     println!("Enter billing address:");
     let street = ask("Enter street address:");
     let city = ask("Enter city:");
@@ -246,7 +231,8 @@ fn ask_address() -> AddressIn {
     let zip = ask("Enter postal code:");
     let country = ask("Enter country:");
 
-    AddressIn {
+    Address {
+        id: 0,
         street,
         city,
         state: if state != "" { Some(state) } else { None },
@@ -255,7 +241,7 @@ fn ask_address() -> AddressIn {
     }
 }
 
-pub fn ask_payment_info() -> PaymentCardIn {
+pub fn ask_payment_info() -> PaymentCard {
     let name = ask("Enter card name:");
     let color = ask("Enter card color (optional):");
     let number = ask("Enter card number:");
@@ -266,13 +252,14 @@ pub fn ask_payment_info() -> PaymentCardIn {
     let address = ask_address();
     let iv = get_random_key();
 
-    PaymentCardIn {
+    PaymentCard {
+        id: 0,
         iv,
         name,
         color: if color != "" { Some(color) } else { None },
         number,
         name_on_card,
-        expiry: ExpiryIn {
+        expiry: Expiry {
             month: card_expiration_month,
             year: card_expiration_year,
         },
@@ -281,16 +268,18 @@ pub fn ask_payment_info() -> PaymentCardIn {
     }
 }
 
-pub(crate) fn ask_note_info() -> NoteIn {
+pub(crate) fn ask_note_info() -> Note {
     let title = ask("Enter note title:");
     let content = ask_multiline("Enter note content:");
     let iv = get_random_key();
 
-    NoteIn {
+    Note {
+        id: 0,
         iv,
         title,
         content,
-        vault_id: None,
+        created: Date(chrono::Local::now().to_string()),
+        modified: None,
     }
 }
 

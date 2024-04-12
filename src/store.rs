@@ -1,12 +1,5 @@
-use crate::auth::AccessTokens;
-use crate::crypto::get_random_key;
-use crate::graphql::queries::types::*;
-use crate::ui::ask_password;
 use anyhow::bail;
-use chrono::Duration;
 use csv::{ReaderBuilder, Writer};
-use log::debug;
-use pwhash::bcrypt;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs::create_dir;
@@ -16,7 +9,7 @@ use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
+use crate::vault::entities::{Credential, Date, Note, PaymentCard};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CSVInputCredentials {
@@ -25,12 +18,14 @@ pub struct CSVInputCredentials {
     pub password: String,
 }
 impl CSVInputCredentials {
-    pub fn to_credentials_in(&self) -> CredentialsIn {
-        CredentialsIn {
+    pub fn to_credential(&self) -> Credential {
+        Credential {
             service: self.service.clone(),
             username: self.username.clone(),
-            password_encrypted: self.password.clone(),
-            iv: get_random_key(),
+            password: self.password.clone(),
+            created: Date(chrono::Local::now().to_string()),
+            modified: None,
+            notes: None,
         }
     }
 }
@@ -56,10 +51,7 @@ pub struct CSVSecureNote {
 }
 
 fn home_dir() -> PathBuf {
-    match dirs::home_dir() {
-        Some(path) => path,
-        None => PathBuf::from("~"),
-    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
 fn dir_path() -> PathBuf {
@@ -71,55 +63,19 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
-fn access_token_path() -> PathBuf {
-    let path = dir_path();
-    path.join(".access_token")
-}
-
-fn encryption_key_path() -> PathBuf {
-    let path = dir_path();
-    path.join(".encryption_key")
-}
-
 fn master_password_file_path() -> PathBuf {
     PathBuf::from(dir_path()).join(".master_pwd")
 }
-
-pub fn verify_master_password(master_pwd: &String, store_if_new: bool) -> Result<bool, String> {
-    let file_path = master_password_file_path();
-    let exists = Path::new(&file_path).exists();
-    if exists {
-        return verify_with_saved(file_path, master_pwd);
-    }
-    if store_if_new {
-        let retyped = ask_password("Re-enter master password: ");
-        if master_pwd.eq(&retyped) {
-            save_master_password(master_pwd);
-        } else {
-            return Err(String::from("Passwords did not match"));
-        }
-    }
-    Ok(true)
+fn vault_file_path() -> PathBuf {
+    // TODO: implement possibility to change the vault file path. Store location in a config file.
+    PathBuf::from(dir_path()).join("db.kdbx")
 }
 
 pub fn save_master_password(master_pwd: &str) {
     let file_path = master_password_file_path();
     let mut file = File::create(file_path).expect("Cannot create master password file");
-    let content = bcrypt::hash(master_pwd).unwrap();
-    file.write_all(content.as_bytes())
+    file.write_all(master_pwd.as_bytes())
         .expect("Unable write to master password file");
-}
-
-fn verify_with_saved(file_path: PathBuf, master_pwd: &String) -> Result<bool, String> {
-    let mut file = File::open(file_path).expect("Cannot open master password file");
-    let mut file_content = String::new();
-    file.read_to_string(&mut file_content)
-        .expect("Unable to read master password file");
-    if bcrypt::verify(master_pwd, &file_content) {
-        Ok(true)
-    } else {
-        Err(String::from("Incorrect password"))
-    }
 }
 
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
@@ -133,114 +89,35 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>
     Ok(credentials.clone())
 }
 
-pub fn store_access_token(token: &AccessTokens) -> anyhow::Result<bool> {
-    let path = access_token_path();
-
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .append(false)
-        .create_new(!path.exists())
-        .open(&path)
-        .expect("Unable to open access token file");
-
-    debug!("storing token with timestamp {}", token.created_timestamp);
-    let empty = String::from("");
-    let contents = format!(
-        "{},{},{},{},",
-        token.access_token,
-        if let Some(value) = &token.refresh_token {
-            value
-        } else {
-            &empty
-        },
-        if let Some(duration) = token.expires_in {
-            duration.num_seconds()
-        } else {
-            0
-        },
-        token.created_timestamp
-    );
-    file.write_all(contents.as_bytes())?;
-    Ok(true)
-}
-
-pub fn has_logged_in() -> bool {
-    access_token_path().exists()
-}
-
-pub fn get_access_token() -> anyhow::Result<AccessTokens> {
-    let path = access_token_path();
+pub fn get_master_password() -> Option<String> {
+    let path = dir_path().join(".master_pwd");
     if !path.exists() {
-        bail!("Please login first with: passlane -l");
-    }
+        return None;
+    };
+    read_from_file(&path)
+}
+
+fn read_from_file(path: &PathBuf) -> Option<String> {
     let mut file = OpenOptions::new()
         .read(true)
         .write(false)
         .create_new(false)
-        .open(&path)?;
+        .open(&path).unwrap();
 
     let mut file_content = String::new();
-    file.read_to_string(&mut file_content)?;
-
-    let parts: Vec<&str> = file_content.split(",").collect();
-    let expires = i64::from_str(parts[2])?;
-    debug!("created_timestamp: {}", parts[3]);
-    Ok(AccessTokens {
-        access_token: String::from(parts[0]),
-        refresh_token: if parts[1] != "" {
-            Some(String::from(parts[1]))
-        } else {
-            None
-        },
-        expires_in: if expires > 0 {
-            Some(Duration::seconds(expires))
-        } else {
-            None
-        },
-        created_timestamp: String::from(parts[3]),
-    })
+    file.read_to_string(&mut file_content).expect("Unable to read master password file");
+    Some(file_content.trim().parse().unwrap())
 }
 
-pub fn save_encryption_key(key: &str) -> anyhow::Result<bool> {
-    let path = PathBuf::from(dir_path()).join(".encryption_key");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .append(false)
-        .create_new(!path.exists())
-        .open(&path)
-        .expect("Unable to open encryption key file");
-
-    file.write_all(key.as_bytes())?;
-    Ok(true)
-}
-
-pub fn get_encryption_key() -> anyhow::Result<String> {
-    let path = PathBuf::from(dir_path()).join(".encryption_key");
+pub fn get_keyfile_path() -> Option<String> {
+    let path = dir_path().join(".keyfile_path");
     if !path.exists() {
-        bail!("Vault is locked. Use `passlane unlock` to unlock.");
+        return None;
     }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .create_new(false)
-        .open(&path)?;
-
-    let mut file_content = String::new();
-    file.read_to_string(&mut file_content)?;
-    Ok(file_content)
+    read_from_file(&path)
 }
 
-pub fn delete_encryption_key() -> anyhow::Result<bool> {
-    let path = PathBuf::from(dir_path()).join(".encryption_key");
-    if !path.exists() {
-        bail!("Vault is already locked.");
-    }
-    remove_file(path)?;
-    Ok(true)
-}
-
-pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credentials>) -> anyhow::Result<i64> {
+pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> anyhow::Result<i64> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
         wtr.serialize(CSVInputCredentials {
@@ -285,5 +162,9 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> a
 }
 
 pub(crate) fn is_unlocked() -> bool {
-    encryption_key_path().exists()
+    master_password_file_path().exists()
+}
+
+pub(crate) fn get_vault_path() -> String {
+    vault_file_path().to_str().unwrap().to_string()
 }

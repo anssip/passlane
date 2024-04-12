@@ -25,23 +25,15 @@ csv = "1.3.0"
 serde = { version = "1.0.137", features = ["derive"] }
 magic-crypt = "3.1.10"
 dirs = "5.0.1"
-pwhash = "1.0.0"
 regex = "1.5.5"
 rpassword = "7.2.0"
 comfy-table = "7.0.1"
-oauth2 = {version =  "4.2.3", features = ["reqwest"] }
 serde_urlencoded = "0.7.1"
 log = "0.4.16"
 anyhow = "1.0.56"
-webbrowser = "0.8.10"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
-cynic = { version = "3", features = ["http-reqwest-blocking"] }
 chrono = "0.4.19"
 env_logger = "0.10.0"
 serde_json = "1.0.83"
-url = { version = "2.1", features = ["serde"] }
 hex = "0.4.3"
-pbkdf2 = { version = "0.12", features = ["simple"] }
-rand_core = { version = "0.6", features = ["std"] }
-base64 = "0.21.2"
-bytes = "1.6.0"
+keepass = { git = "https://github.com/sseemayer/keepass-rs.git", branch = "support-keyfile-v2", features = ["save_kdbx4", "totp"] }
+keyring = "2.3.2"
