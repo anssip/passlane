@@ -100,27 +100,39 @@ fn main() {
     env_logger::init();
     let matches = cli().get_matches();
 
-    let action: Box<dyn Action> = match matches.subcommand() {
-        Some(("add", sub_matches)) => Box::new(AddAction::new(sub_matches)),
-        Some(("show", sub_matches)) => Box::new(ShowAction::new(sub_matches)),
-        Some(("delete", sub_matches)) => Box::new(DeleteAction::new(sub_matches)),
-        Some(("csv", sub_matches)) => Box::new(ImportCsvAction::new(sub_matches)),
-        Some(("lock", _)) => Box::new(LockAction {}),
-        Some(("unlock", _)) => Box::new(UnlockAction {}),
-        Some(("export", sub_matches)) => Box::new(ExportAction::new(sub_matches)),
+    enum ActionOrUnlockingAction {
+        Action(Box<dyn Action>),
+        UnlockingAction(Box<dyn UnlockingAction>),
+    }
+    
+    let action = match matches.subcommand() {
+        Some(("add", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
+        Some(("show", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
+        Some(("delete", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
+        Some(("csv", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
+        Some(("lock", _)) => ActionOrUnlockingAction::Action(Box::new(LockAction {})),
+        Some(("unlock", _)) => ActionOrUnlockingAction::UnlockingAction(Box::new(UnlockAction {})),
+        Some(("export", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {
             if env::args().len() == 1 {
-                Box::new(GeneratePasswordAction {})
+                ActionOrUnlockingAction::Action(Box::new(GeneratePasswordAction {}))
             } else {
-                Box::new(PrintHelpAction::new(cli()))
+                ActionOrUnlockingAction::Action(Box::new(PrintHelpAction::new(cli())))
             }
         },
     };
-    match action.execute() {
-        Ok(_) => (),
-        Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(1);
+    match action {
+        ActionOrUnlockingAction::Action(action) => {
+            if let Err(e) = action.run() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
-    };
+        ActionOrUnlockingAction::UnlockingAction(action) => {
+            if let Err(e) = action.execute() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 }

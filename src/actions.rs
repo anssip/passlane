@@ -6,25 +6,20 @@ use crate::store;
 use crate::ui;
 use anyhow::{bail, Context};
 use clap::ArgMatches;
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::io;
 use crate::vault::entities::{Credential};
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use anyhow::Result;
 
-
 pub trait Action {
-    fn execute(&self) -> anyhow::Result<()> {
-        self.run()
-    }
-
     fn run(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
 
-trait UnlockingAction: Action {
+pub trait UnlockingAction: Action {
     fn execute(&self) -> anyhow::Result<()> {
         info!("Unlocking vault...");
         let vault = self.unlock();
@@ -46,11 +41,8 @@ trait UnlockingAction: Action {
         }
     }
     fn unlock(&self) -> Result<Box<dyn Vault>> {
-        let stored_password = store::get_master_password();
-        if stored_password.is_none() {
-            debug!("No master password found.");
-        }
-        let master_pwd = stored_password.unwrap_or_else(|| ui::ask_master_password(None));
+        let stored_password = keychain::get_master_password();
+        let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_master_password(None));
         let filepath = store::get_vault_path();
         let keyfile_path = store::get_keyfile_path();
         self.get_vault(&master_pwd, &filepath, keyfile_path)
@@ -121,9 +113,8 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    fn save(&self, creds: &Credential, vault: Box<dyn Vault>) -> anyhow::Result<()> {
-        info!("saving to online vault");
-        vault.push_one_credential(&creds);
+    fn save(&self, creds: &Credential, mut vault: Box<dyn Vault>) -> anyhow::Result<()> {
+        vault.save_one_credential(&creds);
         println!("Saved.");
         Ok(())
     }
@@ -144,7 +135,7 @@ impl AddAction {
     }
     fn add_payment(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
-        vault.save_payment(payment);
+        vault.save_payment(&payment);
         Ok(())
     }
     fn add_note(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
@@ -287,19 +278,14 @@ fn find_credentials(
     vault: &Box<dyn Vault>,
     grep: Option<String>,
 ) -> anyhow::Result<Vec<Credential>> {
-    info!("searching from online vault");
-    let matches = vault.grep(grep);
+    let matches = vault.grep(&grep);
     if matches.is_empty() {
         println!("No matches found");
     }
     Ok(matches)
 }
 
-impl Action for ShowAction {
-    fn execute(&self) -> Result<()> {
-        todo!()
-    }
-}
+impl Action for ShowAction {}
 
 impl UnlockingAction for ShowAction {
     fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
@@ -368,15 +354,15 @@ impl DeleteAction {
     }
 }
 
-fn delete_credentials(vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
+fn delete_credentials(mut vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
     let matches = find_credentials(&vault, Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
-    if matches.len() == 0 {
+    if matches.is_empty() {
         debug!("no matches found to delete");
         return Ok(());
     }
     if matches.len() == 1 {
-        vault.delete_credentials(grep, Some(0));
+        vault.delete_credentials(&matches.get(0).unwrap().uuid);
         println!("Deleted credential for service '{}'", matches[0].service);
     }
     if matches.len() > 1 {
@@ -387,10 +373,10 @@ fn delete_credentials(vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    vault.delete_credentials(grep, None);
+                    vault.delete_matching(grep);
                     println!("Deleted all {} matches!", matches.len());
                 } else {
-                    vault.delete_credentials(grep, Some(index as i32));
+                    vault.delete_credentials(&matches[index].uuid);
                     println!("Deleted credentials of row {}!", index);
                 }
             }
@@ -404,7 +390,7 @@ fn delete_credentials(vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
 
 fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
     let cards = vault.find_payment_cards();
-    if cards.len() == 0 {
+    if cards.is_empty() {
         println!("No payment cards found");
         return Ok(());
     }
@@ -412,7 +398,7 @@ fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
     if cards.len() == 1 {
         let response = ui::ask("Do you want to delete this card? (y/n)");
         if response == "y" {
-            vault.delete_payment(cards[0].id);
+            vault.delete_payment(&cards[0].id);
             println!("Deleted card named '{}'!", cards[0].name);
         }
         return Ok(());
@@ -425,7 +411,7 @@ fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                vault.delete_payment(cards[index].id);
+                vault.delete_payment(&cards[index].id);
                 println!("Deleted card named '{}'!", cards[index].name);
             }
         }
@@ -446,7 +432,7 @@ fn delete_note(vault: Box<dyn Vault>) -> anyhow::Result<()> {
     if notes.len() == 1 {
         let response = ui::ask("Do you want to delete this note? (y/n)");
         if response == "y" {
-            vault.delete_note(notes[0].id);
+            vault.delete_note(&notes[0].id);
             println!("Deleted note with title '{}'!", notes[0].title);
         }
         return Ok(());
@@ -459,7 +445,7 @@ fn delete_note(vault: Box<dyn Vault>) -> anyhow::Result<()> {
             if index == usize::MAX {
                 // ignore                   
             } else {
-                vault.delete_note(notes[index].id);
+                vault.delete_note(&notes[index].id);
                 println!("Deleted note with title '{}'!", notes[index].title);
             }
         }
@@ -506,16 +492,11 @@ impl ImportCsvAction {
     }
 }
 
-fn import_csv(vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
-    info!("importing to the online vault");
-    push_from_csv(vault, file_path)
-}
-
-fn push_from_csv(vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
+fn push_from_csv(mut vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
     let input = store::read_from_csv(file_path)?;
     let creds = input.into_iter().map(|c| c.to_credential()).collect();
 
-    vault.push_credentials(&creds);
+    vault.save_credentials(&creds);
     let num_imported = creds.len();
     Ok(num_imported.try_into().unwrap())
 }
@@ -525,7 +506,7 @@ impl Action for ImportCsvAction {}
 
 impl UnlockingAction for ImportCsvAction {
     fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
-        match import_csv(vault, &self.file_path) {
+        match push_from_csv(vault, &self.file_path) {
             Err(message) => println!("Failed to import: {}", message),
             Ok(count) => println!("Imported {} entries", count),
         }

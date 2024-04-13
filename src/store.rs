@@ -9,6 +9,7 @@ use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
+use uuid::Uuid;
 use crate::vault::entities::{Credential, Date, Note, PaymentCard};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -20,6 +21,7 @@ pub struct CSVInputCredentials {
 impl CSVInputCredentials {
     pub fn to_credential(&self) -> Credential {
         Credential {
+            uuid: Uuid::new_v4(),
             service: self.service.clone(),
             username: self.username.clone(),
             password: self.password.clone(),
@@ -87,14 +89,6 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>
         credentials.push(result?);
     }
     Ok(credentials.clone())
-}
-
-pub fn get_master_password() -> Option<String> {
-    let path = dir_path().join(".master_pwd");
-    if !path.exists() {
-        return None;
-    };
-    read_from_file(&path)
 }
 
 fn read_from_file(path: &PathBuf) -> Option<String> {

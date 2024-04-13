@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use uuid::Uuid;
 
 pub struct Date(pub String);
 
@@ -9,6 +10,7 @@ impl Display for Date {
 }
 
 pub struct Credential {
+    pub uuid: Uuid,
     pub created: Date,
     pub modified: Option<Date>,
     pub password: String,
@@ -18,7 +20,7 @@ pub struct Credential {
 }
 
 pub struct PaymentCard {
-    pub id: i32,
+    pub id: Uuid,
     pub iv: String,
     pub name: String,
     pub name_on_card: String,
@@ -61,7 +63,7 @@ impl Display for Expiry {
 }
 
 pub struct Address {
-    pub id: i32,
+    pub id: Uuid,
     pub street: String,
     pub city: String,
     pub country: String,
@@ -70,7 +72,7 @@ pub struct Address {
 }
 
 pub struct Note {
-    pub id: i32,
+    pub id: Uuid,
     pub iv: String,
     pub title: String,
     pub content: String,

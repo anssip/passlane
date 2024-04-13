@@ -4,6 +4,7 @@ use std::io::Write;
 
 use crate::crypto::get_random_key;
 use std::cmp::min;
+use uuid::Uuid;
 use crate::vault::entities::{Address, Credential, Date, Expiry, Note, PaymentCard};
 
 pub fn ask(question: &str) -> String {
@@ -52,6 +53,7 @@ pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
     Credential {
+        uuid: Uuid::new_v4(),
         created: Date(chrono::Local::now().to_string()),
         service,
         username,
@@ -232,7 +234,7 @@ fn ask_address() -> Address {
     let country = ask("Enter country:");
 
     Address {
-        id: 0,
+        id: Uuid::new_v4(),
         street,
         city,
         state: if state != "" { Some(state) } else { None },
@@ -253,10 +255,10 @@ pub fn ask_payment_info() -> PaymentCard {
     let iv = get_random_key();
 
     PaymentCard {
-        id: 0,
+        id: Uuid::new_v4(),
         iv,
         name,
-        color: if color != "" { Some(color) } else { None },
+        color: if !color.is_empty() { Some(color) } else { None },
         number,
         name_on_card,
         expiry: Expiry {
@@ -274,7 +276,7 @@ pub(crate) fn ask_note_info() -> Note {
     let iv = get_random_key();
 
     Note {
-        id: 0,
+        id: Uuid::new_v4(),
         iv,
         title,
         content,
