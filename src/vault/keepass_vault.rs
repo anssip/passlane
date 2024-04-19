@@ -24,6 +24,7 @@ pub struct KeepassVault {
 
 impl KeepassVault {
     pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<Self, DatabaseOpenError> {
+        debug!("Opening database '{}'", filepath);
         let db = Self::open_database(filepath, password, &keyfile_path);
         match db {
             Ok(db) => {

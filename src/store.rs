@@ -70,7 +70,7 @@ fn master_password_file_path() -> PathBuf {
 }
 fn vault_file_path() -> PathBuf {
     // TODO: implement possibility to change the vault file path. Store location in a config file.
-    PathBuf::from(dir_path()).join("db.kdbx")
+    PathBuf::from(dir_path()).join("store.kdbx")
 }
 
 pub fn save_master_password(master_pwd: &str) {
