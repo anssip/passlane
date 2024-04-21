@@ -1140,6 +1140,7 @@ dependencies = [
 [[package]]
 name = "keepass"
 version = "0.6.1"
+source = "git+https://github.com/anssip/keepass-rs.git#69bb8156b74aa5eeada82e16e2b6402cbbfb040a"
 dependencies = [
  "aes 0.8.4",
  "as-any",

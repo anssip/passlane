@@ -4,7 +4,7 @@ version = "2.2.3-rc.1"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
-description = "A password manager for the command line with online storage and multi-device access"
+description = "A password manager for the command line with a Keepass storage backend"
 readme = "README.md"
 homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
@@ -30,7 +30,6 @@ anyhow = "1.0.56"
 chrono = "0.4.19"
 env_logger = "0.10.0"
 hex = "0.4.3"
-keepass = { path = "/Users/anssi/projects/keepass-rs", features = ["save_kdbx4"] }
-#keepass = { version = "0.6", git = "https://github.com/ssrlive/keepass-rs.git", branch = "refactor" }
+keepass = { git = "https://github.com/anssip/keepass-rs.git", features = ["save_kdbx4"] }
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
