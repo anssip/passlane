@@ -58,8 +58,15 @@ impl KeepassVault {
         let mut db = Database::open(&mut db_file, key).unwrap();
         db.set_recycle_bin_enabled(false);
         Some(db)
+    }
 
-        // TODO: make sure we have the necessary Groups present
+    fn create_group(&self, parent_uuid: Uuid, group_name: &str) -> Option<Uuid> {
+        self.db.create_new_group(parent_uuid, 0).map(|node| {
+            node.borrow_mut().as_any_mut().downcast_mut::<Group>().map(|group| {
+                group.set_title(Some(group_name));
+                group.get_uuid()
+            })
+        }).unwrap()
     }
 
     fn get_database_key(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<(File, DatabaseKey), DatabaseOpenError> {
@@ -180,8 +187,13 @@ impl Vault for KeepassVault {
     }
 
     fn save_credentials(&mut self, credentials: &Vec<Credential>) -> i8 {
-        let group = self.find_group("Passwords").expect("Passwords group should exist in the Keepass store");
-
+        let group = match self.find_group("Passwords") {
+            Some(uuid) => uuid,
+            None => {
+                let root_uuid = self.get_root().borrow().get_uuid();
+                self.create_group(root_uuid, "Passwords").unwrap()
+            }
+        };
         credentials.iter().for_each(|c| {
             self.create_password_entry(&group, c).expect("Failed to save credential");
         });
