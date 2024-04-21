@@ -34,9 +34,9 @@ pub trait UnlockingAction: Action {
         // we could return some other Vault implementation here
         let vault = KeepassVault::new(password, filepath, keyfile_path);
         match vault {
-            Ok(v) => Ok(Box::new(v)),
-            Err(e) => {
-                bail!("Failed to open vault: {}", e);
+            Some(v) => Ok(Box::new(v)),
+            None => {
+                bail!("Failed to open vault");
             }
         }
     }
@@ -114,7 +114,7 @@ impl AddAction {
         }
     }
     fn save(&self, creds: &Credential, mut vault: Box<dyn Vault>) -> anyhow::Result<()> {
-        vault.save_one_credential(&creds);
+        vault.save_one_credential(creds.clone());
         println!("Saved.");
         Ok(())
     }
@@ -135,7 +135,7 @@ impl AddAction {
     }
     fn add_payment(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
-        vault.save_payment(&payment);
+        vault.save_payment(payment);
         Ok(())
     }
     fn add_note(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {

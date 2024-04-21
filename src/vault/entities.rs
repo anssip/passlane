@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
+#[derive(Clone)]
 pub struct Date(pub String);
 
 impl Display for Date {
@@ -9,6 +10,7 @@ impl Display for Date {
     }
 }
 
+#[derive(Clone)]
 pub struct Credential {
     pub uuid: Uuid,
     pub created: Date,

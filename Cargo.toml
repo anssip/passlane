@@ -10,19 +10,15 @@ homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
 keywords = ["cli", "password", "credentials"]
 categories = ["command-line-utilities"]
-build = "build.rs"
-
-[build-dependencies]
-cynic-codegen = { version = "3" }
-insta = "1"
 
 [dependencies]
-proc-macro2 = "1.0.79"
 rand = "0.8.5"
 clipboard = "0.5.0"
 clap = "4.5.4"
 csv = "1.3.0"
-serde = { version = "1.0.137", features = ["derive"] }
+serde = { version = "1.0.198", features = ["derive"] }
+serde_json = { version = "1.0.116" }
+erased-serde = "0.3"
 magic-crypt = "3.1.10"
 dirs = "5.0.1"
 regex = "1.5.5"
@@ -33,8 +29,8 @@ log = "0.4.16"
 anyhow = "1.0.56"
 chrono = "0.4.19"
 env_logger = "0.10.0"
-serde_json = "1.0.83"
 hex = "0.4.3"
-keepass = { git = "https://github.com/sseemayer/keepass-rs.git", branch = "support-keyfile-v2", features = ["save_kdbx4", "totp"] }
+keepass = { path = "/Users/anssi/projects/keepass-rs", features = ["save_kdbx4"] }
+#keepass = { version = "0.6", git = "https://github.com/ssrlive/keepass-rs.git", branch = "refactor" }
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
