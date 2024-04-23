@@ -1,16 +1,13 @@
-use anyhow::bail;
 use csv::{ReaderBuilder, Writer};
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs::create_dir;
-use std::fs::remove_file;
-use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::vault::entities::{Credential, Date, Note, PaymentCard};
+use crate::vault::entities::{Credential, Note, PaymentCard};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CSVInputCredentials {
@@ -54,7 +51,7 @@ fn home_dir() -> PathBuf {
 }
 
 fn dir_path() -> PathBuf {
-    let dir_path = PathBuf::from(home_dir()).join(".passlane");
+    let dir_path = home_dir().join(".passlane");
     let exists = Path::new(&dir_path).exists();
     if !exists {
         create_dir(&dir_path).expect("Unable to create .passlane dir");
@@ -62,20 +59,8 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
-fn master_password_file_path() -> PathBuf {
-    PathBuf::from(dir_path()).join(".master_pwd")
-}
-
 fn vault_file_path() -> PathBuf {
-    // TODO: implement possibility to change the vault file path. Store location in a config file.
-    PathBuf::from(dir_path()).join("store.kdbx")
-}
-
-pub fn save_master_password(master_pwd: &str) {
-    let file_path = master_password_file_path();
-    let mut file = File::create(file_path).expect("Cannot create master password file");
-    file.write_all(master_pwd.as_bytes())
-        .expect("Unable write to master password file");
+    dir_path().join("store.kdbx")
 }
 
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
@@ -155,10 +140,6 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> a
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
-}
-
-pub(crate) fn is_unlocked() -> bool {
-    master_password_file_path().exists()
 }
 
 pub(crate) fn get_vault_path() -> String {

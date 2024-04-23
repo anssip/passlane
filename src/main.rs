@@ -1,5 +1,4 @@
 extern crate clipboard;
-#[macro_use]
 extern crate magic_crypt;
 use actions::*;
 use clap::{arg, ArgAction, Command};

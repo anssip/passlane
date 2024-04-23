@@ -24,11 +24,8 @@ pub fn generate() -> String {
 }
 
 pub fn validate_password(value: &String) -> bool {
-    if value.len() != 15 {
-        return false;
-    }
     // TODO: improve to check that all character classes are present
-    true
+    value.len() >= 15
 }
 
 fn random_index(range: usize) -> usize {
@@ -46,10 +43,3 @@ fn append(to: &String, charset: &String) -> String {
     result
 }
 
-pub fn get_random_key() -> String {
-    let mut arr = [0u8; 8];
-    thread_rng()
-        .try_fill(&mut arr[..])
-        .expect("Failed to generate ramdom key");
-    return hex::encode(&arr);
-}

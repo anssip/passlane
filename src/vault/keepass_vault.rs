@@ -1,10 +1,8 @@
-use crate::vault::entities::{Address, Credential, Date, Expiry, Note, PaymentCard};
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
-use keepass::{db::Entry, db::Value, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid};
+use keepass::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid};
 use std::fs::{File, OpenOptions};
-use std::ops::Deref;
 use std::str::FromStr;
-use chrono::NaiveDateTime;
 use keepass::db::Group;
 use log::{debug, error};
 use uuid::Uuid;
@@ -295,7 +293,6 @@ impl PasswordVault for KeepassVault {
     }
 
     fn grep(&self, grep: &Option<String>) -> Vec<Credential> {
-        let root = &self.db.root;
         self.load_credentials(grep)
     }
 

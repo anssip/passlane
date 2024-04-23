@@ -22,8 +22,8 @@ pub trait Action {
 pub trait UnlockingAction: Action {
     fn execute(&self) -> anyhow::Result<()> {
         info!("Unlocking vault...");
-        let mut vault = self.unlock();
-        vault.and_then(|mut vault| self.run_with_vault(Box::new(vault).as_mut()))
+        let vault = self.unlock();
+        vault.and_then(|vault| self.run_with_vault(&mut Box::new(vault)))
     }
 
     fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> anyhow::Result<()> {
@@ -354,7 +354,7 @@ impl DeleteAction {
     }
 }
 
-fn delete_credentials(mut vault: &mut Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
+fn delete_credentials(vault: &mut Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
     let matches = find_credentials(&vault, Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.is_empty() {

@@ -2,10 +2,9 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::crypto::get_random_key;
 use std::cmp::min;
 use uuid::Uuid;
-use crate::vault::entities::{Address, Credential, Date, Expiry, Note, PaymentCard};
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -61,17 +60,6 @@ pub fn ask_credentials(password: &str) -> Credential {
     }
 }
 
-pub fn ask_new_password() -> String {
-    let pwd = ask_password("Enter new master password. Make sure to save the master password because if you forget it there is no way to recover it! : ");
-    let pwd2 = ask_password("Re-enter new master password: ");
-    if pwd.eq(&pwd2) {
-        pwd
-    } else {
-        println!("Passwords did not match");
-        std::process::exit(1);
-    }
-}
-
 pub fn ask_master_password(question: Option<&str>) -> String {
     if let Some(q) = question {
         ask_password(q)
@@ -82,7 +70,6 @@ pub fn ask_master_password(question: Option<&str>) -> String {
 
 pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool) {
     let mut table = Table::new();
-    let mut index: i16 = 0;
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
         vec!["", "Service", "Username/email", "Password"]
@@ -95,7 +82,7 @@ pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool
             .map(|&h| header_cell(String::from(h)))
             .collect::<Vec<Cell>>(),
     );
-    for creds in credentials {
+    for (index, creds) in (0_i16..).zip(credentials.iter()) {
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -111,7 +98,6 @@ pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool
             ]
         };
         table.add_row(columns);
-        index += 1;
     }
     println!("{table}");
 }
@@ -250,7 +236,6 @@ pub fn ask_payment_info() -> PaymentCard {
     let card_expiration_year = ask_number("Enter card expiration year:");
     let cvv = ask("Enter card cvv:");
     let address = ask_address();
-    let iv = get_random_key();
 
     PaymentCard {
         id: Uuid::new_v4(),
@@ -270,7 +255,6 @@ pub fn ask_payment_info() -> PaymentCard {
 pub(crate) fn ask_note_info() -> Note {
     let title = ask("Enter note title:");
     let content = ask_multiline("Enter note content:");
-    let iv = get_random_key();
 
     Note {
         id: Uuid::new_v4(),
