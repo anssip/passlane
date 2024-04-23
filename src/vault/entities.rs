@@ -16,8 +16,6 @@ impl Display for Date {
 #[derive(Clone)]
 pub struct Credential {
     pub uuid: Uuid,
-    pub created: Date,
-    pub modified: Option<Date>,
     pub password: String,
     pub service: String,
     pub username: String,
@@ -114,11 +112,8 @@ pub struct Address {
 
 pub struct Note {
     pub id: Uuid,
-    pub iv: String,
     pub title: String,
     pub content: String,
-    pub created: Date,
-    pub modified: Option<Date>,
 }
 
 

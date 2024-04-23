@@ -18,6 +18,7 @@ pub struct CSVInputCredentials {
     pub username: String,
     pub password: String,
 }
+
 impl CSVInputCredentials {
     pub fn to_credential(&self) -> Credential {
         Credential {
@@ -25,8 +26,6 @@ impl CSVInputCredentials {
             service: self.service.clone(),
             username: self.username.clone(),
             password: self.password.clone(),
-            created: Date(chrono::Local::now().to_string()),
-            modified: None,
             notes: None,
         }
     }
@@ -48,8 +47,6 @@ pub struct CSVPaymentCard {
 pub struct CSVSecureNote {
     pub title: String,
     pub note: String,
-    pub created: String,
-    pub modified: String
 }
 
 fn home_dir() -> PathBuf {
@@ -68,6 +65,7 @@ fn dir_path() -> PathBuf {
 fn master_password_file_path() -> PathBuf {
     PathBuf::from(dir_path()).join(".master_pwd")
 }
+
 fn vault_file_path() -> PathBuf {
     // TODO: implement possibility to change the vault file path. Store location in a config file.
     PathBuf::from(dir_path()).join("store.kdbx")
@@ -116,7 +114,7 @@ pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>)
     for cred in creds {
         wtr.serialize(CSVInputCredentials {
             service: String::from(&cred.service),
-            username: String::from( &cred.username),
+            username: String::from(&cred.username),
             password: String::from(&cred.password),
         })?;
     }
@@ -133,8 +131,14 @@ pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCar
             number: String::from(&card.number),
             cvv: String::from(&card.cvv),
             expiry: format!("{}", card.expiry),
-            color: match &card.color { Some(color) => String::from(color), None => String::from("") },
-            billing_address: match &card.billing_address { Some(address) => format!("{}", address), None => String::from("") }
+            color: match &card.color {
+                Some(color) => String::from(color),
+                None => String::from("")
+            },
+            billing_address: match &card.billing_address {
+                Some(address) => format!("{}", address),
+                None => String::from("")
+            },
         })?;
     }
     wtr.flush()?;
@@ -147,8 +151,6 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> a
         wtr.serialize(CSVSecureNote {
             title: String::from(&note.title),
             note: String::from(&note.content),
-            created: format!("{}", note.created),
-            modified: match &note.modified { Some(modified) => format!("{}", modified), None => String::from("") }
         })?;
     }
     wtr.flush()?;

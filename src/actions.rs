@@ -312,7 +312,7 @@ impl ExportAction {
     }
     pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<i64> {
         debug!("exporting to csv");
-        return if self.item_type == ItemType::Credential {
+        if self.item_type == ItemType::Credential {
             let creds = find_credentials(&vault, None)?;
             store::write_credentials_to_csv(&self.file_path, &creds)
         } else if self.item_type == ItemType::Payment {
@@ -323,7 +323,7 @@ impl ExportAction {
             store::write_secure_notes_to_csv(&self.file_path, &notes)
         } else {
             Ok(0)
-        };
+        }
     }
 }
 

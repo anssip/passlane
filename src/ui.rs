@@ -54,11 +54,9 @@ pub fn ask_credentials(password: &str) -> Credential {
     let username = ask("Enter username:");
     Credential {
         uuid: Uuid::new_v4(),
-        created: Date(chrono::Local::now().to_string()),
         service,
         username,
         password: String::from(password), // maybe rename the field because its not encrypted at this point
-        modified: None,
         notes: None,
     }
 }
@@ -276,11 +274,8 @@ pub(crate) fn ask_note_info() -> Note {
 
     Note {
         id: Uuid::new_v4(),
-        iv,
         title,
         content,
-        created: Date(chrono::Local::now().to_string()),
-        modified: None,
     }
 }
 

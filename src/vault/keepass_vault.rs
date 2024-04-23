@@ -4,6 +4,7 @@ use keepass::{db::Entry, db::Value, db::Node, Database, DatabaseKey, error::Data
 use std::fs::{File, OpenOptions};
 use std::ops::Deref;
 use std::str::FromStr;
+use chrono::NaiveDateTime;
 use keepass::db::Group;
 use log::{debug, error};
 use uuid::Uuid;
@@ -39,10 +40,10 @@ impl KeepassVault {
     fn get_root(&self) -> NodePtr {
         self.db.root.clone()
     }
-    
+
     fn get_root_uuid(&self) -> Uuid {
         self.get_root().borrow().get_uuid()
-    } 
+    }
 
     fn save_database(&self) {
         let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
@@ -102,7 +103,7 @@ impl KeepassVault {
                 true
             }).collect()
     }
-    
+
     fn load_payments(&self) -> Vec<PaymentCard> {
         let payments_group_uuid = self.find_group("Payments").unwrap();
         let payments_group = search_node_by_uuid(&self.get_root(), payments_group_uuid).unwrap();
@@ -112,12 +113,19 @@ impl KeepassVault {
             .collect()
     }
 
+    fn load_notes(&self) -> Vec<Note> {
+        let payments_group_uuid = self.find_group("Notes").unwrap();
+        let payments_group = search_node_by_uuid(&self.get_root(), payments_group_uuid).unwrap();
+        NodeIterator::new(&payments_group)
+            .filter(node_is_entry)
+            .map(Self::node_to_note)
+            .collect()
+    }
+
     fn node_to_credential(node: NodePtr) -> Credential {
         let (username, service, password, uuid) = Self::get_node_values(node);
         Credential {
             uuid,
-            created: Date("".to_string()), // TODO: get created date from the NodePtr
-            modified: None,
             password: password.to_string(),
             service: service.to_string(),
             username: username.to_string(),
@@ -149,11 +157,19 @@ impl KeepassVault {
         }
     }
 
+    fn node_to_note(node: NodePtr) -> Note {
+        let (title, content, id) = Self::get_node_note_values(node).unwrap();
+        Note {
+            id,
+            title,
+            content,
+        }
+    }
+
     fn get_node_payment_values(node: NodePtr) -> Option<(String, String, String, String, String, Option<String>, String, Uuid)> {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let note = e.get_notes()?;
-        
         let name = e.get_title().unwrap_or("(no name)");
         let name_on_card = Self::extract_value_from_note(note, 0, "Name on card");
         let number = Self::extract_value_from_note(note, 1, "Number");
@@ -161,15 +177,24 @@ impl KeepassVault {
         let expiry = Self::extract_value_from_note(note, 3, "Expiry");
         let color = Self::extract_value_from_note_opt(note, 4, "Color");
         let billing_address = Self::extract_value_from_note(note, 5, "Billing Address");
-        
+
         Some((name.to_string(), name_on_card, number, cvv, expiry, color, billing_address, e.get_uuid()))
+    }
+
+    fn get_node_note_values(node: NodePtr) -> Option<(String, String, Uuid)> {
+        let node = node.borrow();
+        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let content = e.get_notes()?;
+        let title = e.get_title().unwrap_or("(no title)");
+
+        Some((title.to_string(), content.to_string(), e.get_uuid()))
     }
 
     fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
         let no_value = &format!("(no {name} on card)");
-        note.lines().nth(line).unwrap_or(no_value).split(&format!("{name}: ")).nth(1).map(|v| String::from(v) )
-    }        
-    
+        note.lines().nth(line).unwrap_or(no_value).split(&format!("{name}: ")).nth(1).map(|v| String::from(v))
+    }
+
     fn extract_value_from_note(note: &str, line: usize, name: &str) -> String {
         let no_value = String::from(&format!("(no {name} on card)"));
         String::from(Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value))
@@ -212,16 +237,16 @@ impl KeepassVault {
             })
         })
     }
-    
+
     fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass::Result<Option<Uuid>> {
         self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             let note = format!("Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
-                payment.name_on_card,
-                payment.number,
-                payment.cvv,
-                payment.expiry_str(),
-                payment.color_str(),
-                payment.billing_address.as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
+                               payment.name_on_card,
+                               payment.number,
+                               payment.cvv,
+                               payment.expiry_str(),
+                               payment.color_str(),
+                               payment.billing_address.as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
             );
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(&payment.name));
@@ -230,7 +255,17 @@ impl KeepassVault {
             })
         })
     }
-    
+
+    fn create_note_entry(&mut self, parent_uuid: &Uuid, note: &Note) -> keepass::Result<Option<Uuid>> {
+        self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
+            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
+                entry.set_title(Some(&note.title));
+                entry.set_notes(Some(&note.content));
+                entry.get_uuid()
+            })
+        })
+    }
+
     fn do_delete(&mut self, uuid: &Uuid, save: bool) -> i8 {
         debug!("Deleting with uuid '{}'", uuid);
         match self.db.remove_node_by_uuid(*uuid) {
@@ -272,7 +307,6 @@ impl PasswordVault for KeepassVault {
         self.save_database();
         credentials.len() as i8
     }
-
 
     fn save_one_credential(&mut self, credentials: Credential) -> i8 {
         self.save_credentials(&vec![credentials])
@@ -319,15 +353,18 @@ impl PaymentVault for KeepassVault {
 
 impl NoteVault for KeepassVault {
     fn find_notes(&self) -> Vec<Note> {
-        todo!()
+        self.load_notes()
     }
 
-    fn save_note(&self, note: &Note) -> i8 {
-        todo!()
+    fn save_note(&mut self, note: &Note) -> i8 {
+        let group = self.find_or_create_group("Notes");
+        self.create_note_entry(&group, &note).expect("Failed to save note");
+        self.save_database();
+        1
     }
 
-    fn delete_note(&self, id: &Uuid) -> i8 {
-        todo!()
+    fn delete_note(&mut self, id: &Uuid) -> i8 {
+        self.do_delete(id, true)
     }
 }
 
