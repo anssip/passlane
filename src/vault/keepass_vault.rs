@@ -1,8 +1,9 @@
-use crate::vault::entities::{Credential, Date, Note, PaymentCard};
-use crate::vault::vault_trait::Vault;
-use keepass::{db::Entry, db::Value, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry};
+use crate::vault::entities::{Address, Credential, Date, Expiry, Note, PaymentCard};
+use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
+use keepass::{db::Entry, db::Value, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid};
 use std::fs::{File, OpenOptions};
 use std::ops::Deref;
+use std::str::FromStr;
 use keepass::db::Group;
 use log::{debug, error};
 use uuid::Uuid;
@@ -35,11 +36,15 @@ impl KeepassVault {
             }
         }
     }
-    pub fn get_root(&self) -> NodePtr {
+    fn get_root(&self) -> NodePtr {
         self.db.root.clone()
     }
+    
+    fn get_root_uuid(&self) -> Uuid {
+        self.get_root().borrow().get_uuid()
+    } 
 
-    pub fn save_database(&self) {
+    fn save_database(&self) {
         let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
         debug!("Saving database to file '{}'", &self.filepath);
 
@@ -97,6 +102,15 @@ impl KeepassVault {
                 true
             }).collect()
     }
+    
+    fn load_payments(&self) -> Vec<PaymentCard> {
+        let payments_group_uuid = self.find_group("Payments").unwrap();
+        let payments_group = search_node_by_uuid(&self.get_root(), payments_group_uuid).unwrap();
+        NodeIterator::new(&payments_group)
+            .filter(node_is_entry)
+            .map(Self::node_to_payment)
+            .collect()
+    }
 
     fn node_to_credential(node: NodePtr) -> Credential {
         let (username, service, password, uuid) = Self::get_node_values(node);
@@ -121,7 +135,47 @@ impl KeepassVault {
         (username.to_string(), service.to_string(), password.to_string(), uuid)
     }
 
-    pub fn get_groups(&self) -> Vec<NodePtr> {
+    fn node_to_payment(node: NodePtr) -> PaymentCard {
+        let (name, name_on_card, number, cvv, expiry, color, billing_address, id) = Self::get_node_payment_values(node).unwrap();
+        PaymentCard {
+            id,
+            name,
+            name_on_card,
+            number,
+            cvv,
+            expiry: Expiry::from_str(&expiry).unwrap(),
+            color,
+            billing_address: Some(Address::from_str(&billing_address).unwrap()),
+        }
+    }
+
+    fn get_node_payment_values(node: NodePtr) -> Option<(String, String, String, String, String, Option<String>, String, Uuid)> {
+        let node = node.borrow();
+        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let note = e.get_notes()?;
+        
+        let name = e.get_title().unwrap_or("(no name)");
+        let name_on_card = Self::extract_value_from_note(note, 0, "Name on card");
+        let number = Self::extract_value_from_note(note, 1, "Number");
+        let cvv = Self::extract_value_from_note(note, 2, "CVV");
+        let expiry = Self::extract_value_from_note(note, 3, "Expiry");
+        let color = Self::extract_value_from_note_opt(note, 4, "Color");
+        let billing_address = Self::extract_value_from_note(note, 5, "Billing Address");
+        
+        Some((name.to_string(), name_on_card, number, cvv, expiry, color, billing_address, e.get_uuid()))
+    }
+
+    fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
+        let no_value = &format!("(no {name} on card)");
+        note.lines().nth(line).unwrap_or(no_value).split(&format!("{name}: ")).nth(1).map(|v| String::from(v) )
+    }        
+    
+    fn extract_value_from_note(note: &str, line: usize, name: &str) -> String {
+        let no_value = String::from(&format!("(no {name} on card)"));
+        String::from(Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value))
+    }
+
+    fn get_groups(&self) -> Vec<NodePtr> {
         let root = self.get_root();
         group_get_children(&root).unwrap().iter()
             .filter(|node| node_is_group(node))
@@ -129,7 +183,7 @@ impl KeepassVault {
             .collect()
     }
 
-    fn find_group(&mut self, group_name: &str) -> Option<Uuid> {
+    fn find_group(&self, group_name: &str) -> Option<Uuid> {
         let groups = self.get_groups();
         let group: Vec<&NodePtr> = groups.iter()
             .filter(|node| node_is_group(node))
@@ -158,9 +212,27 @@ impl KeepassVault {
             })
         })
     }
-
+    
+    fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass::Result<Option<Uuid>> {
+        self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
+            let note = format!("Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
+                payment.name_on_card,
+                payment.number,
+                payment.cvv,
+                payment.expiry_str(),
+                payment.color_str(),
+                payment.billing_address.as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
+            );
+            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
+                entry.set_title(Some(&payment.name));
+                entry.set_notes(Some(&note));
+                entry.get_uuid()
+            })
+        })
+    }
+    
     fn do_delete(&mut self, uuid: &Uuid, save: bool) -> i8 {
-        debug!("Deleting credential with uuid '{}'", uuid);
+        debug!("Deleting with uuid '{}'", uuid);
         match self.db.remove_node_by_uuid(*uuid) {
             Ok(_) => {
                 if save {
@@ -169,14 +241,20 @@ impl KeepassVault {
                 1
             }
             Err(e) => {
-                error!("Failed to delete credential: {}", e);
+                error!("Failed to delete: {}", e);
                 0
             }
         }
     }
+
+    fn find_or_create_group(&mut self, group_name: &str) -> Uuid {
+        self.find_group(group_name).unwrap_or_else(|| {
+            self.create_group(self.get_root_uuid(), group_name).unwrap()
+        })
+    }
 }
 
-impl Vault for KeepassVault {
+impl PasswordVault for KeepassVault {
     fn get_master_password(&self) -> String {
         self.password.clone()
     }
@@ -187,13 +265,7 @@ impl Vault for KeepassVault {
     }
 
     fn save_credentials(&mut self, credentials: &Vec<Credential>) -> i8 {
-        let group = match self.find_group("Passwords") {
-            Some(uuid) => uuid,
-            None => {
-                let root_uuid = self.get_root().borrow().get_uuid();
-                self.create_group(root_uuid, "Passwords").unwrap()
-            }
-        };
+        let group = self.find_or_create_group("Passwords");
         credentials.iter().for_each(|c| {
             self.create_password_entry(&group, c).expect("Failed to save credential");
         });
@@ -226,20 +298,27 @@ impl Vault for KeepassVault {
         self.save_database();
         count
     }
+}
 
-    fn find_payment_cards(&self) -> Vec<PaymentCard> {
-        todo!()
+impl PaymentVault for KeepassVault {
+    fn find_payments(&self) -> Vec<PaymentCard> {
+        self.load_payments()
     }
 
-    fn save_payment(&self, payment: PaymentCard) -> i8 {
-        todo!()
+    fn save_payment(&mut self, payment: PaymentCard) -> i8 {
+        let group = self.find_or_create_group("Payments");
+        self.create_payment_entry(&group, &payment).expect("Failed to save payment");
+        self.save_database();
+        1
     }
 
-    fn delete_payment(&self, id: &Uuid) -> i8 {
-        todo!()
+    fn delete_payment(&mut self, id: &Uuid) -> i8 {
+        self.do_delete(id, true)
     }
+}
 
-    fn delete_note(&self, id: &Uuid) -> i8 {
+impl NoteVault for KeepassVault {
+    fn find_notes(&self) -> Vec<Note> {
         todo!()
     }
 
@@ -247,7 +326,9 @@ impl Vault for KeepassVault {
         todo!()
     }
 
-    fn find_notes(&self) -> Vec<Note> {
+    fn delete_note(&self, id: &Uuid) -> i8 {
         todo!()
     }
 }
+
+impl Vault for KeepassVault {}

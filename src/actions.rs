@@ -22,11 +22,11 @@ pub trait Action {
 pub trait UnlockingAction: Action {
     fn execute(&self) -> anyhow::Result<()> {
         info!("Unlocking vault...");
-        let vault = self.unlock();
-        vault.and_then(|vault| self.run_with_vault(vault))
+        let mut vault = self.unlock();
+        vault.and_then(|mut vault| self.run_with_vault(Box::new(vault).as_mut()))
     }
 
-    fn run_with_vault(&self, _: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -113,12 +113,12 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    fn save(&self, creds: &Credential, mut vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn save(&self, creds: &Credential, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         vault.save_one_credential(creds.clone());
         println!("Saved.");
         Ok(())
     }
-    fn add_credential(&self, vault: Box<dyn Vault>) -> anyhow::Result<(), anyhow::Error> {
+    fn add_credential(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<(), anyhow::Error> {
         let password = self.get_password().context(format!(
             "Failed to get password {}",
             if self.clipboard { "from clipboard" } else { "" }
@@ -133,12 +133,12 @@ impl AddAction {
         };
         Ok(())
     }
-    fn add_payment(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn add_payment(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
         vault.save_payment(payment);
         Ok(())
     }
-    fn add_note(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn add_note(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         let note = ui::ask_note_info();
         vault.save_note(&note);
         println!("Note saved.");
@@ -149,7 +149,7 @@ impl AddAction {
 impl Action for AddAction {}
 
 impl UnlockingAction for AddAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => self.add_credential(vault)?,
             ItemType::Payment => self.add_payment(vault)?,
@@ -175,7 +175,7 @@ impl ShowAction {
             item_type: ItemType::new_from_args(matches),
         }
     }
-    fn show_credentials(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn show_credentials(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         let grep = match &self.grep {
             Some(grep) => Some(String::from(grep)),
             None => panic!("-g <REGEXP> is required"),
@@ -206,9 +206,9 @@ impl ShowAction {
         Ok(())
     }
 
-    fn show_payments(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn show_payments(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         debug!("showing payments");
-        let matches = vault.find_payment_cards();
+        let matches = vault.find_payments();
         if matches.len() == 0 {
             println!("No payment cards found");
         } else {
@@ -241,7 +241,7 @@ impl ShowAction {
         Ok(())
     }
 
-    fn show_notes(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn show_notes(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         debug!("showing notes");
         let matches = vault.find_notes();
         if matches.len() == 0 {
@@ -288,7 +288,7 @@ fn find_credentials(
 impl Action for ShowAction {}
 
 impl UnlockingAction for ShowAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => self.show_credentials(vault)?,
             ItemType::Payment => self.show_payments(vault)?,
@@ -310,13 +310,13 @@ impl ExportAction {
             item_type: ItemType::new_from_args(matches),
         }
     }
-    pub fn export_csv(&self, vault: Box<dyn Vault>) -> anyhow::Result<i64> {
+    pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<i64> {
         debug!("exporting to csv");
         return if self.item_type == ItemType::Credential {
             let creds = find_credentials(&vault, None)?;
             store::write_credentials_to_csv(&self.file_path, &creds)
         } else if self.item_type == ItemType::Payment {
-            let cards = vault.find_payment_cards();
+            let cards = vault.find_payments();
             store::write_payment_cards_to_csv(&self.file_path, &cards)
         } else if self.item_type == ItemType::Note {
             let notes = vault.find_notes();
@@ -331,7 +331,7 @@ impl ExportAction {
 impl Action for ExportAction {}
 
 impl UnlockingAction for ExportAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.export_csv(vault) {
             Err(message) => println!("Failed to export: {}", message),
             Ok(count) => println!("Exported {} entries", count),
@@ -354,7 +354,7 @@ impl DeleteAction {
     }
 }
 
-fn delete_credentials(mut vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
+fn delete_credentials(mut vault: &mut Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
     let matches = find_credentials(&vault, Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
 
     if matches.is_empty() {
@@ -388,8 +388,8 @@ fn delete_credentials(mut vault: Box<dyn Vault>, grep: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
-    let cards = vault.find_payment_cards();
+fn delete_payment(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
+    let cards = vault.find_payments();
     if cards.is_empty() {
         println!("No payment cards found");
         return Ok(());
@@ -422,7 +422,7 @@ fn delete_payment(vault: Box<dyn Vault>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn delete_note(vault: Box<dyn Vault>) -> anyhow::Result<()> {
+fn delete_note(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
     let notes = vault.find_notes();
     if notes.len() == 0 {
         println!("No notes found");
@@ -460,7 +460,7 @@ fn delete_note(vault: Box<dyn Vault>) -> anyhow::Result<()> {
 impl Action for DeleteAction {}
 
 impl UnlockingAction for DeleteAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => {
                 let grep = match &self.grep {
@@ -492,7 +492,7 @@ impl ImportCsvAction {
     }
 }
 
-fn push_from_csv(mut vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
+fn push_from_csv(vault: &mut Box<dyn Vault>, file_path: &str) -> anyhow::Result<i64> {
     let input = store::read_from_csv(file_path)?;
     let creds = input.into_iter().map(|c| c.to_credential()).collect();
 
@@ -505,7 +505,7 @@ fn push_from_csv(mut vault: Box<dyn Vault>, file_path: &str) -> anyhow::Result<i
 impl Action for ImportCsvAction {}
 
 impl UnlockingAction for ImportCsvAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match push_from_csv(vault, &self.file_path) {
             Err(message) => println!("Failed to import: {}", message),
             Ok(count) => println!("Imported {} entries", count),
@@ -539,7 +539,7 @@ pub struct UnlockAction {}
 impl Action for UnlockAction {}
 
 impl UnlockingAction for UnlockAction {
-    fn run_with_vault(&self, vault: Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         keychain::save_master_password(&vault.get_master_password())?;
         Ok(())
     }

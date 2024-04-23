@@ -256,7 +256,6 @@ pub fn ask_payment_info() -> PaymentCard {
 
     PaymentCard {
         id: Uuid::new_v4(),
-        iv,
         name,
         color: if !color.is_empty() { Some(color) } else { None },
         number,
@@ -287,7 +286,6 @@ pub(crate) fn ask_note_info() -> Note {
 
 pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
     let mut table = Table::new();
-    let mut index: i16 = 0;
     let headers = if show_cleartext {
         vec!["", "Title", "Note"]
     } else {
@@ -299,7 +297,7 @@ pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
             .map(|&h| header_cell(String::from(h)))
             .collect::<Vec<Cell>>(),
     );
-    for note in notes {
+    for (index, note) in notes.iter().enumerate() {
         let columns = if show_cleartext {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -313,7 +311,6 @@ pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
             ]
         };
         table.add_row(columns);
-        index += 1;
     }
     println!("{table}");
 }

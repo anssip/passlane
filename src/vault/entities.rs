@@ -1,5 +1,8 @@
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;
+use std::num::ParseIntError;
+use std::fmt;
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct Date(pub String);
@@ -23,7 +26,6 @@ pub struct Credential {
 
 pub struct PaymentCard {
     pub id: Uuid,
-    pub iv: String,
     pub name: String,
     pub name_on_card: String,
     pub number: String,
@@ -64,6 +66,43 @@ impl Display for Expiry {
     }
 }
 
+#[derive(Debug)]
+pub enum ExpiryParseError {
+    InvalidFormat,
+    ParseError(ParseIntError),
+}
+
+impl fmt::Display for ExpiryParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ExpiryParseError::InvalidFormat => write!(f, "Invalid format. Expected MM/YYYY"),
+            ExpiryParseError::ParseError(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ExpiryParseError {}
+
+impl From<ParseIntError> for ExpiryParseError {
+    fn from(err: ParseIntError) -> ExpiryParseError {
+        ExpiryParseError::ParseError(err)
+    }
+}
+
+impl FromStr for Expiry {
+    type Err = ExpiryParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 2 {
+            return Err(ExpiryParseError::InvalidFormat);
+        }
+        let month = parts[0].parse::<i32>().map_err(ExpiryParseError::ParseError)?;
+        let year = parts[1].parse::<i32>().map_err(ExpiryParseError::ParseError)?;
+        Ok(Expiry { month, year })
+    }
+}
+
 pub struct Address {
     pub id: Uuid,
     pub street: String,
@@ -90,5 +129,44 @@ impl Display for Address {
             "{}, {}, {}, {}",
             self.street, self.zip, self.city, self.country
         )
+    }
+}
+
+#[derive(Debug)]
+pub enum AddressParseError {
+    InvalidFormat,
+    ParseError(ParseIntError),
+}
+
+impl fmt::Display for AddressParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            AddressParseError::InvalidFormat => write!(f, "Invalid format. Expected Street, Zip, City, Country"),
+            AddressParseError::ParseError(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for AddressParseError {}
+
+impl From<ParseIntError> for AddressParseError {
+    fn from(err: ParseIntError) -> AddressParseError {
+        AddressParseError::ParseError(err)
+    }
+}
+
+impl FromStr for Address {
+    type Err = AddressParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(',').collect();
+        if parts.len() != 4 {
+            return Err(AddressParseError::InvalidFormat);
+        }
+        let street = parts[0].trim().to_string();
+        let zip = parts[1].trim().to_string();
+        let city = parts[2].trim().to_string();
+        let country = parts[3].trim().to_string();
+        Ok(Address { id: Uuid::new_v4(), street, city, country, state: None, zip })
     }
 }
