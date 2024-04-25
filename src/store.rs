@@ -59,10 +59,6 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
-fn vault_file_path() -> PathBuf {
-    dir_path().join("store.kdbx")
-}
-
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
@@ -92,6 +88,16 @@ pub fn get_keyfile_path() -> Option<String> {
         return None;
     }
     read_from_file(&path)
+}
+
+
+pub(crate) fn get_vault_path() -> String {
+    let default_path = dir_path().join("store.kdbx").to_str().unwrap().to_string();
+    let path = dir_path().join(".vault_path");
+    if path.exists() {
+        return read_from_file(&path).unwrap_or(default_path)
+    }
+    default_path
 }
 
 pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> anyhow::Result<i64> {
@@ -140,8 +146,4 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> a
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
-}
-
-pub(crate) fn get_vault_path() -> String {
-    vault_file_path().to_str().unwrap().to_string()
 }
