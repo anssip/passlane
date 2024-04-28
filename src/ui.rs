@@ -2,11 +2,9 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use crate::crypto::get_random_key;
-use crate::graphql::queries::types::*;
-use crate::store;
-use anyhow::bail;
 use std::cmp::min;
+use uuid::Uuid;
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -50,46 +48,28 @@ pub fn ask_number(question: &str) -> i32 {
     }
 }
 
-pub fn ask_credentials(password: &str) -> CredentialsIn {
+pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-    CredentialsIn {
+    Credential {
+        uuid: Uuid::new_v4(),
         service,
         username,
-        password_encrypted: String::from(password), // maybe rename the field because its not encrypted at this point
-        iv: get_random_key(),
-    }
-}
-
-pub fn ask_new_password() -> String {
-    let pwd = ask_password("Enter new master password. Make sure to save the master password because if you forget it there is no way to recover it! : ");
-    let pwd2 = ask_password("Re-enter new master password: ");
-    if pwd.eq(&pwd2) {
-        pwd
-    } else {
-        println!("Passwords did not match");
-        std::process::exit(1);
+        password: String::from(password), // maybe rename the field because its not encrypted at this point
+        notes: None,
     }
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
-    let master_pwd = if let Some(q) = question {
+    if let Some(q) = question {
         ask_password(q)
     } else {
         ask_password("Please enter master password: ")
-    };
-    match store::verify_master_password(&master_pwd, true) {
-        Ok(_) => master_pwd,
-        Err(message) => {
-            println!("{}", message);
-            std::process::exit(1);
-        }
     }
 }
 
-pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: bool) {
+pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool) {
     let mut table = Table::new();
-    let mut index: i16 = 0;
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
         vec!["", "Service", "Username/email", "Password"]
@@ -102,7 +82,7 @@ pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: boo
             .map(|&h| header_cell(String::from(h)))
             .collect::<Vec<Cell>>(),
     );
-    for creds in credentials {
+    for (index, creds) in (0_i16..).zip(credentials.iter()) {
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -118,7 +98,6 @@ pub fn show_credentials_table(credentials: &Vec<Credentials>, show_password: boo
             ]
         };
         table.add_row(columns);
-        index += 1;
     }
     println!("{table}");
 }
@@ -230,15 +209,7 @@ pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
     };
 }
 
-pub fn open_browser(url: &str, prompt: &str) -> Result<bool, anyhow::Error> {
-    if ask(prompt) == "q" {
-        bail!("Aborted")
-    } else {
-        Ok(webbrowser::open(url).is_ok())
-    }
-}
-
-fn ask_address() -> AddressIn {
+fn ask_address() -> Address {
     println!("Enter billing address:");
     let street = ask("Enter street address:");
     let city = ask("Enter city:");
@@ -246,7 +217,8 @@ fn ask_address() -> AddressIn {
     let zip = ask("Enter postal code:");
     let country = ask("Enter country:");
 
-    AddressIn {
+    Address {
+        id: Uuid::new_v4(),
         street,
         city,
         state: if state != "" { Some(state) } else { None },
@@ -255,7 +227,7 @@ fn ask_address() -> AddressIn {
     }
 }
 
-pub fn ask_payment_info() -> PaymentCardIn {
+pub fn ask_payment_info() -> PaymentCard {
     let name = ask("Enter card name:");
     let color = ask("Enter card color (optional):");
     let number = ask("Enter card number:");
@@ -264,15 +236,14 @@ pub fn ask_payment_info() -> PaymentCardIn {
     let card_expiration_year = ask_number("Enter card expiration year:");
     let cvv = ask("Enter card cvv:");
     let address = ask_address();
-    let iv = get_random_key();
 
-    PaymentCardIn {
-        iv,
+    PaymentCard {
+        id: Uuid::new_v4(),
         name,
-        color: if color != "" { Some(color) } else { None },
+        color: if !color.is_empty() { Some(color) } else { None },
         number,
         name_on_card,
-        expiry: ExpiryIn {
+        expiry: Expiry {
             month: card_expiration_month,
             year: card_expiration_year,
         },
@@ -281,22 +252,19 @@ pub fn ask_payment_info() -> PaymentCardIn {
     }
 }
 
-pub(crate) fn ask_note_info() -> NoteIn {
+pub(crate) fn ask_note_info() -> Note {
     let title = ask("Enter note title:");
     let content = ask_multiline("Enter note content:");
-    let iv = get_random_key();
 
-    NoteIn {
-        iv,
+    Note {
+        id: Uuid::new_v4(),
         title,
         content,
-        vault_id: None,
     }
 }
 
 pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
     let mut table = Table::new();
-    let mut index: i16 = 0;
     let headers = if show_cleartext {
         vec!["", "Title", "Note"]
     } else {
@@ -308,7 +276,7 @@ pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
             .map(|&h| header_cell(String::from(h)))
             .collect::<Vec<Cell>>(),
     );
-    for note in notes {
+    for (index, note) in notes.iter().enumerate() {
         let columns = if show_cleartext {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -322,7 +290,6 @@ pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
             ]
         };
         table.add_row(columns);
-        index += 1;
     }
     println!("{table}");
 }
