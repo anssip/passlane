@@ -4,7 +4,12 @@ in
 pkgs.rustPlatform.buildRustPackage rec {
   pname = manifest.name;
   version = manifest.version;
-  cargoLock.lockFile = ./Cargo.lock;
+  cargoLock = {
+    lockFile = ./Cargo.lock;
+    outputHashes = {
+      "keepass-0.6.1" = "sha256:0000000000000000000000000000000000000000000000000000";
+    };
+  };
   src = pkgs.lib.cleanSource ./.;
 
   buildInputs = [
