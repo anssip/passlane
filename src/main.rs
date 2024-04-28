@@ -16,7 +16,7 @@ use std::env;
 
 fn cli() -> Command {
     Command::new("passlane")
-        .about("A password manager and a CLI client for the online Passlane Vault")
+        .about("A password manager using Keepass as the storage backend.")
         .subcommand_required(false)
         .arg_required_else_help(false)
         .allow_external_subcommands(true)

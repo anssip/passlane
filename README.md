@@ -1,6 +1,6 @@
 # Passlane
 
-Passlane is a password manager for the command line and for the Web. In addition to passwords, It supports secure saving and managing of 
+A password manager CLI using Keepass as the storage backend. In addition to passwords, It supports secure saving and managing of 
 **payment cards** and **secure notes**. Passlane uses the Keepass encrypted file format for storing the data.
 
 Passlane CLI is written in Rust.
