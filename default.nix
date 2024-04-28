@@ -7,7 +7,7 @@ pkgs.rustPlatform.buildRustPackage rec {
   cargoLock = {
     lockFile = ./Cargo.lock;
     outputHashes = {
-      "keepass-0.6.1" = "sha256:0000000000000000000000000000000000000000000000000000";
+      "keepass-0.6.1" = "sha256-nQRBH/BS5uh4jkR0w/AIxYkotWyhbIw8BvFs7cSzlqc=";
     };
   };
   src = pkgs.lib.cleanSource ./.;
