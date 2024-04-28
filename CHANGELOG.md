@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.0]
+
+- Switch to Keepass storage format
+- Remove online vault
+
 ## [2.2.2]
 
 - Fix login

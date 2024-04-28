@@ -1,8 +1,7 @@
 # Passlane
 
-Passlane is a password manager for the command line and for the Web. There is also a web interface at [passlanevault.com](https://passlanevault.com) that you can use to access your credentials on any device.
-
-Passlane also supports secure saving and managing of **payment cards** and **secure notes**.
+Passlane is a password manager for the command line and for the Web. In addition to passwords, It supports secure saving and managing of 
+**payment cards** and **secure notes**. Passlane uses the Keepass encrypted file format for storing the data.
 
 Passlane CLI is written in Rust.
 
@@ -10,15 +9,28 @@ Passlane CLI is written in Rust.
 
 ## Features
 
-- You control the encryption keys: Your keys, your data.
-- CLI and Web user interfaces (see below)
+- Keepass storage format which allows you to use the vault with other Keepass compatible applications
+  - Supports KDB, KDBX3 and KDBX4 file formats
+  - The keepass storage file can be optionally secured using a [key file](https://keepassxc.org/docs/) to provide additional protection
 - Generate and save passwords
 - Save and view payment card information
 - Save and view secure notes
-- Full management features
-- Online storage with access from any device
 - Import passwords from CSV files
 - Export vault contents to CSV files
+
+## Table of contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Locking and unlocking the vault](#locking-and-unlocking-the-vault)
+  - [Generating and saving passwords](#generating-and-saving-passwords)
+  - [Using saved credentials](#using-saved-credentials)
+  - [Payment cards](#payment-cards)
+  - [Secure notes](#secure-notes)
+  - [Migrating from 1Password, LastPass, Dashlane etc.](#migrating-from-1password-lastpass-dashlane-etc)
+  - [Export to CSV](#export-to-csv)
+- [Syncing data to your devices](#syncing-data-to-your-devices)
+- [Other Keepass compatible applications](#other-keepass-compatible-applications)
 
 ## Installation
 
@@ -43,66 +55,44 @@ nix run github:anssip/passlane
 
 See below for more information on how to use the CLI.
 
-### Create an account
+## Usage
 
-The Passlane Vault is secured by Auth0 and OAuth 2.0. All passwords are stored encrypted.
+### Locking and unlocking the vault
 
-> Passlane stores the encryption key on your device. It never sends it out to the passlane vault servers or anywhere else. Only you, the end user, can access the encrypted data in the vault. You are the only person who has access to the encryption key.
-
-Head over to [passlanevault.com](https://passlanevault.com) and sign up for a **free account**. Once you have the account, run
-
-```bash
-passlane login
-```
-
-after logging in, unlock the vault. The first time you run this, it will ask you to pick up a master password. 
-The master password is used to generate an encryption key that is used to encrypt and decrypt the vault contents.
+Use the unlock command to store the master password in your computer's keychain. This way you don't have to enter the
+master password every time you access your passwords and other vault contents. On Macs you can then use biometric authentication
+to gain access to the keychain and further to the vault without typing any passwords.
 
 ```bash
 passlane unlock
 ```
 
+You can later remove the master password from the keychain with the lock command.
 
-to connect the CLI with the vault. The connection will stay active after that. Use the `lock` and `unlock` commands to open and close access to the vault contents after you have logged in.
+```bash
+passlane lock
+```
 
-## Usage
+To get help on the available commands:
 
 ```bash
 $  passlane -h
-A password manager and a CLI client for the online Passlane Vault
+A password manager for the command line
 
 Usage: passlane [COMMAND]
 
 Commands:
-  login     Login to the online vault.
-  password  Change the master password.
-  add       Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.
-  csv       Imports credentials from a CSV file.
-  delete    Deletes one or more entries.
-  show      Shows one or more entries.
-  lock      Lock the vaults to prevent all access
-  unlock    Opens the vaults and grants access to the entries
-  export    Exports the vault contents to a CSV file.
-  help      Print this message or the help of the given subcommand(s)
+  add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.
+  csv     Imports credentials from a CSV file.
+  delete  Deletes one or more entries.
+  show    Shows one or more entries.
+  lock    Lock the vaults to prevent all access
+  unlock  Opens the vaults and grants access to the entries
+  export  Exports the vault contents to a CSV file.
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help
-```
-
-### Locking and unlocking
-
-Before accessing your passwords you should unlock:
-
-```bash
-passlane unlock
-```
-
-This will ask for your master password which is then used to generate an encryption key. The encryption key is used for encrypting and storing password entries, and for retrieveing and decrypting these entries.
-
-At the end of the session, lock the vaults and nobody can access the data.
-
-```bash
-passlane lock
 ```
 
 ### Generating and saving passwords
@@ -133,7 +123,7 @@ You can search and show saved credentials with regular expressions
 passlane show <regexp>
 ```
 
-Run `passlane show foobard.com` --> shows foobar.com's password and alco copies the value to the clipboard.
+Run `passlane show foobard.com` --> shows foobar.com's password and also copies the value to the clipboard.
 
 If the search finds more than one matches:
 
@@ -248,3 +238,27 @@ To export secure notes to a file called notes.csv
 ```bash
 passlane export -n notes.csv
 ```
+
+## Syncing data to your devices
+
+You can place the vault file to a cloud storage service like Dropbox, Google Drive, or iCloud Drive. 
+This way you can access your passwords from all your devices.
+By default, Passlane assumes that the file is located at `~/.passlane/store.kdbx`. 
+You can change the location by storing the file path in a text file called `.vault_path` at the `~/.passlane/` directory.
+
+For example, this shows how John has stored the path `/Users/john/Dropbox/Stuff/store.kdbx` to the `.vault_path` file:
+
+```bash
+➜  ~ cat ~/.passlane/.vault_path                                                                                      ~
+/Users/john/Dropbox/Stuff/store.kdbx%   
+```
+
+## Other Keepass compatible applications
+
+There are several other Keepass compatible applications that you can use to access the vault file:
+
+- [KeepassXC](https://keepassxc.org/) is a desktop application for Windows, macOS, and Linux
+- [KeepassXC-Browser](https://github.com/keepassxreboot/keepassxc-browser)
+- [KeePassium](https://keepassium.com/) is a mobile application for iOS
+- ... and many others
+

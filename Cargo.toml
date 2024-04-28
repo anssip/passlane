@@ -1,14 +1,14 @@
 [package]
 name = "passlane"
-version = "2.2.3-rc.1"
+version = "2.3.0"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
-description = "A password manager for the command line with a Keepass storage backend"
+description = "A password manager for the command line"
 readme = "README.md"
 homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
-keywords = ["cli", "password", "credentials"]
+keywords = ["password", "credentials", "keepass", "password-manager", "password-generator"]
 categories = ["command-line-utilities"]
 
 [dependencies]
