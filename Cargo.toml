@@ -30,6 +30,6 @@ anyhow = "1.0.56"
 chrono = "0.4.19"
 env_logger = "0.10.0"
 hex = "0.4.3"
-keepass = { git = "https://github.com/anssip/keepass-rs.git", features = ["save_kdbx4"] }
+keepass = { version="0.6.1", git = "https://github.com/anssip/keepass-rs.git", features = ["save_kdbx4"] }
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
