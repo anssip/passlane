@@ -22,7 +22,7 @@ fn cli() -> Command {
         .allow_external_subcommands(true)
         .subcommand(
             Command::new("add")
-                .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.")
+                .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.")
                 .arg(arg!(
                     -p --payments "Add a payment card."
                 ).action(ArgAction::SetTrue))
