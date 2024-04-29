@@ -128,10 +128,7 @@ fn main() {
             }
         }
         ActionOrUnlockingAction::UnlockingAction(action) => {
-            if let Err(e) = action.execute() {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
+            action.execute()
         }
     }
 }
