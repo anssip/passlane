@@ -20,10 +20,23 @@ pub trait Action {
 }
 
 pub trait UnlockingAction: Action {
-    fn execute(&self) -> anyhow::Result<()> {
+    fn execute(&self)  {
         info!("Unlocking vault...");
-        let vault = self.unlock();
-        vault.and_then(|vault| self.run_with_vault(&mut Box::new(vault)))
+        match self.unlock() {
+            Ok(mut vault) => {
+                match self.run_with_vault(&mut vault) {
+                    Ok(_) => {
+                        info!("Action completed successfully");
+                    }
+                    Err(e) => {
+                        println!("Failed to run action: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Failed to unlock vault: {}", e);
+            }
+        }
     }
 
     fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> anyhow::Result<()> {
@@ -34,9 +47,9 @@ pub trait UnlockingAction: Action {
         // we could return some other Vault implementation here
         let vault = KeepassVault::new(password, filepath, keyfile_path);
         match vault {
-            Some(v) => Ok(Box::new(v)),
-            None => {
-                bail!("Failed to open vault");
+            Ok(v) => Ok(Box::new(v)),
+            Err(e) => {
+                bail!("Incorrect password? {}", e);
             }
         }
     }

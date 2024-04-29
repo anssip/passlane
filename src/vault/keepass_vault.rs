@@ -1,7 +1,8 @@
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
-use keepass::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid};
+use keepass::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig};
 use std::fs::{File, OpenOptions};
+use std::path::Path;
 use std::str::FromStr;
 use keepass::db::Group;
 use log::{debug, error};
@@ -15,23 +16,22 @@ pub struct KeepassVault {
 }
 
 impl KeepassVault {
-    pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Option<Self> {
+    pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<KeepassVault, DatabaseOpenError> {
         debug!("Opening database '{}'", filepath);
         let db = Self::open_database(filepath, password, &keyfile_path);
 
         match db {
-            Some(db) => {
+            Ok(db) => {
                 debug!("Opened database successfully");
-                Some(Self {
+                Ok(Self {
                     password: String::from(password),
                     db,
                     filepath: filepath.to_string(),
                     keyfile: keyfile_path,
                 })
             }
-            None => {
-                error!("Failed to open database. Incorrect password or keyfile not provided?");
-                None
+            Err(e) => {
+                Err(e)
             }
         }
     }
@@ -44,24 +44,29 @@ impl KeepassVault {
     }
 
     fn save_database(&self) {
-        let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
-        debug!("Saving database to file '{}'", &self.filepath);
-
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create_new(false)
+            .create_new(!Path::new(&self.filepath).exists())
             .open(&self.filepath).unwrap();
+
+        let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
+        debug!("Saving database to file '{}'", &self.filepath);
 
         self.db.save(&mut file, key).unwrap();
     }
 
 
-    fn open_database(filepath: &str, password: &str, keyfile: &Option<String>) -> Option<Database> {
+    fn open_database(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<Database, DatabaseOpenError> {
+        if !Path::new(filepath).exists() {
+            debug!("Database file '{}' does not exist, creating new database", filepath);
+            return Ok(Database::new(DatabaseConfig::default()));
+        }
+
         let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile).unwrap();
-        let mut db = Database::open(&mut db_file, key).unwrap();
+        let mut db = Database::open(&mut db_file, key)?;
         db.set_recycle_bin_enabled(false);
-        Some(db)
+        Ok(db)
     }
 
     fn create_group(&self, parent_uuid: Uuid, group_name: &str) -> Option<Uuid> {

@@ -57,6 +57,21 @@ See below for more information on how to use the CLI.
 
 ## Usage
 
+### First time setup
+
+When you run Passlane for the first time, it will create a new vault file at `~/.passlane/store.kdbx`. This is a
+Keepass compatible file that stores all your passwords, payment cards, and secure notes. You will be asked to enter a 
+master password that will be used to encrypt the vault contents. You can also store the master password in your 
+computer's keychain to avoid typing it every time, see below for more info.
+
+You can also move the vault file to the cloud allowing access from all your devices. [See below for more info](#syncing-data-to-your-devices).
+
+### Keypass key file
+
+In addition to the master password, you can use a key file to provide additional protection for the vault file. At this
+time, Passlane cannot be used to create a key file, but you can create one with KeepassXC or other Keepass compatible
+app. Once you have the file, configure the location of this file in the `.keyfile_path` file in the `~/.passlane/` directory.
+
 ### Locking and unlocking the vault
 
 Use the unlock command to store the master password in your computer's keychain. This way you don't have to enter the
