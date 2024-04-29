@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.3.2]
+
+- Switch to keepass-ng dependency
+
 ## [2.3.1]
 
 - Fix to show a proper error message when entering incorrect master password

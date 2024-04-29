@@ -1,10 +1,9 @@
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
-use keepass::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig};
+use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig, Group};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use keepass::db::Group;
 use log::{debug, error};
 use uuid::Uuid;
 
@@ -229,7 +228,7 @@ impl KeepassVault {
         }
     }
 
-    fn create_password_entry(&mut self, parent_uuid: &Uuid, credentials: &Credential) -> keepass::Result<Option<Uuid>> {
+    fn create_password_entry(&mut self, parent_uuid: &Uuid, credentials: &Credential) -> keepass_ng::Result<Option<Uuid>> {
         self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(&credentials.service));
@@ -241,7 +240,7 @@ impl KeepassVault {
         })
     }
 
-    fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass::Result<Option<Uuid>> {
+    fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass_ng::Result<Option<Uuid>> {
         self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             let note = format!("Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
                                payment.name_on_card,
@@ -259,7 +258,7 @@ impl KeepassVault {
         })
     }
 
-    fn create_note_entry(&mut self, parent_uuid: &Uuid, note: &Note) -> keepass::Result<Option<Uuid>> {
+    fn create_note_entry(&mut self, parent_uuid: &Uuid, note: &Note) -> keepass_ng::Result<Option<Uuid>> {
         self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(&note.title));

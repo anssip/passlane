@@ -1138,9 +1138,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "keepass"
-version = "0.6.1"
-source = "git+https://github.com/anssip/keepass-rs.git#69bb8156b74aa5eeada82e16e2b6402cbbfb040a"
+name = "keepass-ng"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "858f59295ec126afd6d7b4bbc2ec1c2a9bb6653935cae6a298470ef34a8c6635"
 dependencies = [
  "aes 0.8.4",
  "as-any",
@@ -1497,7 +1498,7 @@ dependencies = [
  "env_logger",
  "erased-serde",
  "hex",
- "keepass",
+ "keepass-ng",
  "keyring",
  "log",
  "magic-crypt",
