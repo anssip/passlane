@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.1]
+
+- Fix to show a proper error message when entering incorrect master password
+- Fix to initial creation of the Keepass file
+
 ## [2.3.0]
 
 - Switch to Keepass storage format
