@@ -13,6 +13,11 @@ impl Display for Date {
     }
 }
 
+#[derive(Debug)]
+pub struct Error {
+    pub message: String,
+}
+
 #[derive(Clone)]
 pub struct Credential {
     pub uuid: Uuid,

@@ -49,7 +49,7 @@ pub trait UnlockingAction: Action {
         match vault {
             Ok(v) => Ok(Box::new(v)),
             Err(e) => {
-                bail!("Incorrect password? {}", e);
+                bail!("Incorrect password? {}", e.message);
             }
         }
     }

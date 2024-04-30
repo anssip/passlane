@@ -5,6 +5,8 @@
 ### Next
 
 fix:
+- [ ] add TOTP support
+- [ ] remove anyhow?
 - [x] first time vault creation
 - [x] invalid password error message
 

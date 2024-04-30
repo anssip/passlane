@@ -1496,7 +1496,6 @@ dependencies = [
  "csv",
  "dirs",
  "env_logger",
- "erased-serde",
  "hex",
  "keepass-ng",
  "keyring",

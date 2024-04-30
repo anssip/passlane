@@ -1,4 +1,4 @@
-use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Error};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
 use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig, Group};
 use std::fs::{File, OpenOptions};
@@ -14,25 +14,24 @@ pub struct KeepassVault {
     keyfile: Option<String>,
 }
 
-impl KeepassVault {
-    pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<KeepassVault, DatabaseOpenError> {
-        debug!("Opening database '{}'", filepath);
-        let db = Self::open_database(filepath, password, &keyfile_path);
-
-        match db {
-            Ok(db) => {
-                debug!("Opened database successfully");
-                Ok(Self {
-                    password: String::from(password),
-                    db,
-                    filepath: filepath.to_string(),
-                    keyfile: keyfile_path,
-                })
-            }
-            Err(e) => {
-                Err(e)
-            }
+impl From<DatabaseOpenError> for Error {
+    fn from(e: DatabaseOpenError) -> Self {
+        Error {
+            message: e.to_string(),
         }
+    }
+}
+
+impl KeepassVault {
+    pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<KeepassVault, Error> {
+        debug!("Opening database '{}'", filepath);
+        let db = Self::open_database(filepath, password, &keyfile_path)?;
+        Ok(Self {
+            password: String::from(password),
+            db,
+            filepath: filepath.to_string(),
+            keyfile: keyfile_path,
+        })
     }
     fn get_root(&self) -> NodePtr {
         self.db.root.clone()
@@ -56,13 +55,12 @@ impl KeepassVault {
     }
 
 
-    fn open_database(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<Database, DatabaseOpenError> {
+    fn open_database(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<Database, Error> {
         if !Path::new(filepath).exists() {
             debug!("Database file '{}' does not exist, creating new database", filepath);
             return Ok(Database::new(DatabaseConfig::default()));
         }
-
-        let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile).unwrap();
+        let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
         let mut db = Database::open(&mut db_file, key)?;
         db.set_recycle_bin_enabled(false);
         Ok(db)
