@@ -1,9 +1,11 @@
-use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Error};
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Error, Totp};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
 use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig, Group};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
+use keepass_ng::db::{TOTP, TOTPAlgorithm};
+use keepass_ng::error::TOTPError;
 use log::{debug, error};
 use uuid::Uuid;
 
@@ -16,6 +18,22 @@ pub struct KeepassVault {
 
 impl From<DatabaseOpenError> for Error {
     fn from(e: DatabaseOpenError) -> Self {
+        Error {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<TOTPError> for Error {
+    fn from(e: TOTPError) -> Self {
+        Error {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<keepass_ng::error::Error> for Error {
+    fn from(e: keepass_ng::error::Error) -> Self {
         Error {
             message: e.to_string(),
         }
@@ -236,6 +254,24 @@ impl KeepassVault {
                 entry.get_uuid()
             })
         })
+    }
+    
+    fn create_totp_entry(&mut self, parent_uuid: &Uuid, totp: &Totp) -> Result<Option<Uuid>, Error> {
+        let totp_entry = TOTP {
+            label: totp.label.clone(),
+            secret: totp.secret.clone().into(),
+            issuer: totp.issuer.clone(),
+            period: totp.period.into(),
+            digits: totp.digits,
+            algorithm: TOTPAlgorithm::from_str(&totp.algorithm)?
+        };
+        Ok(self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
+            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
+                entry.set_title(Some(&totp.label));
+                entry.set_otp(totp_entry.to_string().as_str());
+                entry.get_uuid()
+            })
+        })?)
     }
 
     fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass_ng::Result<Option<Uuid>> {

@@ -38,6 +38,16 @@ pub struct PaymentCard {
     pub billing_address: Option<Address>,
 }
 
+pub struct Totp {
+    pub id: Uuid,
+    pub label: String,
+    pub issuer: String,
+    pub secret: String,
+    pub algorithm: String,
+    pub period: u32,
+    pub digits: u32,
+}
+
 impl PaymentCard {
     pub fn last_four(&self) -> String {
         self.number
