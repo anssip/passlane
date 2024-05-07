@@ -2,6 +2,7 @@ use keyring::{Entry, Result};
 use log::{debug};
 
 const SERVICE_NAME: &str = "passlane_master_pwd";
+const SERVICE_NAME_TOTP: &str = "passlane_totp_master_pwd";
 const USERNAME: &str = "passlane";
 
 pub fn save_master_password(pwd: &str) -> Result<()> {
@@ -20,4 +21,9 @@ pub fn delete_master_password() -> Result<()> {
     let entry = Entry::new(SERVICE_NAME, USERNAME)?;
     entry.delete_password()?;
     Ok(())
+}
+
+pub(crate) fn get_totp_master_password() -> Result<String> {
+    let entry = Entry::new(SERVICE_NAME_TOTP, USERNAME)?;
+    entry.get_password()
 }

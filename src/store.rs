@@ -82,22 +82,38 @@ fn read_from_file(path: &PathBuf) -> Option<String> {
     Some(file_content.trim().parse().unwrap())
 }
 
-pub fn get_keyfile_path() -> Option<String> {
-    let path = dir_path().join(".keyfile_path");
+fn resolve_keyfile_path(path_config_file: &str) -> Option<String> {
+    let path = dir_path().join(path_config_file);
     if !path.exists() {
-        return None;
+        None
+    } else {
+        read_from_file(&path)
     }
-    read_from_file(&path)
 }
 
+pub fn get_keyfile_path() -> Option<String> {
+    resolve_keyfile_path(".keyfile_path")
+}
 
-pub(crate) fn get_vault_path() -> String {
-    let default_path = dir_path().join("store.kdbx").to_str().unwrap().to_string();
-    let path = dir_path().join(".vault_path");
+pub(crate) fn get_totp_keyfile_path() -> Option<String> {
+    resolve_keyfile_path(".totp_keyfile_path")
+}
+
+fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> String {
+    let default_path = dir_path().join(default_filename).to_str().unwrap().to_string();
+    let path = dir_path().join(path_config_filename);
     if path.exists() {
-        return read_from_file(&path).unwrap_or(default_path)
+        return read_from_file(&path).unwrap_or(default_path);
     }
     default_path
+}
+
+pub(crate) fn get_vault_path() -> String {
+    resolve_vault_path("store.kdbx", ".vault_path")
+}
+
+pub(crate) fn get_totp_vault_path() -> String {
+    resolve_vault_path("totp.kdbx", ".totp_vault_path")
 }
 
 pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> anyhow::Result<i64> {

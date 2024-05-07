@@ -1,18 +1,17 @@
 extern crate clipboard;
 extern crate magic_crypt;
-use actions::*;
-use clap::{arg, ArgAction, Command};
 
-
-mod actions;
 mod crypto;
 mod store;
 mod ui;
 mod vault;
 mod keychain;
+mod actions;
 
-
+use clap::{arg, ArgAction, Command};
 use std::env;
+use actions::*;
+use crate::actions::show::ShowAction;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -55,7 +54,7 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete.").group("search").required(false))
                 .arg_required_else_help(true)
-            )
+        )
         .subcommand(
             Command::new("show")
                 .about("Shows one or more entries.")
@@ -64,6 +63,9 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -p --payments "Shows payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Shows one time passwords (OTPs)"
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -n --notes "Shows secure notes."
@@ -99,35 +101,35 @@ fn main() {
     env_logger::init();
     let matches = cli().get_matches();
 
-    enum ActionOrUnlockingAction {
+    enum VaultAction {
         Action(Box<dyn Action>),
         UnlockingAction(Box<dyn UnlockingAction>),
     }
-    
+
     let action = match matches.subcommand() {
-        Some(("add", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
-        Some(("show", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
-        Some(("delete", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
-        Some(("csv", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
-        Some(("lock", _)) => ActionOrUnlockingAction::Action(Box::new(LockAction {})),
-        Some(("unlock", _)) => ActionOrUnlockingAction::UnlockingAction(Box::new(UnlockAction {})),
-        Some(("export", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
+        Some(("add", sub_matches)) => VaultAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
+        Some(("show", sub_matches)) => VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
+        Some(("delete", sub_matches)) => VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
+        Some(("csv", sub_matches)) => VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
+        Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
+        Some(("unlock", _)) => VaultAction::UnlockingAction(Box::new(UnlockAction {})),
+        Some(("export", sub_matches)) => VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {
             if env::args().len() == 1 {
-                ActionOrUnlockingAction::Action(Box::new(GeneratePasswordAction {}))
+                VaultAction::Action(Box::new(GeneratePasswordAction {}))
             } else {
-                ActionOrUnlockingAction::Action(Box::new(PrintHelpAction::new(cli())))
+                VaultAction::Action(Box::new(PrintHelpAction::new(cli())))
             }
-        },
+        }
     };
     match action {
-        ActionOrUnlockingAction::Action(action) => {
+        VaultAction::Action(action) => {
             if let Err(e) = action.run() {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
         }
-        ActionOrUnlockingAction::UnlockingAction(action) => {
+        VaultAction::UnlockingAction(action) => {
             action.execute()
         }
     }

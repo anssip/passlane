@@ -4,7 +4,7 @@ use std::io::Write;
 
 use std::cmp::min;
 use uuid::Uuid;
-use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard};
+use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -68,7 +68,12 @@ pub fn ask_master_password(question: Option<&str>) -> String {
     }
 }
 
-pub fn show_credentials_table(credentials: &Vec<Credential>, show_password: bool) {
+
+pub(crate) fn ask_totp_master_password() -> String {
+    ask_password("Please enter master password of the One Time Passwords vault: ")
+}
+
+pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
     let mut table = Table::new();
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
@@ -108,7 +113,6 @@ fn header_cell(label: String) -> Cell {
 
 pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) {
     let mut table = Table::new();
-    let mut index: i16 = 0;
     let headers = if show_cleartext {
         vec![
             "",
@@ -128,7 +132,7 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
             .map(|&h| header_cell(String::from(h)))
             .collect::<Vec<Cell>>(),
     );
-    for card in cards {
+    for (index, card) in (0_i16..).zip(cards.iter()) {
         let columns = if show_cleartext {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -153,7 +157,6 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
             ]
         };
         table.add_row(columns);
-        index += 1;
     }
     println!("{table}");
 }
@@ -197,7 +200,7 @@ pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
     if answer == "a" {
         return Ok(usize::MAX);
     }
-    return match answer.parse::<i16>() {
+    match answer.parse::<i16>() {
         Ok(num) => {
             if num >= 0 && num <= max_index as i16 {
                 Ok(num.try_into().unwrap())
@@ -206,7 +209,7 @@ pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
             }
         }
         Err(_) => Err(String::from("Invalid index")),
-    };
+    }
 }
 
 fn ask_address() -> Address {
@@ -263,7 +266,7 @@ pub(crate) fn ask_note_info() -> Note {
     }
 }
 
-pub(crate) fn show_notes_table(notes: &Vec<Note>, show_cleartext: bool) {
+pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
     let mut table = Table::new();
     let headers = if show_cleartext {
         vec!["", "Title", "Note"]
@@ -299,4 +302,25 @@ pub(crate) fn show_note(note: &Note) {
     println!("{}\n", note.title);
     println!("{}", note.content);
     println!("---------------------------");
+}
+
+pub(crate) fn show_totp_table(totps: &[Totp]) {
+    let mut table = Table::new();
+    table.set_header(
+        vec![
+            header_cell(String::from("")),
+            header_cell(String::from("Label")),
+            header_cell(String::from("Issuer")),
+        ]
+        .into_iter()
+        .collect::<Vec<Cell>>(),
+    );
+    for (index, totp) in totps.iter().enumerate() {
+        table.add_row(vec![
+            Cell::new(index.to_string()).fg(Color::Yellow),
+            Cell::new(String::from(&totp.label)),
+            Cell::new(String::from(&totp.issuer)),
+        ]);
+    }
+    println!("{table}");
 }

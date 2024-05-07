@@ -1,3 +1,5 @@
+pub mod show;
+
 use clap::Command;
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -20,9 +22,14 @@ pub trait Action {
 }
 
 pub trait UnlockingAction: Action {
-    fn execute(&self)  {
+    fn execute(&self) {
         info!("Unlocking vault...");
-        match self.unlock() {
+        let result = if self.is_totp_vault() {
+            self.unlock_totp_vault()
+        } else {
+            self.unlock()
+        };
+        match result {
             Ok(mut vault) => {
                 match self.run_with_vault(&mut vault) {
                     Ok(_) => {
@@ -37,6 +44,10 @@ pub trait UnlockingAction: Action {
                 println!("Failed to unlock vault: {}", e);
             }
         }
+    }
+
+    fn is_totp_vault(&self) -> bool {
+        false
     }
 
     fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> anyhow::Result<()> {
@@ -60,6 +71,14 @@ pub trait UnlockingAction: Action {
         let keyfile_path = store::get_keyfile_path();
         self.get_vault(&master_pwd, &filepath, keyfile_path)
     }
+
+    fn unlock_totp_vault(&self) -> Result<Box<dyn Vault>> {
+        let stored_password = keychain::get_totp_master_password();
+        let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
+        let filepath = store::get_totp_vault_path();
+        let keyfile_path = store::get_totp_keyfile_path();
+        self.get_vault(&master_pwd, &filepath, keyfile_path)
+    }
 }
 
 pub fn copy_to_clipboard(value: &String) {
@@ -72,6 +91,7 @@ pub enum ItemType {
     Credential,
     Payment,
     Note,
+    Totp
 }
 
 impl ItemType {
@@ -82,6 +102,8 @@ impl ItemType {
             ItemType::Payment
         } else if *matches.get_one("notes").expect("defaulted to false by clap") {
             ItemType::Note
+        } else if *matches.get_one("otp").expect("defaulted to false by clap") {
+            ItemType::Totp
         } else {
             ItemType::Credential
         }
@@ -166,146 +188,11 @@ impl UnlockingAction for AddAction {
         match self.item_type {
             ItemType::Credential => self.add_credential(vault)?,
             ItemType::Payment => self.add_payment(vault)?,
-            ItemType::Note => self.add_note(vault)?
-        };
-        Ok(())
-    }
-}
-
-pub struct ShowAction {
-    pub grep: Option<String>,
-    pub verbose: bool,
-    pub item_type: ItemType,
-}
-
-impl ShowAction {
-    pub fn new(matches: &ArgMatches) -> ShowAction {
-        ShowAction {
-            grep: matches.get_one::<String>("REGEXP").cloned(),
-            verbose: *matches
-                .get_one::<bool>("verbose")
-                .expect("defaulted to false by clap"),
-            item_type: ItemType::new_from_args(matches),
-        }
-    }
-    fn show_credentials(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        let grep = match &self.grep {
-            Some(grep) => Some(String::from(grep)),
-            None => panic!("-g <REGEXP> is required"),
-        };
-        let matches = find_credentials(&vault, grep).context("Failed to find matches. Invalid password? Try unlocking the vault with `passlane unlock`.")?;
-
-        if matches.len() >= 1 {
-            println!("Found {} matches:", matches.len());
-            ui::show_credentials_table(&matches, self.verbose);
-            if matches.len() == 1 {
-                copy_to_clipboard(&matches[0].password);
-                println!("Password copied to clipboard!", );
-            } else {
-                match ui::ask_index(
-                    "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
-                    matches.len() as i16 - 1,
-                ) {
-                    Ok(index) => {
-                        copy_to_clipboard(&matches[index].password);
-                        println!("Password from index {} copied to clipboard!", index);
-                    }
-                    Err(message) => {
-                        println!("{}", message);
-                    }
-                }
+            ItemType::Note => self.add_note(vault)?,
+            ItemType::Totp => {
+                // TODO
+                // self.add_totp(vault);
             }
-        }
-        Ok(())
-    }
-
-    fn show_payments(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        debug!("showing payments");
-        let matches = vault.find_payments();
-        if matches.len() == 0 {
-            println!("No payment cards found");
-        } else {
-            println!("Found {} payment cards:", matches.len());
-            ui::show_payment_cards_table(&matches, self.verbose);
-
-            if matches.len() == 1 {
-                let response = ui::ask("Do you want to see the card details? (y/n)");
-                if response == "y" {
-                    ui::show_card(&matches[0]);
-                    copy_to_clipboard(&matches[0].number);
-                    println!("Card number copied to clipboard!", );
-                }
-            } else {
-                match ui::ask_index(
-                    "Enter a row number from the table above, or press q to exit:",
-                    matches.len() as i16 - 1,
-                ) {
-                    Ok(index) => {
-                        ui::show_card(&matches[index]);
-                        copy_to_clipboard(&matches[index].number);
-                        println!("Card number copied to clipboard!");
-                    }
-                    Err(message) => {
-                        println!("{}", message);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn show_notes(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        debug!("showing notes");
-        let matches = vault.find_notes();
-        if matches.len() == 0 {
-            println!("No notes found");
-        } else {
-            println!("Found {} notes:", matches.len());
-            ui::show_notes_table(&matches, self.verbose);
-
-
-            if matches.len() == 1 {
-                let response = ui::ask("Do you want to see the full note? (y/n)");
-                if response == "y" {
-                    ui::show_note(&matches[0]);
-                }
-            } else {
-                match ui::ask_index(
-                    "Enter a row number from the table above, or press q to exit:",
-                    matches.len() as i16 - 1,
-                ) {
-                    Ok(index) => {
-                        ui::show_note(&matches[index]);
-                    }
-                    Err(message) => {
-                        println!("{}", message);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn find_credentials(
-    vault: &Box<dyn Vault>,
-    grep: Option<String>,
-) -> anyhow::Result<Vec<Credential>> {
-    let matches = vault.grep(&grep);
-    if matches.is_empty() {
-        println!("No matches found");
-    }
-    Ok(matches)
-}
-
-impl Action for ShowAction {}
-
-impl UnlockingAction for ShowAction {
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        match self.item_type {
-            ItemType::Credential => self.show_credentials(vault)?,
-            ItemType::Payment => self.show_payments(vault)?,
-            ItemType::Note => self.show_notes(vault)?
         };
         Ok(())
     }
@@ -326,7 +213,11 @@ impl ExportAction {
     pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<i64> {
         debug!("exporting to csv");
         if self.item_type == ItemType::Credential {
-            let creds = find_credentials(&vault, None)?;
+            let creds = vault.grep(&None);
+            if creds.is_empty() {
+                println!("No credentials found");
+                return Ok(0);
+            }
             store::write_credentials_to_csv(&self.file_path, &creds)
         } else if self.item_type == ItemType::Payment {
             let cards = vault.find_payments();
@@ -368,7 +259,7 @@ impl DeleteAction {
 }
 
 fn delete_credentials(vault: &mut Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
-    let matches = find_credentials(&vault, Some(String::from(grep))).context("Unable to get matches. Invalid password? Try unlocking again.")?;
+    let matches = vault.grep(&Some(String::from(grep)));
 
     if matches.is_empty() {
         debug!("no matches found to delete");
@@ -422,7 +313,7 @@ fn delete_payment(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
     ) {
         Ok(index) => {
             if index == usize::MAX {
-                // ignore                   
+                // ignore
             } else {
                 vault.delete_payment(&cards[index].id);
                 println!("Deleted card named '{}'!", cards[index].name);
@@ -456,7 +347,7 @@ fn delete_note(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
     ) {
         Ok(index) => {
             if index == usize::MAX {
-                // ignore                   
+                // ignore
             } else {
                 vault.delete_note(&notes[index].id);
                 println!("Deleted note with title '{}'!", notes[index].title);
@@ -487,6 +378,10 @@ impl UnlockingAction for DeleteAction {
             }
             ItemType::Note => {
                 delete_note(vault)?;
+            }
+            ItemType::Totp => {
+                // TODO
+                // delete_totp(vault);
             }
         };
         Ok(())

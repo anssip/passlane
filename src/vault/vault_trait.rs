@@ -1,5 +1,5 @@
 use uuid::Uuid;
-use crate::vault::entities::{Credential, Note, PaymentCard};
+use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 
 pub trait PasswordVault {
     fn get_master_password(&self) -> String;
@@ -46,4 +46,12 @@ pub trait NoteVault {
     fn delete_note(&mut self, uuid: &Uuid) -> i8;
 }
 
-pub trait Vault: PasswordVault + PaymentVault + NoteVault {}
+pub trait TotpVault {
+    fn find_totp(&self, grep: &Option<String>) -> Vec<Totp>;
+
+    fn save_totp(&mut self, totp: &Totp) -> i8;
+
+    fn delete_totp(&mut self, uuid: &Uuid) -> i8;
+}
+
+pub trait Vault: PasswordVault + PaymentVault + NoteVault + TotpVault {}

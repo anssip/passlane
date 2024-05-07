@@ -1,5 +1,5 @@
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Error, Totp};
-use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, Vault};
+use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig, Group};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -38,6 +38,12 @@ impl From<keepass_ng::error::Error> for Error {
             message: e.to_string(),
         }
     }
+}
+
+fn node_has_totp(node: &NodePtr) -> bool {
+    let node = node.borrow();
+    let e = node.as_any().downcast_ref::<Entry>().unwrap();
+    e.get_otp().is_ok()
 }
 
 impl KeepassVault {
@@ -121,6 +127,22 @@ impl KeepassVault {
                 true
             }).collect()
     }
+    
+    fn load_totps(&self, grep: &Option<String>) -> Vec<Totp> {
+        NodeIterator::new(&self.get_root())
+            .filter(node_is_entry)
+            .filter(node_has_totp)
+            .map(Self::node_to_totp)
+            .filter(|totp| {
+                debug!("Checking totp: {}", totp);
+                if let Some(grep) = &grep {
+                    if !totp.label.contains(grep) && !totp.issuer.contains(grep) {
+                        return false;
+                    }
+                }
+                true
+            }).collect()
+    }
 
     fn load_payments(&self) -> Vec<PaymentCard> {
         let payments_group_uuid = self.find_group("Payments").unwrap();
@@ -148,6 +170,28 @@ impl KeepassVault {
             service: service.to_string(),
             username: username.to_string(),
             notes: None,
+        }
+    }
+
+    fn node_to_totp(node: NodePtr) -> Totp {
+        let totp = Self::get_node_totp_values(node);
+        match totp {
+            Err(e) => {
+                panic!("Failed to convert node to TOTP: {}", e.message);
+            }
+            Ok(totp) => {
+                let (url, label, issuer, secret, algorithm, period, digits, id) = totp;
+                Totp {
+                    id,
+                    url,
+                    label,
+                    issuer,
+                    secret,
+                    algorithm,
+                    period,
+                    digits,
+                }
+            }
         }
     }
 
@@ -218,6 +262,14 @@ impl KeepassVault {
         String::from(Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value))
     }
 
+    fn get_node_totp_values(node: NodePtr) -> Result<(String, String, String, String, String, u64, u32, Uuid), Error> {
+        let node = node.borrow();
+        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let otp = e.get_otp()?;
+        let url = e.get_raw_otp_value().unwrap();
+        Ok((String::from(url), otp.label.to_string(), String::from(&otp.issuer), otp.get_secret(), otp.algorithm.to_string(), otp.period, otp.digits, e.get_uuid()))
+    }
+
     fn get_groups(&self) -> Vec<NodePtr> {
         let root = self.get_root();
         group_get_children(&root).unwrap().iter()
@@ -255,7 +307,7 @@ impl KeepassVault {
             })
         })
     }
-    
+
     fn create_totp_entry(&mut self, parent_uuid: &Uuid, totp: &Totp) -> Result<Option<Uuid>, Error> {
         let totp_entry = TOTP {
             label: totp.label.clone(),
@@ -263,7 +315,7 @@ impl KeepassVault {
             issuer: totp.issuer.clone(),
             period: totp.period.into(),
             digits: totp.digits,
-            algorithm: TOTPAlgorithm::from_str(&totp.algorithm)?
+            algorithm: TOTPAlgorithm::from_str(&totp.algorithm)?,
         };
         Ok(self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
@@ -400,6 +452,23 @@ impl NoteVault for KeepassVault {
 
     fn delete_note(&mut self, id: &Uuid) -> i8 {
         self.do_delete(id, true)
+    }
+}
+
+impl TotpVault for KeepassVault {
+    fn find_totp(&self, grep: &Option<String>) -> Vec<Totp> {
+        self.load_totps(grep)
+    }
+
+    fn save_totp(&mut self, totp: &Totp) -> i8 {
+        let group = self.db.root.borrow().get_uuid();
+        self.create_totp_entry(&group, &totp).expect("Failed to save TOTP");
+        self.save_database();
+        1
+    }
+
+    fn delete_totp(&mut self, uuid: &Uuid) -> i8 {
+        todo!()
     }
 }
 
