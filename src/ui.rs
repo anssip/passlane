@@ -5,6 +5,7 @@ use std::io::Write;
 use std::cmp::min;
 use uuid::Uuid;
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -266,6 +267,56 @@ pub(crate) fn ask_note_info() -> Note {
     }
 }
 
+pub(crate) fn ask_totp_info() -> Totp {
+    let label = ask("Enter label, typically formatted like <issuer:username>:");
+
+    let issuer = ask("Enter issuer:");
+    let secret = ask("Enter secret:");
+
+    println!("Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?");
+    let proceed = ask("Press y (yes) to add with defaults, n (no) to specify details:");
+
+    if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no"{
+        let digits = ask_number("Enter number of digits:");
+        let period = ask_number("Enter period:");
+        let algorithm = ask_algorithm();
+
+        Totp {
+            id: Uuid::new_v4(),
+            url: format!("otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}", label, secret, &issuer, period, algorithm),
+            label: label.to_string(),
+            issuer,
+            secret,
+            digits: digits as u32,
+            algorithm,
+            period: period as u64,
+        }
+    } else {
+
+        Totp {
+            id: Uuid::new_v4(),
+            url: format!("otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1", label, secret, issuer),
+            label: label.to_string(),
+            issuer: String::from(&issuer),
+            secret,
+            digits: 6u32,
+            algorithm: String::from("SHA1"),
+            period: 30u64,
+        }
+    }
+}
+
+fn ask_algorithm() -> String {
+    let valid_algos = vec!["SHA1", "SHA256", "SHA512"];
+    let mut algo = ask("Enter algorithm (SHA1, SHA256, SHA512):");
+
+    while !valid_algos.contains(&algo.to_uppercase().as_str()) {
+        println!("Invalid algorithm");
+        algo = ask("Enter algorithm (SHA1, SHA256, SHA512):");
+    }
+    algo
+}
+
 pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
     let mut table = Table::new();
     let headers = if show_cleartext {
@@ -312,8 +363,8 @@ pub(crate) fn show_totp_table(totps: &[Totp]) {
             header_cell(String::from("Label")),
             header_cell(String::from("Issuer")),
         ]
-        .into_iter()
-        .collect::<Vec<Cell>>(),
+            .into_iter()
+            .collect::<Vec<Cell>>(),
     );
     for (index, totp) in totps.iter().enumerate() {
         table.add_row(vec![

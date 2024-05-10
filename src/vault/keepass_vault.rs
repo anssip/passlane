@@ -127,7 +127,7 @@ impl KeepassVault {
                 true
             }).collect()
     }
-    
+
     fn load_totps(&self, grep: &Option<String>) -> Vec<Totp> {
         NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
@@ -259,7 +259,7 @@ impl KeepassVault {
 
     fn extract_value_from_note(note: &str, line: usize, name: &str) -> String {
         let no_value = String::from(&format!("(no {name} on card)"));
-        String::from(Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value))
+        Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value)
     }
 
     fn get_node_totp_values(node: NodePtr) -> Result<(String, String, String, String, String, u64, u32, Uuid), Error> {
@@ -309,18 +309,10 @@ impl KeepassVault {
     }
 
     fn create_totp_entry(&mut self, parent_uuid: &Uuid, totp: &Totp) -> Result<Option<Uuid>, Error> {
-        let totp_entry = TOTP {
-            label: totp.label.clone(),
-            secret: totp.secret.clone().into(),
-            issuer: totp.issuer.clone(),
-            period: totp.period.into(),
-            digits: totp.digits,
-            algorithm: TOTPAlgorithm::from_str(&totp.algorithm)?,
-        };
         Ok(self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(&totp.label));
-                entry.set_otp(totp_entry.to_string().as_str());
+                entry.set_otp(&totp.url);
                 entry.get_uuid()
             })
         })?)

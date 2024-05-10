@@ -12,6 +12,7 @@ use clap::{arg, ArgAction, Command};
 use std::env;
 use actions::*;
 use crate::actions::show::ShowAction;
+use crate::actions::add::AddAction;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -27,6 +28,9 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -n --notes "Add a secure note."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Add a One Time Password."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -g --generate "Generate the password to be saved."

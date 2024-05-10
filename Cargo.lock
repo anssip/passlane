@@ -1519,6 +1519,7 @@ dependencies = [
  "keyring",
  "log",
  "magic-crypt",
+ "percent-encoding",
  "rand",
  "regex",
  "rpassword",
