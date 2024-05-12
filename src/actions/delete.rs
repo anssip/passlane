@@ -181,7 +181,7 @@ impl DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
             item_type: ItemType::new_from_args(matches),
-            is_totp: *matches.get_one::<bool>("otp").expect("defaulted to false by clap"),
+            is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
         }
     }
 }

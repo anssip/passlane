@@ -91,6 +91,9 @@ fn cli() -> Command {
         .subcommand(
             Command::new("unlock")
                 .about("Opens the vaults and grants access to the entries")
+                .arg(arg!(
+                    -o --otp "Opens the one time passwords vault"
+                ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("export")
@@ -120,9 +123,7 @@ fn main() {
         Some(("delete", sub_matches)) => VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
         Some(("csv", sub_matches)) => VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
         Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
-        // Unlock first asks for the master password, then  opens the keepass DB using this password 
-        // to verify that it's OK and finally saves it to the keychain
-        Some(("unlock", _)) => VaultAction::UnlockingAction(Box::new(UnlockAction {})),
+        Some(("unlock", sub_matches)) => VaultAction::Action(Box::new(UnlockAction::new(sub_matches))),
         Some(("export", sub_matches)) => VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {
             if env::args().len() == 1 {

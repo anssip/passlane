@@ -8,13 +8,12 @@ use clipboard::ClipboardProvider;
 use crate::{crypto, keychain};
 use crate::store;
 use crate::ui;
-use anyhow::{bail, Context};
 use clap::ArgMatches;
 use log::{debug, info};
 use std::io;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
-use anyhow::Result;
+use crate::vault::entities::Error;
 
 pub(crate) trait MatchHandlerTemplate where Self::ItemType: Clone {
     type ItemType;
@@ -43,7 +42,7 @@ pub(crate) fn handle_matches<H>(matches: Vec<H::ItemType>, handler: &mut Box<H>)
 }
 
 pub trait Action {
-    fn run(&self) -> anyhow::Result<()> {
+    fn run(&self) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -57,12 +56,12 @@ fn get_vault_properties() -> (String, String, Option<String>) {
     (master_pwd, filepath, keyfile_path)
 }
 
-fn unlock() -> Result<Box<dyn Vault>> {
+fn unlock() -> Result<Box<dyn Vault>, Error> {
     let (master_pwd, filepath, keyfile_path) = get_vault_properties();
     get_vault(&master_pwd, &filepath, keyfile_path)
 }
 
-fn unlock_totp_vault() -> Result<Box<dyn Vault>> {
+fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     let stored_password = keychain::get_totp_master_password();
     let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
     let filepath = store::get_totp_vault_path();
@@ -70,22 +69,16 @@ fn unlock_totp_vault() -> Result<Box<dyn Vault>> {
     get_vault(&master_pwd, &filepath, keyfile_path)
 }
 
-fn get_vault(password: &str, filepath: &str, keyfile_path: Option<String>) -> anyhow::Result<Box<dyn Vault>> {
+fn get_vault(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<Box<dyn Vault>, Error> {
     // we could return some other Vault implementation here
-    let vault = KeepassVault::new(password, filepath, keyfile_path);
-    match vault {
-        Ok(v) => Ok(Box::new(v)),
-        Err(e) => {
-            bail!("Incorrect password? {}", e.message);
-        }
-    }
+    let vault = KeepassVault::new(password, filepath, keyfile_path)?;
+    Ok(Box::new(vault))
 }
 
 
 pub trait UnlockingAction {
     fn execute(&self) {
         info!("Unlocking vault...");
-        // TODO: open both vaults at the same time and store the passwords in the keychain
         let result = if self.is_totp_vault() {
             unlock_totp_vault()
         } else {
@@ -103,7 +96,7 @@ pub trait UnlockingAction {
                 }
             }
             Err(e) => {
-                println!("Failed to unlock vault: {}", e);
+                println!("Failed to unlock vault: {}", e.message);
             }
         }
     }
@@ -115,7 +108,6 @@ pub trait UnlockingAction {
     fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         Ok(())
     }
-
 }
 
 pub fn copy_to_clipboard(value: &String) {
@@ -128,18 +120,18 @@ pub enum ItemType {
     Credential,
     Payment,
     Note,
-    Totp
+    Totp,
 }
 
 impl ItemType {
     pub fn new_from_args(matches: &ArgMatches) -> ItemType {
-        if *matches
+        if matches
             .get_one::<bool>("payments")
-            .expect("defaulted to false by clap") {
+            .map_or(false, |v| *v) {
             ItemType::Payment
-        } else if *matches.get_one("notes").expect("defaulted to false by clap") {
+        } else if matches.get_one("notes").map_or(false, |v| *v) {
             ItemType::Note
-        } else if *matches.get_one("otp").expect("defaulted to false by clap") {
+        } else if matches.get_one("otp").map_or(false, |v| *v) {
             ItemType::Totp
         } else {
             ItemType::Credential
@@ -224,7 +216,7 @@ impl UnlockingAction for ImportCsvAction {
 pub struct GeneratePasswordAction;
 
 impl Action for GeneratePasswordAction {
-    fn run(&self) -> anyhow::Result<()> {
+    fn run(&self) -> anyhow::Result<(), Error> {
         let password = crypto::generate();
         copy_to_clipboard(&password);
         println!("Password - also copied to clipboard: {}", password);
@@ -235,18 +227,34 @@ impl Action for GeneratePasswordAction {
 pub struct LockAction {}
 
 impl Action for LockAction {
-    fn run(&self) -> anyhow::Result<()> {
-        keychain::delete_master_password()?;
-        Ok(())
+    fn run(&self) -> Result<(), Error> {
+        keychain::delete_master_password()
     }
 }
 
-pub struct UnlockAction {}
+pub struct UnlockAction {
+    pub totp: bool,
+}
 
-impl UnlockingAction for UnlockAction {
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        keychain::save_master_password(&vault.get_master_password())?;
-        Ok(())
+impl UnlockAction {
+    pub fn new(matches: &ArgMatches) -> UnlockAction {
+        UnlockAction {
+            totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
+        }
+    }
+}
+
+impl Action for UnlockAction {
+    fn run(&self) -> Result<(), Error> {
+        if self.totp {
+            println!("Unlocking OTP...");
+            let vault = unlock_totp_vault()?;
+            keychain::save_totp_master_password(&vault.get_master_password())
+        } else {
+            println!("Unlocking vault...");
+            let vault = unlock()?;
+            keychain::save_master_password(&vault.get_master_password())
+        }
     }
 }
 
@@ -263,9 +271,9 @@ impl PrintHelpAction {
 }
 
 impl Action for PrintHelpAction {
-    fn run(&self) -> anyhow::Result<()> {
+    fn run(&self) -> Result<(), Error> {
         let mut out = io::stdout();
-        self.cli.clone().write_help(&mut out).context("Failed to display help!")?;
+        self.cli.clone().write_help(&mut out)?;
         Ok(())
     }
 }

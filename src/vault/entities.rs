@@ -21,11 +21,33 @@ pub struct Error {
     pub message: String,
 }
 
+impl Error {
+    pub fn new(message: &str) -> Self {
+        Error {
+            message: message.to_string(),
+        }
+    }
+}
+
 impl From<SystemTimeError> for Error {
     fn from(err: SystemTimeError) -> Self {
         Error {
             message: err.to_string(),
         }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.message)
     }
 }
 
