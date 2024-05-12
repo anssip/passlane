@@ -1,9 +1,12 @@
 # Passlane
 
-A password manager CLI using Keepass as the storage backend. In addition to passwords, It supports secure saving and managing of 
-**payment cards** and **secure notes**. Passlane uses the Keepass encrypted file format for storing the data.
+A password manager CLI using Keepass as the storage backend. In addition to passwords, it supports 
+**authenticator functionality** with Timed One Time Passwords (TOTP), secure saving and managing of 
+**payment cards** and **secure notes**. 
 
-Passlane CLI is written in Rust.
+Passlane uses the Keepass encrypted file format for storing the data.
+
+Passlane is written in Rust.
 
 ![Screenshot](https://i.imgur.com/TMB8DbS.webp)
 
@@ -15,6 +18,7 @@ Passlane CLI is written in Rust.
 - Generate and save passwords
 - Save and view payment card information
 - Save and view secure notes
+- Authenticator functionality with TOTP
 - Import passwords from CSV files
 - Export vault contents to CSV files
 
@@ -27,6 +31,7 @@ Passlane CLI is written in Rust.
   - [Using saved credentials](#using-saved-credentials)
   - [Payment cards](#payment-cards)
   - [Secure notes](#secure-notes)
+  - [Authenticator functionality](#authenticator-functionality)
   - [Migrating from 1Password, LastPass, Dashlane etc.](#migrating-from-1password-lastpass-dashlane-etc)
   - [Export to CSV](#export-to-csv)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
@@ -207,6 +212,10 @@ To show secure notes:
 ```
 passlane show -n
 ```
+
+### Authenticator functionality
+
+[//]: # (TODO)
 
 ### Migrating from 1Password, LastPass, Dashlane etc.
 

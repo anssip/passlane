@@ -85,6 +85,7 @@ fn get_vault(password: &str, filepath: &str, keyfile_path: Option<String>) -> an
 pub trait UnlockingAction {
     fn execute(&self) {
         info!("Unlocking vault...");
+        // TODO: open both vaults at the same time and store the passwords in the keychain
         let result = if self.is_totp_vault() {
             unlock_totp_vault()
         } else {
