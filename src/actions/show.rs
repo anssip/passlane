@@ -180,32 +180,6 @@ impl ShowAction {
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
         }
     }
-
-    fn show_credentials(&self, vault: &mut Box<dyn Vault>)  {
-        let grep = match &self.grep {
-            Some(grep) => Some(String::from(grep)),
-            None => panic!("-g <REGEXP> is required"),
-        };
-        let matches = vault.grep(&grep);
-        handle_matches(matches, &mut Box::new(ShowCredentialsTemplate { verbose: self.verbose }));
-    }
-
-    fn show_payments(&self, vault: &mut Box<dyn Vault>) {
-        debug!("showing payments");
-        let matches = vault.find_payments();
-        handle_matches(matches, &mut Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }));
-    }
-
-    fn show_notes(&self, vault: &mut Box<dyn Vault>) {
-        debug!("showing notes");
-        let matches = vault.find_notes();
-        handle_matches(matches, &mut Box::new(ShowNotesTemplate { verbose: self.verbose }));
-    }
-
-    fn show_totps(&self, vault: &mut Box<dyn Vault>) {
-        let totps = vault.find_totp(&self.grep);
-        handle_matches(totps, &mut Box::new(ShowTotpTemplate));
-    }
 }
 
 impl UnlockingAction for ShowAction {
@@ -215,10 +189,22 @@ impl UnlockingAction for ShowAction {
 
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
-            ItemType::Credential => self.show_credentials(vault),
-            ItemType::Payment => self.show_payments(vault),
-            ItemType::Note => self.show_notes(vault),
-            ItemType::Totp => self.show_totps(vault)
+            ItemType::Credential => {
+                let grep = match &self.grep {
+                    Some(grep) => grep.as_str(),
+                    None => return Err(anyhow::anyhow!("REGEXP is required for credentials")),
+                };
+                handle_matches(vault.grep(Some(grep)), &mut Box::new(ShowCredentialsTemplate { verbose: self.verbose }));
+            }
+            ItemType::Payment => {
+                handle_matches(vault.find_payments(), &mut Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }));
+            }
+            ItemType::Note => {
+                handle_matches(vault.find_notes(), &mut Box::new(ShowNotesTemplate { verbose: self.verbose }));
+            }
+            ItemType::Totp => {
+                handle_matches(vault.find_totp(None), &mut Box::new(ShowTotpTemplate));
+            }
         };
         Ok(())
     }

@@ -4,7 +4,7 @@ use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 pub trait PasswordVault {
     fn get_master_password(&self) -> String;
 
-    fn grep(&self, grep: &Option<String>) -> Vec<Credential>;
+    fn grep(&self, grep: Option<&str>) -> Vec<Credential>;
 
     fn save_credentials(
         &mut self,
@@ -47,7 +47,7 @@ pub trait NoteVault {
 }
 
 pub trait TotpVault {
-    fn find_totp(&self, grep: &Option<String>) -> Vec<Totp>;
+    fn find_totp(&self, grep: Option<&str>) -> Vec<Totp>;
 
     fn save_totp(&mut self, totp: &Totp) -> i8;
 

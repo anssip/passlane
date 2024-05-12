@@ -114,7 +114,7 @@ impl KeepassVault {
         Ok((db_file, key))
     }
 
-    fn load_credentials(&self, grep: &Option<String>) -> Vec<Credential> {
+    fn load_credentials(&self, grep: Option<&str>) -> Vec<Credential> {
         NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
             .map(Self::node_to_credential)
@@ -128,7 +128,7 @@ impl KeepassVault {
             }).collect()
     }
 
-    fn load_totps(&self, grep: &Option<String>) -> Vec<Totp> {
+    fn load_totps(&self, grep: Option<&str>) -> Vec<Totp> {
         NodeIterator::new(&self.get_root())
             // .map(|node| {debug!("Node: {:?}", node); node})
             .filter(node_is_entry)
@@ -374,7 +374,7 @@ impl PasswordVault for KeepassVault {
         self.password.clone()
     }
 
-    fn grep(&self, grep: &Option<String>) -> Vec<Credential> {
+    fn grep(&self, grep: Option<&str>) -> Vec<Credential> {
         self.load_credentials(grep)
     }
 
@@ -448,7 +448,7 @@ impl NoteVault for KeepassVault {
 }
 
 impl TotpVault for KeepassVault {
-    fn find_totp(&self, grep: &Option<String>) -> Vec<Totp> {
+    fn find_totp(&self, grep: Option<&str>) -> Vec<Totp> {
         self.load_totps(grep)
     }
 

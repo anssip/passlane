@@ -186,26 +186,6 @@ impl DeleteAction {
     }
 }
 
-fn delete_credentials(vault: &mut Box<dyn Vault>, grep: &str) {
-    let matches = vault.grep(&Some(String::from(grep)));
-    handle_matches(matches, &mut Box::new(DeleteCredentialsTemplate { vault, grep }));
-}
-
-fn delete_payment(vault: &mut Box<dyn Vault>) {
-    let cards = vault.find_payments();
-    handle_matches(cards, &mut Box::new(DeletePaymentTemplate { vault }));
-}
-
-fn delete_note(vault: &mut Box<dyn Vault>) {
-    let notes = vault.find_notes();
-    handle_matches(notes, &mut Box::new(DeleteNoteTemplate { vault }));
-}
-
-fn delete_totp(vault: &mut Box<dyn Vault>) {
-    let totps = vault.find_totp(&None);
-    handle_matches(totps, &mut Box::new(DeleteTotpTemplate { vault }));
-}
-
 impl UnlockingAction for DeleteAction {
     fn is_totp_vault(&self) -> bool {
         self.is_totp
@@ -214,20 +194,20 @@ impl UnlockingAction for DeleteAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.item_type {
             ItemType::Credential => {
-                let grep = match &self.grep {
-                    Some(grep) => grep,
-                    None => panic!("-g <REGEXP> is required"),
+                let grep = match &self.grep { 
+                    Some(grep) => grep.as_str(),
+                    None => return Err(anyhow::anyhow!("REGEXP is required for credentials")),
                 };
-                delete_credentials(vault, grep);
+                handle_matches(vault.grep(Some(grep)), &mut Box::new(DeleteCredentialsTemplate { vault, grep }));
             }
             ItemType::Payment => {
-                delete_payment(vault);
+                handle_matches(vault.find_payments(), &mut Box::new(DeletePaymentTemplate { vault }));
             }
             ItemType::Note => {
-                delete_note(vault);
+                handle_matches(vault.find_notes(), &mut Box::new(DeleteNoteTemplate { vault }));
             }
             ItemType::Totp => {
-                delete_totp(vault);
+                handle_matches(vault.find_totp(None), &mut Box::new(DeleteTotpTemplate { vault }));
             }
         };
         Ok(())

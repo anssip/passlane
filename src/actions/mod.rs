@@ -154,7 +154,7 @@ impl ExportAction {
     pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<i64> {
         debug!("exporting to csv");
         if self.item_type == ItemType::Credential {
-            let creds = vault.grep(&None);
+            let creds = vault.grep(None);
             if creds.is_empty() {
                 println!("No credentials found");
                 return Ok(0);
