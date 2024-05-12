@@ -43,6 +43,7 @@ impl From<keepass_ng::error::Error> for Error {
 fn node_has_totp(node: &NodePtr) -> bool {
     let node = node.borrow();
     let e = node.as_any().downcast_ref::<Entry>().unwrap();
+    debug!("Checking node for TOTP: {:?}", e.get_otp());
     e.get_otp().is_ok()
 }
 
@@ -130,11 +131,11 @@ impl KeepassVault {
 
     fn load_totps(&self, grep: &Option<String>) -> Vec<Totp> {
         NodeIterator::new(&self.get_root())
+            // .map(|node| {debug!("Node: {:?}", node); node})
             .filter(node_is_entry)
             .filter(node_has_totp)
             .map(Self::node_to_totp)
             .filter(|totp| {
-                debug!("Checking totp: {}", totp);
                 if let Some(grep) = &grep {
                     if !totp.label.contains(grep) && !totp.issuer.contains(grep) {
                         return false;
@@ -460,7 +461,7 @@ impl TotpVault for KeepassVault {
     }
 
     fn delete_totp(&mut self, uuid: &Uuid) -> i8 {
-        todo!()
+        self.do_delete(uuid, true)
     }
 }
 

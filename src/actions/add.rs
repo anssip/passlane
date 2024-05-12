@@ -67,11 +67,14 @@ impl AddAction {
     }
     fn add_payment(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
+        println!("Saving...");
         vault.save_payment(payment);
+        println!("Payment saved.");
         Ok(())
     }
     fn add_note(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         let note = ui::ask_note_info();
+        println!("Saving...");
         vault.save_note(&note);
         println!("Note saved.");
         Ok(())

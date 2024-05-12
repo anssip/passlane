@@ -283,7 +283,7 @@ pub(crate) fn ask_totp_info() -> Totp {
 
         Totp {
             id: Uuid::new_v4(),
-            url: format!("otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}", label, secret, &issuer, period, algorithm),
+            url: format!("otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}", label, secret, &issuer, period, algorithm, digits),
             label: label.to_string(),
             issuer,
             secret,
@@ -295,13 +295,13 @@ pub(crate) fn ask_totp_info() -> Totp {
 
         Totp {
             id: Uuid::new_v4(),
-            url: format!("otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1", label, secret, issuer),
+            url: format!("otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1&digits=6", label, secret, issuer),
             label: label.to_string(),
             issuer: String::from(&issuer),
             secret,
-            digits: 6u32,
+            digits: 6,
             algorithm: String::from("SHA1"),
-            period: 30u64,
+            period: 30,
         }
     }
 }

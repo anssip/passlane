@@ -1,35 +1,9 @@
 use clap::ArgMatches;
 use log::debug;
-use crate::actions::{Action, copy_to_clipboard, ItemType, UnlockingAction};
+use crate::actions::{Action, copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
 use crate::ui;
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
-
-trait MatchHandlerTemplate where Self::ItemType: Clone {
-    type ItemType;
-
-    fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>);
-    fn handle_one_match(&self, the_match: Self::ItemType);
-    fn handle_many_matches(&self, matches: Vec<Self::ItemType>);
-}
-
-fn handle_matches<H>(matches: Vec<H::ItemType>, handler: Box<H>)
-    where
-        H: MatchHandlerTemplate,
-        H::ItemType: Clone,
-{
-    if matches.is_empty() {
-        println!("No matches found");
-    } else {
-        handler.pre_handle_matches(&matches.clone());
-
-        if matches.len() == 1 {
-            handler.handle_one_match(matches[0].clone());
-        } else {
-            handler.handle_many_matches(matches);
-        }
-    }
-}
 
 struct ShowCredentialsTemplate {
     verbose: bool,
@@ -42,13 +16,13 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         println!("Found {} credentials:", matches.len());
     }
 
-    fn handle_one_match(&self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) {
         ui::show_credentials_table(&vec![the_match.clone()], self.verbose);
         copy_to_clipboard(&the_match.password);
         println!("Password copied to clipboard!", );
     }
 
-    fn handle_many_matches(&self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
         ui::show_credentials_table(&matches, self.verbose);
 
         match ui::ask_index(
@@ -77,13 +51,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         println!("Found {} payment cards:", matches.len());
     }
 
-    fn handle_one_match(&self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) {
         ui::show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
         copy_to_clipboard(&the_match.number);
         println!("Card number copied to clipboard!", );
     }
 
-    fn handle_many_matches(&self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
         ui::show_payment_cards_table(&matches, self.show_cleartext);
 
         match ui::ask_index(
@@ -113,7 +87,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         println!("Found {} notes:", matches.len());
     }
 
-    fn handle_one_match(&self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) {
         ui::show_notes_table(&vec![the_match.clone()], self.verbose);
         let response = ui::ask("Do you want to see the full note? (y/n)");
         if response == "y" {
@@ -121,7 +95,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         }
     }
 
-    fn handle_many_matches(&self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
         ui::show_notes_table(&matches, self.verbose);
 
         match ui::ask_index(
@@ -147,7 +121,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         println!("Found {} matching OTP authorizers:", matches.len());
     }
 
-    fn handle_one_match(&self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) {
         debug!("found totp: {}", the_match);
 
         let code = the_match.get_code();
@@ -162,7 +136,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         }
     }
 
-    fn handle_many_matches(&self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
         ui::show_totp_table(&matches);
         
         match ui::ask_index(
@@ -213,24 +187,24 @@ impl ShowAction {
             None => panic!("-g <REGEXP> is required"),
         };
         let matches = vault.grep(&grep);
-        handle_matches(matches, Box::new(ShowCredentialsTemplate { verbose: self.verbose }));
+        handle_matches(matches, &mut Box::new(ShowCredentialsTemplate { verbose: self.verbose }));
     }
 
     fn show_payments(&self, vault: &mut Box<dyn Vault>) {
         debug!("showing payments");
         let matches = vault.find_payments();
-        handle_matches(matches, Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }));
+        handle_matches(matches, &mut Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }));
     }
 
     fn show_notes(&self, vault: &mut Box<dyn Vault>) {
         debug!("showing notes");
         let matches = vault.find_notes();
-        handle_matches(matches, Box::new(ShowNotesTemplate { verbose: self.verbose }));
+        handle_matches(matches, &mut Box::new(ShowNotesTemplate { verbose: self.verbose }));
     }
 
     fn show_totps(&self, vault: &mut Box<dyn Vault>) {
         let totps = vault.find_totp(&self.grep);
-        handle_matches(totps, Box::new(ShowTotpTemplate));
+        handle_matches(totps, &mut Box::new(ShowTotpTemplate));
     }
 }
 

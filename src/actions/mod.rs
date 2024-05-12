@@ -1,5 +1,6 @@
 pub mod show;
 pub mod add;
+pub mod delete;
 
 use clap::Command;
 use clipboard::ClipboardContext;
@@ -15,6 +16,32 @@ use crate::vault::entities::{Credential};
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use anyhow::Result;
+
+pub(crate) trait MatchHandlerTemplate where Self::ItemType: Clone {
+    type ItemType;
+
+    fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>);
+    fn handle_one_match(&mut self, the_match: Self::ItemType);
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>);
+}
+
+pub(crate) fn handle_matches<H>(matches: Vec<H::ItemType>, handler: &mut Box<H>)
+    where
+        H: MatchHandlerTemplate,
+        H::ItemType: Clone,
+{
+    if matches.is_empty() {
+        println!("No matches found");
+    } else {
+        handler.pre_handle_matches(&matches.clone());
+
+        if matches.len() == 1 {
+            handler.handle_one_match(matches[0].clone());
+        } else {
+            handler.handle_many_matches(matches);
+        }
+    }
+}
 
 pub trait Action {
     fn run(&self) -> anyhow::Result<()> {
@@ -144,7 +171,6 @@ impl ExportAction {
     }
 }
 
-
 impl Action for ExportAction {}
 
 impl UnlockingAction for ExportAction {
@@ -153,150 +179,6 @@ impl UnlockingAction for ExportAction {
             Err(message) => println!("Failed to export: {}", message),
             Ok(count) => println!("Exported {} entries", count),
         }
-        Ok(())
-    }
-}
-
-pub struct DeleteAction {
-    pub grep: Option<String>,
-    pub item_type: ItemType,
-}
-
-impl DeleteAction {
-    pub fn new(matches: &ArgMatches) -> DeleteAction {
-        DeleteAction {
-            grep: matches.get_one::<String>("REGEXP").cloned(),
-            item_type: ItemType::new_from_args(matches),
-        }
-    }
-}
-
-fn delete_credentials(vault: &mut Box<dyn Vault>, grep: &str) -> anyhow::Result<()> {
-    let matches = vault.grep(&Some(String::from(grep)));
-
-    if matches.is_empty() {
-        debug!("no matches found to delete");
-        return Ok(());
-    }
-    if matches.len() == 1 {
-        vault.delete_credentials(&matches.get(0).unwrap().uuid);
-        println!("Deleted credential for service '{}'", matches[0].service);
-    }
-    if matches.len() > 1 {
-        ui::show_credentials_table(&matches, false);
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
-            matches.len() as i16 - 1,
-        ) {
-            Ok(index) => {
-                if index == usize::MAX {
-                    vault.delete_matching(grep);
-                    println!("Deleted all {} matches!", matches.len());
-                } else {
-                    vault.delete_credentials(&matches[index].uuid);
-                    println!("Deleted credentials of row {}!", index);
-                }
-            }
-            Err(message) => {
-                println!("{}", message);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn delete_payment(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-    let cards = vault.find_payments();
-    if cards.is_empty() {
-        println!("No payment cards found");
-        return Ok(());
-    }
-    ui::show_payment_cards_table(&cards, false);
-    if cards.len() == 1 {
-        let response = ui::ask("Do you want to delete this card? (y/n)");
-        if response == "y" {
-            vault.delete_payment(&cards[0].id);
-            println!("Deleted card named '{}'!", cards[0].name);
-        }
-        return Ok(());
-    }
-    match ui::ask_index(
-        "To delete, please enter a row number from the table above, or press q to abort:",
-        cards.len() as i16 - 1,
-    ) {
-        Ok(index) => {
-            if index == usize::MAX {
-                // ignore
-            } else {
-                vault.delete_payment(&cards[index].id);
-                println!("Deleted card named '{}'!", cards[index].name);
-            }
-        }
-        Err(message) => {
-            println!("{}", message);
-        }
-    }
-    Ok(())
-}
-
-fn delete_note(vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-    let notes = vault.find_notes();
-    if notes.len() == 0 {
-        println!("No notes found");
-        return Ok(());
-    }
-    ui::show_notes_table(&notes, false);
-    if notes.len() == 1 {
-        let response = ui::ask("Do you want to delete this note? (y/n)");
-        if response == "y" {
-            vault.delete_note(&notes[0].id);
-            println!("Deleted note with title '{}'!", notes[0].title);
-        }
-        return Ok(());
-    }
-    match ui::ask_index(
-        "To delete, please enter a row number from the table above, or press q to abort:",
-        notes.len() as i16 - 1,
-    ) {
-        Ok(index) => {
-            if index == usize::MAX {
-                // ignore
-            } else {
-                vault.delete_note(&notes[index].id);
-                println!("Deleted note with title '{}'!", notes[index].title);
-            }
-        }
-        Err(message) => {
-            println!("{}", message);
-        }
-    }
-    Ok(())
-}
-
-
-impl Action for DeleteAction {}
-
-impl UnlockingAction for DeleteAction {
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        match self.item_type {
-            ItemType::Credential => {
-                let grep = match &self.grep {
-                    Some(grep) => grep,
-                    None => panic!("-g <REGEXP> is required"),
-                };
-                delete_credentials(vault, grep)?;
-            }
-            ItemType::Payment => {
-                delete_payment(vault)?;
-            }
-            ItemType::Note => {
-                delete_note(vault)?;
-            }
-            ItemType::Totp => {
-                // TODO
-                // delete_totp(vault);
-            }
-        };
         Ok(())
     }
 }

@@ -13,6 +13,7 @@ use std::env;
 use actions::*;
 use crate::actions::show::ShowAction;
 use crate::actions::add::AddAction;
+use crate::actions::delete::DeleteAction;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -30,7 +31,7 @@ fn cli() -> Command {
                     -n --notes "Add a secure note."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
-                    -o --otp "Add a One Time Password."
+                    -o --otp "Add a One Time Password authorizer."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -g --generate "Generate the password to be saved."
@@ -55,6 +56,9 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -n --notes "Delete secure notes."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Delete One Time Password authorizer."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete.").group("search").required(false))
                 .arg_required_else_help(true)
@@ -111,11 +115,13 @@ fn main() {
     }
 
     let action = match matches.subcommand() {
+        // TODO: AddAction should unlock the vault only after the info has been collected from the user
         Some(("add", sub_matches)) => VaultAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
         Some(("show", sub_matches)) => VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
         Some(("delete", sub_matches)) => VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
         Some(("csv", sub_matches)) => VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
         Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
+        // TODO: does unlock need to unlock the VAULT?
         Some(("unlock", _)) => VaultAction::UnlockingAction(Box::new(UnlockAction {})),
         Some(("export", sub_matches)) => VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {
