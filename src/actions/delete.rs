@@ -1,5 +1,5 @@
 use clap::ArgMatches;
-use crate::actions::{Action, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
+use crate::actions::{handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
 use crate::ui;
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
@@ -205,8 +205,6 @@ fn delete_totp(vault: &mut Box<dyn Vault>) {
     let totps = vault.find_totp(&None);
     handle_matches(totps, &mut Box::new(DeleteTotpTemplate { vault }));
 }
-
-impl Action for DeleteAction {}
 
 impl UnlockingAction for DeleteAction {
     fn is_totp_vault(&self) -> bool {

@@ -12,7 +12,6 @@ use anyhow::{bail, Context};
 use clap::ArgMatches;
 use log::{debug, info};
 use std::io;
-use crate::vault::entities::{Credential};
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use anyhow::Result;
@@ -49,13 +48,47 @@ pub trait Action {
     }
 }
 
-pub trait UnlockingAction: Action {
+
+fn get_vault_properties() -> (String, String, Option<String>) {
+    let stored_password = keychain::get_master_password();
+    let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_master_password(None));
+    let filepath = store::get_vault_path();
+    let keyfile_path = store::get_keyfile_path();
+    (master_pwd, filepath, keyfile_path)
+}
+
+fn unlock() -> Result<Box<dyn Vault>> {
+    let (master_pwd, filepath, keyfile_path) = get_vault_properties();
+    get_vault(&master_pwd, &filepath, keyfile_path)
+}
+
+fn unlock_totp_vault() -> Result<Box<dyn Vault>> {
+    let stored_password = keychain::get_totp_master_password();
+    let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
+    let filepath = store::get_totp_vault_path();
+    let keyfile_path = store::get_totp_keyfile_path();
+    get_vault(&master_pwd, &filepath, keyfile_path)
+}
+
+fn get_vault(password: &str, filepath: &str, keyfile_path: Option<String>) -> anyhow::Result<Box<dyn Vault>> {
+    // we could return some other Vault implementation here
+    let vault = KeepassVault::new(password, filepath, keyfile_path);
+    match vault {
+        Ok(v) => Ok(Box::new(v)),
+        Err(e) => {
+            bail!("Incorrect password? {}", e.message);
+        }
+    }
+}
+
+
+pub trait UnlockingAction {
     fn execute(&self) {
         info!("Unlocking vault...");
         let result = if self.is_totp_vault() {
-            self.unlock_totp_vault()
+            unlock_totp_vault()
         } else {
-            self.unlock()
+            unlock()
         };
         match result {
             Ok(mut vault) => {
@@ -82,31 +115,6 @@ pub trait UnlockingAction: Action {
         Ok(())
     }
 
-    fn get_vault(&self, password: &str, filepath: &str, keyfile_path: Option<String>) -> anyhow::Result<Box<dyn Vault>> {
-        // we could return some other Vault implementation here
-        let vault = KeepassVault::new(password, filepath, keyfile_path);
-        match vault {
-            Ok(v) => Ok(Box::new(v)),
-            Err(e) => {
-                bail!("Incorrect password? {}", e.message);
-            }
-        }
-    }
-    fn unlock(&self) -> Result<Box<dyn Vault>> {
-        let stored_password = keychain::get_master_password();
-        let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_master_password(None));
-        let filepath = store::get_vault_path();
-        let keyfile_path = store::get_keyfile_path();
-        self.get_vault(&master_pwd, &filepath, keyfile_path)
-    }
-
-    fn unlock_totp_vault(&self) -> Result<Box<dyn Vault>> {
-        let stored_password = keychain::get_totp_master_password();
-        let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
-        let filepath = store::get_totp_vault_path();
-        let keyfile_path = store::get_totp_keyfile_path();
-        self.get_vault(&master_pwd, &filepath, keyfile_path)
-    }
 }
 
 pub fn copy_to_clipboard(value: &String) {
@@ -171,8 +179,6 @@ impl ExportAction {
     }
 }
 
-impl Action for ExportAction {}
-
 impl UnlockingAction for ExportAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match self.export_csv(vault) {
@@ -204,9 +210,6 @@ fn push_from_csv(vault: &mut Box<dyn Vault>, file_path: &str) -> anyhow::Result<
     Ok(num_imported.try_into().unwrap())
 }
 
-
-impl Action for ImportCsvAction {}
-
 impl UnlockingAction for ImportCsvAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
         match push_from_csv(vault, &self.file_path) {
@@ -217,7 +220,7 @@ impl UnlockingAction for ImportCsvAction {
     }
 }
 
-pub struct GeneratePasswordAction {}
+pub struct GeneratePasswordAction;
 
 impl Action for GeneratePasswordAction {
     fn run(&self) -> anyhow::Result<()> {
@@ -238,8 +241,6 @@ impl Action for LockAction {
 }
 
 pub struct UnlockAction {}
-
-impl Action for UnlockAction {}
 
 impl UnlockingAction for UnlockAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {

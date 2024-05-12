@@ -1,9 +1,8 @@
 use anyhow::{bail, Context};
 use clap::ArgMatches;
 use clipboard::{ClipboardContext, ClipboardProvider};
-use crate::actions::{Action, copy_to_clipboard, ItemType, UnlockingAction};
+use crate::actions::{Action, copy_to_clipboard, ItemType, unlock, unlock_totp_vault};
 use crate::{crypto, ui};
-use crate::vault::entities::Credential;
 use crate::vault::vault_trait::Vault;
 
 pub struct AddAction {
@@ -45,63 +44,65 @@ impl AddAction {
             Ok(ui::ask_password("Enter password to save: "))
         }
     }
-    fn save(&self, creds: &Credential, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        vault.save_one_credential(creds.clone());
-        println!("Saved.");
-        Ok(())
+    fn get_vault(&self) -> anyhow::Result<Box<dyn Vault>> {
+        if self.is_totp {
+            unlock_totp_vault()
+        } else {
+            unlock()
+        }
     }
-    fn add_credential(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<(), anyhow::Error> {
+    fn add_credential(&self) -> anyhow::Result<(), anyhow::Error> {
         let password = self.get_password().context(format!(
             "Failed to get password {}",
             if self.clipboard { "from clipboard" } else { "" }
         ))?;
 
         let creds = ui::ask_credentials(&password);
-        self.save(&creds, vault)
-            .context("failed to save")?;
+        let mut vault = self.get_vault().context("Failed to unlock vault")?;
+        vault.save_one_credential(creds.clone());
         if !self.clipboard {
             copy_to_clipboard(&password);
             println!("Password - also copied to clipboard: {}", password);
         };
         Ok(())
     }
-    fn add_payment(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
+    fn add_payment(&self) -> anyhow::Result<()> {
         let payment = ui::ask_payment_info();
         println!("Saving...");
+        let mut vault = self.get_vault().context("Failed to unlock vault")?;
         vault.save_payment(payment);
         println!("Payment saved.");
         Ok(())
     }
-    fn add_note(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
+    fn add_note(&self) -> anyhow::Result<()> {
         let note = ui::ask_note_info();
         println!("Saving...");
+        let mut vault = self.get_vault().context("Failed to unlock vault")?;
         vault.save_note(&note);
         println!("Note saved.");
         Ok(())
     }
-    fn add_totp(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
+    fn add_totp(&self) -> anyhow::Result<()> {
         let totp = ui::ask_totp_info();
         println!("Saving...");
+        let mut vault = self.get_vault().context("Failed to unlock vault")?;
         vault.save_totp(&totp);
         println!("TOTP saved.");
         Ok(())
     }
+
+    fn add(&self) -> anyhow::Result<()> {
+        match self.item_type {
+            ItemType::Credential => self.add_credential(),
+            ItemType::Payment => self.add_payment(),
+            ItemType::Note => self.add_note(),
+            ItemType::Totp => self.add_totp(),
+        }
+    }
 }
 
-impl Action for AddAction {}
-
-impl UnlockingAction for AddAction {
-    fn is_totp_vault(&self) -> bool {
-        self.is_totp
-    }
-
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
-        match self.item_type {
-            ItemType::Credential => self.add_credential(vault)?,
-            ItemType::Payment => self.add_payment(vault)?,
-            ItemType::Note => self.add_note(vault)?,
-            ItemType::Totp => self.add_totp(vault)?
-        };
-        Ok(())
+impl Action for AddAction {
+    fn run(&self) -> anyhow::Result<()> {
+        self.add().context("Failed to add item")
     }
 }

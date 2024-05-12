@@ -5,7 +5,6 @@ use std::io::Write;
 use std::cmp::min;
 use uuid::Uuid;
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);

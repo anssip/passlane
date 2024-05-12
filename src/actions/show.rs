@@ -1,6 +1,6 @@
 use clap::ArgMatches;
 use log::debug;
-use crate::actions::{Action, copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
+use crate::actions::{copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
 use crate::ui;
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
@@ -138,7 +138,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
     fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
         ui::show_totp_table(&matches);
-        
+
         match ui::ask_index(
             "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit:",
             matches.len() as i16 - 1,
@@ -207,8 +207,6 @@ impl ShowAction {
         handle_matches(totps, &mut Box::new(ShowTotpTemplate));
     }
 }
-
-impl Action for ShowAction {}
 
 impl UnlockingAction for ShowAction {
     fn is_totp_vault(&self) -> bool {

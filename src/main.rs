@@ -115,13 +115,13 @@ fn main() {
     }
 
     let action = match matches.subcommand() {
-        // TODO: AddAction should unlock the vault only after the info has been collected from the user
-        Some(("add", sub_matches)) => VaultAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
+        Some(("add", sub_matches)) => VaultAction::Action(Box::new(AddAction::new(sub_matches))),
         Some(("show", sub_matches)) => VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
         Some(("delete", sub_matches)) => VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
         Some(("csv", sub_matches)) => VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
         Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
-        // TODO: does unlock need to unlock the VAULT?
+        // Unlock first asks for the master password, then  opens the keepass DB using this password 
+        // to verify that it's OK and finally saves it to the keychain
         Some(("unlock", _)) => VaultAction::UnlockingAction(Box::new(UnlockAction {})),
         Some(("export", sub_matches)) => VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {

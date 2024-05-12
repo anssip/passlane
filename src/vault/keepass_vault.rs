@@ -4,7 +4,6 @@ use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpen
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use keepass_ng::db::{TOTP, TOTPAlgorithm};
 use keepass_ng::error::TOTPError;
 use log::{debug, error};
 use uuid::Uuid;
@@ -310,7 +309,7 @@ impl KeepassVault {
     }
 
     fn create_totp_entry(&mut self, parent_uuid: &Uuid, totp: &Totp) -> Result<Option<Uuid>, Error> {
-        Ok(self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
+        Ok(self.db.create_new_entry(*parent_uuid, 0).map(|node| {
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(&totp.label));
                 entry.set_otp(&totp.url);
