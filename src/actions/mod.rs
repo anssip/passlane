@@ -58,6 +58,7 @@ fn get_vault_properties() -> (String, String, Option<String>) {
 
 fn unlock() -> Result<Box<dyn Vault>, Error> {
     let (master_pwd, filepath, keyfile_path) = get_vault_properties();
+    println!("Unlocking vault...");
     get_vault(&master_pwd, &filepath, keyfile_path)
 }
 
@@ -66,6 +67,7 @@ fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
     let filepath = store::get_totp_vault_path();
     let keyfile_path = store::get_totp_keyfile_path();
+    println!("Unlocking TOTP vault...");
     get_vault(&master_pwd, &filepath, keyfile_path)
 }
 
@@ -228,7 +230,23 @@ pub struct LockAction {}
 
 impl Action for LockAction {
     fn run(&self) -> Result<(), Error> {
-        keychain::delete_master_password()
+        match keychain::delete_master_password() {
+            Ok(_) => {
+                println!("Vault locked");
+            }
+            Err(e) => {
+                println!("Vault was already locked");
+            }
+        }
+        match keychain::delete_totp_master_password() {
+            Ok(_) => {
+                println!("TOTP vault locked");
+            }
+            Err(e) => {
+                println!("TOTP vault was already locked");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -247,11 +265,9 @@ impl UnlockAction {
 impl Action for UnlockAction {
     fn run(&self) -> Result<(), Error> {
         if self.totp {
-            println!("Unlocking OTP...");
             let vault = unlock_totp_vault()?;
             keychain::save_totp_master_password(&vault.get_master_password())
         } else {
-            println!("Unlocking vault...");
             let vault = unlock()?;
             keychain::save_master_password(&vault.get_master_password())
         }

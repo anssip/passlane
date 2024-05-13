@@ -38,3 +38,8 @@ pub(crate) fn get_totp_master_password() -> Result<String, Error> {
     let entry = Entry::new(SERVICE_NAME_TOTP, USERNAME)?;
     Ok(entry.get_password()?)
 }
+
+pub(crate) fn delete_totp_master_password() -> Result<(), Error>{
+    let entry = Entry::new(SERVICE_NAME_TOTP, USERNAME)?;
+    Ok(entry.delete_password()?)
+}
