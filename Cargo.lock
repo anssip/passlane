@@ -1155,7 +1155,9 @@ dependencies = [
 
 [[package]]
 name = "keepass-ng"
-version = "0.0.1"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6889abb5851a86a74b9391a19c64485d455d82fe1cf5706563fd452673c1d368"
 dependencies = [
  "aes 0.8.4",
  "as-any",
