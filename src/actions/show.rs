@@ -259,7 +259,7 @@ impl UnlockingAction for ShowAction {
                 handle_matches(vault.find_notes(), &mut Box::new(ShowNotesTemplate { verbose: self.verbose }))?;
             }
             ItemType::Totp => {
-                handle_matches(vault.find_totp(None), &mut Box::new(ShowTotpTemplate))?;
+                handle_matches(vault.find_totp(self.grep.as_deref()), &mut Box::new(ShowTotpTemplate))?;
             }
         }
         Ok("bye".to_string())

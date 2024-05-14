@@ -128,7 +128,7 @@ impl KeepassVault {
             .map(Self::node_to_credential)
             .filter(|cred| {
                 if let Some(grep) = &grep {
-                    if !cred.username.contains(grep) && !cred.service.contains(grep) {
+                    if !cred.username.to_lowercase().contains(&grep.to_lowercase()) && !cred.service.to_lowercase().contains(&grep.to_lowercase()) {
                         return false;
                     }
                 }
@@ -144,7 +144,7 @@ impl KeepassVault {
             .map(Self::node_to_totp)
             .filter(|totp| {
                 if let Some(grep) = &grep {
-                    if !totp.label.contains(grep) && !totp.issuer.contains(grep) {
+                    if !totp.label.to_lowercase().contains(&grep.to_lowercase()) && !totp.issuer.to_lowercase().contains(&grep.to_lowercase()) {
                         return false;
                     }
                 }

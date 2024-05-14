@@ -111,7 +111,7 @@ fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> Str
     let default_path = dir_path().join(default_filename).to_str().unwrap().to_string();
     let path = dir_path().join(path_config_filename);
     if path.exists() {
-        return read_from_file(&path).unwrap_or(default_path);
+        return read_from_file(&path).unwrap_or(default_path).trim().to_string();
     }
     default_path
 }
