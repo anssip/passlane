@@ -7,7 +7,15 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::vault::entities::{Credential, Note, PaymentCard};
+use crate::vault::entities::{Credential, Error, Note, PaymentCard};
+
+impl From<csv::Error> for Error {
+    fn from(e: csv::Error) -> Self {
+        Error {
+            message: e.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CSVInputCredentials {
@@ -116,7 +124,7 @@ pub(crate) fn get_totp_vault_path() -> String {
     resolve_vault_path("totp.kdbx", ".totp_vault_path")
 }
 
-pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> anyhow::Result<i64> {
+pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
         wtr.serialize(CSVInputCredentials {
@@ -129,7 +137,7 @@ pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>)
     Ok(creds.len() as i64)
 }
 
-pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> anyhow::Result<i64> {
+pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for card in cards {
         wtr.serialize(CSVPaymentCard {
@@ -152,7 +160,7 @@ pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCar
     Ok(cards.len() as i64)
 }
 
-pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> anyhow::Result<i64> {
+pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for note in notes {
         wtr.serialize(CSVSecureNote {

@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use crate::actions::{handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
 use crate::ui;
-use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
+use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
 
 struct DeleteCredentialsTemplate<'a> {
@@ -16,12 +16,11 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
         println!("Found {} credentials...", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) {
-        self.vault.delete_credentials(&the_match.uuid);
-        println!("Deleted credential for service '{}'", the_match.service);
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
+        self.vault.delete_credentials(&the_match.uuid)
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
         ui::show_credentials_table(&matches, false);
         match ui::ask_index(
             "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
@@ -29,16 +28,16 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
         ) {
             Ok(index) => {
                 if index == usize::MAX {
-                    self.vault.delete_matching(self.grep);
-                    println!("Deleted all {} matches!", matches.len());
+                    self.vault.delete_matching(self.grep)?;
+                    Ok(())
                 } else {
                     println!("Deleting credential for service '{}'...", matches[index].service);
-                    self.vault.delete_credentials(&matches[index].uuid);
-                    println!("Deleted!");
+                    self.vault.delete_credentials(&matches[index].uuid)?;
+                    Ok(())
                 }
             }
             Err(message) => {
-                println!("{}", message);
+                Err(Error { message })
             }
         }
     }
@@ -55,16 +54,16 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
         println!("Found {} payment cards...", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
         let response = ui::ask("Do you want to delete this card? (y/n)");
         if response == "y" {
             println!("Deleting payment card '{}'...", the_match.name);
-            self.vault.delete_payment(&the_match.id);
-            println!("Deleted!");
+            self.vault.delete_payment(&the_match.id)?;
         }
+        Ok(())
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
         ui::show_payment_cards_table(&matches, false);
         match ui::ask_index(
             "To delete, please enter a row number from the table above, or press q to abort:",
@@ -73,14 +72,15 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
             Ok(index) => {
                 if index == usize::MAX {
                     // ignore
+                    Ok(())
                 } else {
                     println!("Deleting payment card '{}'...", matches[index].name);
-                    self.vault.delete_payment(&matches[index].id);
-                    println!("Deleted!");
+                    self.vault.delete_payment(&matches[index].id)?;
+                    Ok(())
                 }
             }
             Err(message) => {
-                println!("{}", message);
+                Err(Error { message })
             }
         }
     }
@@ -98,16 +98,16 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
         ui::show_notes_table(matches, false);
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
         let response = ui::ask("Do you want to delete this note? (y/n)");
         if response == "y" {
             println!("Deleting note with title '{}'...", the_match.title);
-            self.vault.delete_note(&the_match.id);
-            println!("Deleted!");
+            self.vault.delete_note(&the_match.id)?;
         }
+        Ok(())
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
         match ui::ask_index(
             "To delete, please enter a row number from the table above, or press q to abort:",
             matches.len() as i16 - 1,
@@ -115,14 +115,15 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
             Ok(index) => {
                 if index == usize::MAX {
                     // ignore
+                    Ok(())
                 } else {
                     println!("Deleting note with title '{}'...", matches[index].title);
-                    self.vault.delete_note(&matches[index].id);
-                    println!("Deleted!");
+                    self.vault.delete_note(&matches[index].id)?;
+                    Ok(())
                 }
             }
             Err(message) => {
-                println!("{}", message);
+                Err(Error { message })
             }
         }
     }
@@ -140,16 +141,16 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
         ui::show_totp_table(matches);
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
         let response = ui::ask("Do you want to delete this TOTP entry? (y/n)");
         if response == "y" {
             println!("Deleting TOTP entry '{}'...", the_match.label);
-            self.vault.delete_totp(&the_match.id);
-            println!("Deleted!");
+            self.vault.delete_totp(&the_match.id)?;
         }
+        Ok(())
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
         match ui::ask_index(
             "To delete, please enter a row number from the table above, or press q to abort:",
             matches.len() as i16 - 1,
@@ -159,12 +160,12 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
                     // ignore
                 } else {
                     println!("Deleting TOTP entry labeled '{}'...", matches[index].label);
-                    self.vault.delete_totp(&matches[index].id);
-                    println!("Deleted!");
+                    self.vault.delete_totp(&matches[index].id)?;
                 }
+                Ok(())
             }
             Err(message) => {
-                println!("{}", message);
+                Err(Error { message })
             }
         }
     }
@@ -191,25 +192,25 @@ impl UnlockingAction for DeleteAction {
         self.is_totp
     }
 
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> anyhow::Result<()> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<String, Error> {
         match self.item_type {
             ItemType::Credential => {
-                let grep = match &self.grep { 
+                let grep = match &self.grep {
                     Some(grep) => grep.as_str(),
-                    None => return Err(anyhow::anyhow!("REGEXP is required for credentials")),
+                    None => return Err(Error { message: "No search term provided".to_string() }),
                 };
-                handle_matches(vault.grep(Some(grep)), &mut Box::new(DeleteCredentialsTemplate { vault, grep }));
+                handle_matches(vault.grep(Some(grep)), &mut Box::new(DeleteCredentialsTemplate { vault, grep }))?;
             }
             ItemType::Payment => {
-                handle_matches(vault.find_payments(), &mut Box::new(DeletePaymentTemplate { vault }));
+                handle_matches(vault.find_payments(), &mut Box::new(DeletePaymentTemplate { vault }))?;
             }
             ItemType::Note => {
-                handle_matches(vault.find_notes(), &mut Box::new(DeleteNoteTemplate { vault }));
+                handle_matches(vault.find_notes(), &mut Box::new(DeleteNoteTemplate { vault }))?;
             }
             ItemType::Totp => {
-                handle_matches(vault.find_totp(None), &mut Box::new(DeleteTotpTemplate { vault }));
+                handle_matches(vault.find_totp(None), &mut Box::new(DeleteTotpTemplate { vault }))?;
             }
-        };
-        Ok(())
+        }
+        Ok("Deleted".to_string())
     }
 }

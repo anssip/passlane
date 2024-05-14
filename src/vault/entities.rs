@@ -45,6 +45,14 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<anyhow::Error> for Error {
+    fn from(err: anyhow::Error) -> Self {
+        Error {
+            message: err.to_string(),
+        }
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.message)

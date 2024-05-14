@@ -4,8 +4,8 @@ use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpen
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use keepass_ng::error::TOTPError;
-use log::{debug, error};
+use keepass_ng::error::{DatabaseSaveError, TOTPError};
+use log::{debug};
 use uuid::Uuid;
 
 pub struct KeepassVault {
@@ -17,6 +17,14 @@ pub struct KeepassVault {
 
 impl From<DatabaseOpenError> for Error {
     fn from(e: DatabaseOpenError) -> Self {
+        Error {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<DatabaseSaveError> for Error {
+    fn from(e: DatabaseSaveError) -> Self {
         Error {
             message: e.to_string(),
         }
@@ -65,7 +73,7 @@ impl KeepassVault {
         self.get_root().borrow().get_uuid()
     }
 
-    fn save_database(&self) {
+    fn save_database(&self) -> Result<(), DatabaseSaveError> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -75,7 +83,7 @@ impl KeepassVault {
         let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
         debug!("Saving database to file '{}'", &self.filepath);
 
-        self.db.save(&mut file, key).unwrap();
+        self.db.save(&mut file, key)
     }
 
 
@@ -346,22 +354,14 @@ impl KeepassVault {
         })
     }
 
-    fn do_delete(&mut self, uuid: &Uuid, save: bool) -> i8 {
+    fn do_delete(&mut self, uuid: &Uuid, save: bool) -> Result<(), Error> {
         debug!("Deleting with uuid '{}'", uuid);
-        match self.db.remove_node_by_uuid(*uuid) {
-            Ok(_) => {
-                if save {
-                    self.save_database();
-                }
-                1
-            }
-            Err(e) => {
-                error!("Failed to delete: {}", e);
-                0
-            }
+        self.db.remove_node_by_uuid(*uuid)?;
+        if save {
+            self.save_database()?;
         }
+        Ok(())
     }
-
     fn find_or_create_group(&mut self, group_name: &str) -> Uuid {
         self.find_group(group_name).unwrap_or_else(|| {
             self.create_group(self.get_root_uuid(), group_name).unwrap()
@@ -378,24 +378,26 @@ impl PasswordVault for KeepassVault {
         self.load_credentials(grep)
     }
 
-    fn save_credentials(&mut self, credentials: &Vec<Credential>) -> i8 {
+    fn save_credentials(&mut self, credentials: &Vec<Credential>) -> Result<i8, Error> {
         let group = self.find_or_create_group("Passwords");
-        credentials.iter().for_each(|c| {
-            self.create_password_entry(&group, c).expect("Failed to save credential");
-        });
-        self.save_database();
-        credentials.len() as i8
+        for c in credentials {
+            self.create_password_entry(&group, c)?;
+        }
+        self.save_database()?;
+        Ok(credentials.len() as i8)
     }
 
-    fn save_one_credential(&mut self, credentials: Credential) -> i8 {
-        self.save_credentials(&vec![credentials])
+    fn save_one_credential(&mut self, credentials: Credential) -> Result<(), Error> {
+        self.save_credentials(&vec![credentials])?;
+        Ok(())
     }
 
-    fn delete_credentials(&mut self, uuid: &Uuid) -> i8 {
-        self.do_delete(uuid, true)
+    fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {
+        self.do_delete(uuid, true)?;
+        Ok(())
     }
 
-    fn delete_matching(&mut self, grep: &str) -> i8 {
+    fn delete_matching(&mut self, grep: &str) -> Result<i8, Error> {
         let root = self.get_root();
         let matching: Vec<NodePtr> = NodeIterator::new(&root)
             .filter(node_is_entry)
@@ -407,9 +409,11 @@ impl PasswordVault for KeepassVault {
                 username.contains(grep) || service.contains(grep)
             }).collect();
         // delete
-        let count = matching.iter().map(|node| self.do_delete(&node.borrow().get_uuid(), false)).sum();
-        self.save_database();
-        count
+        for node in &matching {
+            self.do_delete(&node.borrow().get_uuid(), false)?;
+        }
+        self.save_database()?;
+        Ok(matching.len() as i8)
     }
 }
 
@@ -418,15 +422,16 @@ impl PaymentVault for KeepassVault {
         self.load_payments()
     }
 
-    fn save_payment(&mut self, payment: PaymentCard) -> i8 {
+    fn save_payment(&mut self, payment: PaymentCard) -> Result<(), Error>{
         let group = self.find_or_create_group("Payments");
         self.create_payment_entry(&group, &payment).expect("Failed to save payment");
-        self.save_database();
-        1
+        self.save_database()?;
+        Ok(())
     }
 
-    fn delete_payment(&mut self, id: &Uuid) -> i8 {
-        self.do_delete(id, true)
+    fn delete_payment(&mut self, id: &Uuid) -> Result<(), Error> {
+        self.do_delete(id, true)?;
+        Ok(())
     }
 }
 
@@ -435,14 +440,14 @@ impl NoteVault for KeepassVault {
         self.load_notes()
     }
 
-    fn save_note(&mut self, note: &Note) -> i8 {
+    fn save_note(&mut self, note: &Note) -> Result<(), Error> {
         let group = self.find_or_create_group("Notes");
         self.create_note_entry(&group, &note).expect("Failed to save note");
-        self.save_database();
-        1
+        self.save_database()?;
+        Ok(())
     }
 
-    fn delete_note(&mut self, id: &Uuid) -> i8 {
+    fn delete_note(&mut self, id: &Uuid) -> Result<(), Error> {
         self.do_delete(id, true)
     }
 }
@@ -452,14 +457,14 @@ impl TotpVault for KeepassVault {
         self.load_totps(grep)
     }
 
-    fn save_totp(&mut self, totp: &Totp) -> i8 {
+    fn save_totp(&mut self, totp: &Totp) -> Result<(), Error> {
         let group = self.db.root.borrow().get_uuid();
         self.create_totp_entry(&group, &totp).expect("Failed to save TOTP");
-        self.save_database();
-        1
+        self.save_database()?;
+        Ok(())
     }
 
-    fn delete_totp(&mut self, uuid: &Uuid) -> i8 {
+    fn delete_totp(&mut self, uuid: &Uuid) -> Result<(), Error> {
         self.do_delete(uuid, true)
     }
 }

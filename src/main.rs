@@ -14,6 +14,12 @@ use actions::*;
 use crate::actions::show::ShowAction;
 use crate::actions::add::AddAction;
 use crate::actions::delete::DeleteAction;
+use crate::actions::export::ExportAction;
+use crate::actions::import::ImportCsvAction;
+use crate::actions::lock::LockAction;
+use crate::actions::unlock::UnlockAction;
+use crate::actions::generate::GeneratePasswordAction;
+use crate::actions::help::PrintHelpAction;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -135,13 +141,16 @@ fn main() {
     };
     match action {
         VaultAction::Action(action) => {
-            if let Err(e) = action.run() {
+            action.run().map(|msg| println!("{}", msg)).unwrap_or_else(|e| {
                 eprintln!("{}", e);
                 std::process::exit(1);
-            }
+            });
         }
         VaultAction::UnlockingAction(action) => {
-            action.execute()
+            action.execute().map(|msg| println!("{}", msg)).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
         }
     }
 }

@@ -51,44 +51,42 @@ impl AddAction {
             unlock()
         }
     }
-    fn add_credential(&self) -> Result<(), Error> {
+    fn add_credential(&self) -> Result<String, Error> {
         let password = self.get_password()?;
 
         let creds = ui::ask_credentials(&password);
         let mut vault = self.get_vault()?;
-        vault.save_one_credential(creds.clone());
-        if !self.clipboard {
+        vault.save_one_credential(creds.clone())?;
+        if self.clipboard {
             copy_to_clipboard(&password);
-            println!("Password - also copied to clipboard: {}", password);
-        };
-        Ok(())
+            Ok(format!("Password - also copied to clipboard: {}", password))
+        } else {
+            Ok(format!("Password: {}", password))
+        }
     }
-    fn add_payment(&self) -> Result<(), Error> {
+    fn add_payment(&self) -> Result<String, Error> {
         let payment = ui::ask_payment_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
-        vault.save_payment(payment);
-        println!("Payment saved.");
-        Ok(())
+        vault.save_payment(payment)?;
+        Ok("Payment saved.".to_string())
     }
-    fn add_note(&self) -> anyhow::Result<(), Error> {
+    fn add_note(&self) -> anyhow::Result<String, Error> {
         let note = ui::ask_note_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
-        vault.save_note(&note);
-        println!("Note saved.");
-        Ok(())
+        vault.save_note(&note)?;
+        Ok("Note saved.".to_string())
     }
-    fn add_totp(&self) -> Result<(), Error> {
+    fn add_totp(&self) -> Result<String, Error> {
         let totp = ui::ask_totp_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
-        vault.save_totp(&totp);
-        println!("TOTP saved.");
-        Ok(())
+        vault.save_totp(&totp)?;
+        Ok("TOTP saved.".to_string())
     }
 
-    fn add(&self) -> Result<(), Error> {
+    fn add(&self) -> Result<String, Error> {
         match self.item_type {
             ItemType::Credential => self.add_credential(),
             ItemType::Payment => self.add_payment(),
@@ -99,7 +97,7 @@ impl AddAction {
 }
 
 impl Action for AddAction {
-    fn run(&self) -> Result<(), Error> {
+    fn run(&self) -> Result<String, Error> {
         self.add()
     }
 }
