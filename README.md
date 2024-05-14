@@ -33,6 +33,7 @@ Passlane is written in Rust.
   - [Secure notes](#secure-notes)
   - [Authenticator functionality](#authenticator-functionality)
   - [Migrating from 1Password, LastPass, Dashlane etc.](#migrating-from-1password-lastpass-dashlane-etc)
+  - [Import from CSV](#import-from-csv)
   - [Export to CSV](#export-to-csv)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
@@ -223,7 +224,7 @@ you gain the benefit of two-factor authentication. You don't want to store these
 Here is an example where teh totp vault file is stored in Dropbox:
 
 ```bash
-➜  .passlane cat .totp_vault_path                                                                             ~/.passlane
+~/.passlane > cat .totp_vault_path                                                                
 /Users/anssi/Dropbox/stuff/totp.kdbx        
 ```
 
@@ -267,6 +268,8 @@ Next code in 30 seconds
 ..............................
 ...
 ```
+
+## Import from CSV
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
 
