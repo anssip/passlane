@@ -4,6 +4,10 @@ use crate::actions::{copy_to_clipboard, handle_matches, ItemType, MatchHandlerTe
 use crate::ui;
 use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+use std::io::{self, Read, Write};
 
 struct ShowCredentialsTemplate {
     verbose: bool,
@@ -23,7 +27,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         Ok(())
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error>{
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
         ui::show_credentials_table(&matches, self.verbose);
 
         match ui::ask_index(
@@ -151,17 +155,66 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<(), Error> {
-        let code = the_match.get_code();
-        match code {
-            Ok(code) => {
-                copy_to_clipboard(&code.value);
-                println!("Code {} (also copied to clipboard). Valid for {} seconds.", code.value, code.valid_for_seconds);
-                Ok(())
-            },
-            Err(e) => {
-                Err(Error { message: e.message })
+        let (tx, rx) = mpsc::channel();
+        let (tx_counter, rx_counter) = mpsc::channel();
+
+        // Spawn a thread to listen for keyboard input
+        thread::spawn(move || {
+            let mut buffer = [0; 1];
+            let stdin = io::stdin();
+            let mut handle = stdin.lock();
+
+            loop {
+                if handle.read_exact(&mut buffer).is_ok() {
+                    let input = buffer[0];
+                    if input == b'q' || input == 4 { // 'q' or Ctrl+D (EOF)
+                        tx.send(()).expect("Failed to send termination signal");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Spawn a thread to handle the countdown timer
+        thread::spawn(move || {
+            loop {
+                let duration = rx_counter.recv().expect("Failed to receive duration");
+                println!("Next code in {} seconds", duration);
+                println!("{}", ".".repeat(duration as usize));
+                io::stdout().flush().unwrap();
+
+                for _ in (1..=duration).rev() {
+                    print!(".");
+                    io::stdout().flush().unwrap();
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        });
+
+        loop {
+            let code = the_match.get_code();
+
+            match code {
+                Ok(code) => {
+                    copy_to_clipboard(&code.value);
+                    println!("\nCode {} (also copied to clipboard). Press q to exit.", code.value);
+
+                    // Send the duration to the countdown timer thread
+                    tx_counter.send(code.valid_for_seconds).expect("Failed to send duration");
+
+                    // Wait for the specified duration or a keyboard interrupt
+                    let duration = Duration::from_secs(code.valid_for_seconds);
+                    if rx.recv_timeout(duration).is_ok() {
+                        println!("Exiting as requested.");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    return Err(Error { message: e.message });
+                }
             }
         }
+        Ok(())
     }
 }
 
