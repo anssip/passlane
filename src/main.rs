@@ -1,18 +1,25 @@
 extern crate clipboard;
 extern crate magic_crypt;
-use actions::*;
-use clap::{arg, ArgAction, Command};
 
-
-mod actions;
 mod crypto;
 mod store;
 mod ui;
 mod vault;
 mod keychain;
+mod actions;
 
-
+use clap::{arg, ArgAction, Command};
 use std::env;
+use actions::*;
+use crate::actions::show::ShowAction;
+use crate::actions::add::AddAction;
+use crate::actions::delete::DeleteAction;
+use crate::actions::export::ExportAction;
+use crate::actions::import::ImportCsvAction;
+use crate::actions::lock::LockAction;
+use crate::actions::unlock::UnlockAction;
+use crate::actions::generate::GeneratePasswordAction;
+use crate::actions::help::PrintHelpAction;
 
 fn cli() -> Command {
     Command::new("passlane")
@@ -28,6 +35,9 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -n --notes "Add a secure note."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Add a One Time Password authorizer."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -g --generate "Generate the password to be saved."
@@ -53,9 +63,12 @@ fn cli() -> Command {
                 .arg(arg!(
                     -n --notes "Delete secure notes."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Delete One Time Password authorizer."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to delete.").group("search").required(false))
                 .arg_required_else_help(true)
-            )
+        )
         .subcommand(
             Command::new("show")
                 .about("Shows one or more entries.")
@@ -64,6 +77,9 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -p --payments "Shows payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Shows one time passwords (OTPs)"
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -n --notes "Shows secure notes."
@@ -81,6 +97,9 @@ fn cli() -> Command {
         .subcommand(
             Command::new("unlock")
                 .about("Opens the vaults and grants access to the entries")
+                .arg(arg!(
+                    -o --otp "Opens the one time passwords vault"
+                ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("export")
@@ -99,36 +118,39 @@ fn main() {
     env_logger::init();
     let matches = cli().get_matches();
 
-    enum ActionOrUnlockingAction {
+    enum VaultAction {
         Action(Box<dyn Action>),
         UnlockingAction(Box<dyn UnlockingAction>),
     }
-    
+
     let action = match matches.subcommand() {
-        Some(("add", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(AddAction::new(sub_matches))),
-        Some(("show", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
-        Some(("delete", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
-        Some(("csv", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
-        Some(("lock", _)) => ActionOrUnlockingAction::Action(Box::new(LockAction {})),
-        Some(("unlock", _)) => ActionOrUnlockingAction::UnlockingAction(Box::new(UnlockAction {})),
-        Some(("export", sub_matches)) => ActionOrUnlockingAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
+        Some(("add", sub_matches)) => VaultAction::Action(Box::new(AddAction::new(sub_matches))),
+        Some(("show", sub_matches)) => VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches))),
+        Some(("delete", sub_matches)) => VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches))),
+        Some(("csv", sub_matches)) => VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches))),
+        Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
+        Some(("unlock", sub_matches)) => VaultAction::Action(Box::new(UnlockAction::new(sub_matches))),
+        Some(("export", sub_matches)) => VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches))),
         _ => {
             if env::args().len() == 1 {
-                ActionOrUnlockingAction::Action(Box::new(GeneratePasswordAction {}))
+                VaultAction::Action(Box::new(GeneratePasswordAction {}))
             } else {
-                ActionOrUnlockingAction::Action(Box::new(PrintHelpAction::new(cli())))
-            }
-        },
-    };
-    match action {
-        ActionOrUnlockingAction::Action(action) => {
-            if let Err(e) = action.run() {
-                eprintln!("{}", e);
-                std::process::exit(1);
+                VaultAction::Action(Box::new(PrintHelpAction::new(cli())))
             }
         }
-        ActionOrUnlockingAction::UnlockingAction(action) => {
-            action.execute()
+    };
+    match action {
+        VaultAction::Action(action) => {
+            action.run().map(|msg| println!("{}", msg)).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
+        }
+        VaultAction::UnlockingAction(action) => {
+            action.execute().map(|msg| println!("{}", msg)).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
         }
     }
 }

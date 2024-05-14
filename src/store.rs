@@ -7,7 +7,15 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::vault::entities::{Credential, Note, PaymentCard};
+use crate::vault::entities::{Credential, Error, Note, PaymentCard};
+
+impl From<csv::Error> for Error {
+    fn from(e: csv::Error) -> Self {
+        Error {
+            message: e.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CSVInputCredentials {
@@ -82,25 +90,41 @@ fn read_from_file(path: &PathBuf) -> Option<String> {
     Some(file_content.trim().parse().unwrap())
 }
 
-pub fn get_keyfile_path() -> Option<String> {
-    let path = dir_path().join(".keyfile_path");
+fn resolve_keyfile_path(path_config_file: &str) -> Option<String> {
+    let path = dir_path().join(path_config_file);
     if !path.exists() {
-        return None;
+        None
+    } else {
+        read_from_file(&path)
     }
-    read_from_file(&path)
 }
 
+pub fn get_keyfile_path() -> Option<String> {
+    resolve_keyfile_path(".keyfile_path")
+}
 
-pub(crate) fn get_vault_path() -> String {
-    let default_path = dir_path().join("store.kdbx").to_str().unwrap().to_string();
-    let path = dir_path().join(".vault_path");
+pub(crate) fn get_totp_keyfile_path() -> Option<String> {
+    resolve_keyfile_path(".totp_keyfile_path")
+}
+
+fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> String {
+    let default_path = dir_path().join(default_filename).to_str().unwrap().to_string();
+    let path = dir_path().join(path_config_filename);
     if path.exists() {
-        return read_from_file(&path).unwrap_or(default_path)
+        return read_from_file(&path).unwrap_or(default_path).trim().to_string();
     }
     default_path
 }
 
-pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> anyhow::Result<i64> {
+pub(crate) fn get_vault_path() -> String {
+    resolve_vault_path("store.kdbx", ".vault_path")
+}
+
+pub(crate) fn get_totp_vault_path() -> String {
+    resolve_vault_path("totp.kdbx", ".totp_vault_path")
+}
+
+pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
         wtr.serialize(CSVInputCredentials {
@@ -113,7 +137,7 @@ pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>)
     Ok(creds.len() as i64)
 }
 
-pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> anyhow::Result<i64> {
+pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for card in cards {
         wtr.serialize(CSVPaymentCard {
@@ -136,7 +160,7 @@ pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCar
     Ok(cards.len() as i64)
 }
 
-pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> anyhow::Result<i64> {
+pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for note in notes {
         wtr.serialize(CSVSecureNote {

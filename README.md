@@ -1,9 +1,12 @@
 # Passlane
 
-A password manager CLI using Keepass as the storage backend. In addition to passwords, It supports secure saving and managing of 
-**payment cards** and **secure notes**. Passlane uses the Keepass encrypted file format for storing the data.
+A password manager CLI using Keepass as the storage backend. In addition to passwords, it supports 
+**authenticator functionality** with Timed One Time Passwords (TOTP), secure saving and managing of 
+**payment cards** and **secure notes**. 
 
-Passlane CLI is written in Rust.
+Passlane uses the Keepass encrypted file format for storing the data.
+
+Passlane is written in Rust.
 
 ![Screenshot](https://i.imgur.com/TMB8DbS.webp)
 
@@ -15,6 +18,7 @@ Passlane CLI is written in Rust.
 - Generate and save passwords
 - Save and view payment card information
 - Save and view secure notes
+- Authenticator functionality with TOTP
 - Import passwords from CSV files
 - Export vault contents to CSV files
 
@@ -27,6 +31,7 @@ Passlane CLI is written in Rust.
   - [Using saved credentials](#using-saved-credentials)
   - [Payment cards](#payment-cards)
   - [Secure notes](#secure-notes)
+  - [Authenticator functionality](#authenticator-functionality)
   - [Migrating from 1Password, LastPass, Dashlane etc.](#migrating-from-1password-lastpass-dashlane-etc)
   - [Export to CSV](#export-to-csv)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
@@ -92,12 +97,12 @@ To get help on the available commands:
 
 ```bash
 $  passlane -h
-A password manager for the command line
+A password manager using Keepass as the storage backend.
 
 Usage: passlane [COMMAND]
 
 Commands:
-  add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card.
+  add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.
   csv     Imports credentials from a CSV file.
   delete  Deletes one or more entries.
   show    Shows one or more entries.
@@ -208,7 +213,60 @@ To show secure notes:
 passlane show -n
 ```
 
-### Migrating from 1Password, LastPass, Dashlane etc.
+### Authenticator functionality
+
+By default, Passlane stores the Timed One Time Passwords in a file named `totp.json` in the `~/.passlane/` directory.
+You can change the location by storing the file path in a text file called `.totp_vault_path` in the `~/.passlane/` directory.
+**We recommend that you store the file in a separate location that is different from the main vault file.** This way
+you gain the benefit of two-factor authentication. You don't want to store these eggs in the same basket.
+
+Here is an example where teh totp vault file is stored in Dropbox:
+
+```bash
+➜  .passlane cat .totp_vault_path                                                                             ~/.passlane
+/Users/anssi/Dropbox/stuff/totp.kdbx        
+```
+
+The TOTP vault has a separate master password that you need to enter when you access the one time passwords. 
+You can also store the master password in your computer's keychain to avoid typing it every time. Use 
+the unlock command with the `-o` option for this purpose.
+
+```bash
+passlane unlock -o
+```
+
+To add a new one time password authentication entry:
+
+```bash
+passlane add -o
+```
+
+Use -o to show the one time passwords. Following lists all OTP entries in the vault:
+
+```bash
+passlane show -o
+```
+
+To look up by name of the issuer, use the following command:
+
+```bash
+passlane show -o heroku
+```
+the output will be:
+
+```bash
+Unlocking TOTP vault...
+Found 1 matching OTP authorizers:
+
+Code 447091 (also copied to clipboard). Press q to exit.
+Next code in 23 seconds
+.......................
+.......................
+Code 942344 (also copied to clipboard). Press q to exit.
+Next code in 30 seconds
+..............................
+...
+```
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
 
@@ -264,8 +322,8 @@ You can change the location by storing the file path in a text file called `.vau
 For example, this shows how John has stored the path `/Users/john/Dropbox/Stuff/store.kdbx` to the `.vault_path` file:
 
 ```bash
-➜  ~ cat ~/.passlane/.vault_path                                                                                      ~
-/Users/john/Dropbox/Stuff/store.kdbx%   
+➜  ~ cat ~/.passlane/.vault_path
+/Users/john/Dropbox/Stuff/store.kdbx
 ```
 
 ## Other Keepass compatible applications

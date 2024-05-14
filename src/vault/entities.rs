@@ -3,6 +3,9 @@ use uuid::Uuid;
 use std::num::ParseIntError;
 use std::fmt;
 use std::str::FromStr;
+use std::time::SystemTimeError;
+use keepass_ng::db::{TOTP};
+use log::debug;
 
 #[derive(Clone)]
 pub struct Date(pub String);
@@ -18,6 +21,44 @@ pub struct Error {
     pub message: String,
 }
 
+impl Error {
+    pub fn new(message: &str) -> Self {
+        Error {
+            message: message.to_string(),
+        }
+    }
+}
+
+impl From<SystemTimeError> for Error {
+    fn from(err: SystemTimeError) -> Self {
+        Error {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for Error {
+    fn from(err: anyhow::Error) -> Self {
+        Error {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.message)
+    }
+}
+
 #[derive(Clone)]
 pub struct Credential {
     pub uuid: Uuid,
@@ -27,6 +68,7 @@ pub struct Credential {
     pub notes: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct PaymentCard {
     pub id: Uuid,
     pub name: String,
@@ -36,6 +78,42 @@ pub struct PaymentCard {
     pub expiry: Expiry,
     pub color: Option<String>,
     pub billing_address: Option<Address>,
+}
+
+#[derive(Clone)]
+pub struct Totp {
+    pub id: Uuid,
+    pub url: String,
+    pub label: String,
+    pub issuer: String,
+    pub secret: String,
+    pub algorithm: String,
+    pub period: u64,
+    pub digits: u32,
+}
+
+impl Display for Totp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "label: {}, issuer: {}, secret: {}, algo: {}, digits: {}", self.label, self.issuer, self.secret, self.algorithm, self.digits)
+    }
+}
+
+pub struct TotpCode {
+    pub value: String,
+    pub valid_for_seconds: u64,
+}
+
+impl Totp {
+    pub fn get_code(&self) -> Result<TotpCode, Error> {
+        let totp = TOTP::from_str(&self.url)?;
+
+        debug!("Getting code for totp: {}", totp);
+        let code = totp.value_now()?;
+        Ok(TotpCode {
+            value: code.code,
+            valid_for_seconds: code.valid_for.as_secs(),
+        })
+    }
 }
 
 impl PaymentCard {
@@ -58,6 +136,7 @@ impl PaymentCard {
     }
 }
 
+#[derive(Clone)]
 pub struct Expiry {
     pub month: i32,
     pub year: i32,
@@ -106,6 +185,7 @@ impl FromStr for Expiry {
     }
 }
 
+#[derive(Clone)]
 pub struct Address {
     pub id: Uuid,
     pub street: String,
@@ -115,6 +195,7 @@ pub struct Address {
     pub zip: String,
 }
 
+#[derive(Clone)]
 pub struct Note {
     pub id: Uuid,
     pub title: String,
