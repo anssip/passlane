@@ -269,7 +269,7 @@ Next code in 30 seconds
 ...
 ```
 
-## Import from CSV
+### Import from CSV
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
 
