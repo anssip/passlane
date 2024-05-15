@@ -58,7 +58,16 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         ui::show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
         copy_to_clipboard(&the_match.number);
-        Ok(Some("Card number copied to clipboard!".to_string()))
+        match ui::ask("Do you want to see the full card details? (y/n)").as_str() {
+            "y" => {
+                ui::show_card(&the_match);
+                Ok(Some("Card number copied to clipboard!".to_string()))
+            }
+            _ => {
+                Ok(Some("Card number copied to clipboard!".to_string()))
+            }
+        }
+        
     }
 
     fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
