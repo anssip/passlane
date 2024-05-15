@@ -14,7 +14,6 @@ use crate::{keychain};
 use crate::store;
 use crate::ui;
 use clap::ArgMatches;
-use log::{debug};
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use crate::vault::entities::Error;
