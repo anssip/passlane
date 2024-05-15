@@ -52,6 +52,7 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} payment cards...", matches.len());
+        ui::show_payment_cards_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
@@ -64,7 +65,6 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
     }
 
     fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
-        ui::show_payment_cards_table(&matches, false);
         match ui::ask_index(
             "To delete, please enter a row number from the table above, or press q to abort:",
             matches.len() as i16 - 1,
