@@ -147,7 +147,7 @@ fn main() {
             });
         }
         VaultAction::UnlockingAction(action) => {
-            action.execute().map(|msg| println!("{}", msg)).unwrap_or_else(|e| {
+            action.execute().map(|msg| println!("{}", msg.unwrap_or("".to_string()))).unwrap_or_else(|e| {
                 eprintln!("{}", e);
                 std::process::exit(1);
             });

@@ -20,14 +20,13 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         println!("Found {} credentials:", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         ui::show_credentials_table(&vec![the_match.clone()], self.verbose);
         copy_to_clipboard(&the_match.password);
-        println!("Password copied to clipboard!");
-        Ok(())
+        Ok(Some("Password copied to clipboard!".to_string()))
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
         ui::show_credentials_table(&matches, self.verbose);
 
         match ui::ask_index(
@@ -36,8 +35,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         ) {
             Ok(index) => {
                 copy_to_clipboard(&matches[index].password);
-                println!("Password from index {} copied to clipboard!", index);
-                Ok(())
+                Ok(Some("Password copied to clipboard!".to_string()))
             }
             Err(message) => {
                 Err(Error { message })
@@ -57,14 +55,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         println!("Found {} payment cards:", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         ui::show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
         copy_to_clipboard(&the_match.number);
-        println!("Card number copied to clipboard!");
-        Ok(())
+        Ok(Some("Card number copied to clipboard!".to_string()))
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
         ui::show_payment_cards_table(&matches, self.show_cleartext);
 
         match ui::ask_index(
@@ -74,8 +71,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
             Ok(index) => {
                 ui::show_card(&matches[index]);
                 copy_to_clipboard(&matches[index].number);
-                println!("Card number from index {} copied to clipboard!", index);
-                Ok(())
+                Ok(Some("Card number copied to clipboard!".to_string()))
             }
             Err(message) => {
                 Err(Error { message })
@@ -95,16 +91,16 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         println!("Found {} notes:", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         ui::show_notes_table(&vec![the_match.clone()], self.verbose);
         let response = ui::ask("Do you want to see the full note? (y/n)");
         if response == "y" {
             ui::show_note(&the_match);
         }
-        Ok(())
+        Ok(None)
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
         ui::show_notes_table(&matches, self.verbose);
 
         match ui::ask_index(
@@ -113,7 +109,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         ) {
             Ok(index) => {
                 ui::show_note(&matches[index]);
-                Ok(())
+                Ok(None)
             }
             Err(message) => {
                 Err(Error { message })
@@ -131,12 +127,12 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         println!("Found {} matching OTP authorizers:", matches.len());
     }
 
-    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error> {
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         debug!("found totp: {}", the_match);
         Self::show_code(the_match)
     }
 
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error> {
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
         ui::show_totp_table(&matches);
 
         match ui::ask_index(
@@ -154,7 +150,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 }
 
 impl ShowTotpTemplate {
-    fn show_code(the_match: Totp) -> Result<(), Error> {
+    fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
         let (tx, rx) = mpsc::channel();
         let (tx_counter, rx_counter) = mpsc::channel();
 
@@ -214,7 +210,7 @@ impl ShowTotpTemplate {
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -243,7 +239,7 @@ impl UnlockingAction for ShowAction {
         self.is_totp
     }
 
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<String, Error> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         match self.item_type {
             ItemType::Credential => {
                 let grep = match &self.grep {
@@ -262,6 +258,6 @@ impl UnlockingAction for ShowAction {
                 handle_matches(vault.find_totp(self.grep.as_deref()), &mut Box::new(ShowTotpTemplate))?;
             }
         }
-        Ok("bye".to_string())
+        Ok(None)
     }
 }

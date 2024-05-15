@@ -23,18 +23,17 @@ pub(crate) trait MatchHandlerTemplate where Self::ItemType: Clone {
     type ItemType;
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>);
-    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<(), Error>;
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<(), Error>;
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error>;
+    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error>;
 }
 
-pub(crate) fn handle_matches<H>(matches: Vec<H::ItemType>, handler: &mut Box<H>) -> Result<(), Error>
+pub(crate) fn handle_matches<H>(matches: Vec<H::ItemType>, handler: &mut Box<H>) -> Result<Option<String>, Error>
     where
         H: MatchHandlerTemplate,
         H::ItemType: Clone,
 {
     if matches.is_empty() {
-        println!("No matches found");
-        Ok(())
+        Ok(Some("No matches found".to_string()))
     } else {
         handler.pre_handle_matches(&matches.clone());
 
@@ -87,7 +86,7 @@ pub fn copy_to_clipboard(value: &String) {
 }
 
 pub trait UnlockingAction {
-    fn execute(&self) -> Result<String, Error> {
+    fn execute(&self) -> Result<Option<String>, Error> {
         info!("Unlocking vault...");
         if self.is_totp_vault() {
             self.run_with_vault(&mut unlock_totp_vault()?)
@@ -100,8 +99,8 @@ pub trait UnlockingAction {
         false
     }
 
-    fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> Result<String, Error> {
-        Ok("Success".to_string())
+    fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
+        Ok(Some("Success".to_string()))
     }
 }
 

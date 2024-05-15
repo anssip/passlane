@@ -5,8 +5,9 @@
 ### Next
 
 fix:
-- [ ] add TOTP support
+- [ ] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
 - [ ] remove anyhow?
+- [x] add TOTP support
 - [x] first time vault creation
 - [x] invalid password error message
 

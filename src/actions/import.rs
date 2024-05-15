@@ -26,8 +26,8 @@ fn push_from_csv(vault: &mut Box<dyn Vault>, file_path: &str) -> Result<i64, Err
 }
 
 impl UnlockingAction for ImportCsvAction {
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<String, Error> {
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         push_from_csv(vault, &self.file_path)
-            .map(|count| format!("Imported {} entries", count))
+            .map(|count| format!("Imported {} entries", count)).map(Some)
     }
 }

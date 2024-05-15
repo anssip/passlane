@@ -39,7 +39,7 @@ impl ExportAction {
 }
 
 impl UnlockingAction for ExportAction {
-    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<String, Error> {
-        self.export_csv(vault).map(|count| format!("Exported {} entries", count))
+    fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
+        self.export_csv(vault).map(|count| format!("Exported {} entries", count)).map(Some)
     }
 }
