@@ -1,5 +1,7 @@
 # Passlane
 
+![passlane-logo-small](https://github.com/anssip/passlane/assets/271711/6041f6fb-816f-43e9-b54c-325180addef1)
+
 A password manager CLI using Keepass as the storage backend. In addition to passwords, it supports 
 **authenticator functionality** with Timed One Time Passwords (TOTP), secure saving and managing of 
 **payment cards** and **secure notes**. 
@@ -7,8 +9,6 @@ A password manager CLI using Keepass as the storage backend. In addition to pass
 Passlane uses the Keepass encrypted file format for storing the data.
 
 Passlane is written in Rust.
-
-![Screenshot](https://i.imgur.com/TMB8DbS.webp)
 
 ## Features
 
