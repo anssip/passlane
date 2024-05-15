@@ -208,7 +208,7 @@ impl UnlockingAction for DeleteAction {
                 handle_matches(vault.find_notes(), &mut Box::new(DeleteNoteTemplate { vault }))?;
             }
             ItemType::Totp => {
-                handle_matches(vault.find_totp(None), &mut Box::new(DeleteTotpTemplate { vault }))?;
+                handle_matches(vault.find_totp(self.grep.as_deref()), &mut Box::new(DeleteTotpTemplate { vault }))?;
             }
         }
         Ok("Deleted".to_string())
