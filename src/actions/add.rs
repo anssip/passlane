@@ -57,12 +57,8 @@ impl AddAction {
         let creds = ui::ask_credentials(&password);
         let mut vault = self.get_vault()?;
         vault.save_one_credential(creds.clone())?;
-        if self.clipboard {
-            copy_to_clipboard(&password);
-            Ok(format!("Password - also copied to clipboard: {}", password))
-        } else {
-            Ok(format!("Password: {}", password))
-        }
+        copy_to_clipboard(&password);
+        Ok(format!("Password - also copied to clipboard: {}", password))
     }
     fn add_payment(&self) -> Result<String, Error> {
         let payment = ui::ask_payment_info();
