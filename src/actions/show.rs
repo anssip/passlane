@@ -246,18 +246,17 @@ impl UnlockingAction for ShowAction {
                     Some(grep) => grep.as_str(),
                     None => return Err(Error { message: "No search term REGEXP provided".to_string() }),
                 };
-                handle_matches(vault.grep(Some(grep)), &mut Box::new(ShowCredentialsTemplate { verbose: self.verbose }))?;
+                handle_matches(vault.grep(Some(grep)), &mut Box::new(ShowCredentialsTemplate { verbose: self.verbose }))
             }
             ItemType::Payment => {
-                handle_matches(vault.find_payments(), &mut Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }))?;
+                handle_matches(vault.find_payments(), &mut Box::new(ShowPaymentsTemplate { show_cleartext: self.verbose }))
             }
             ItemType::Note => {
-                handle_matches(vault.find_notes(), &mut Box::new(ShowNotesTemplate { verbose: self.verbose }))?;
+                handle_matches(vault.find_notes(), &mut Box::new(ShowNotesTemplate { verbose: self.verbose }))
             }
             ItemType::Totp => {
-                handle_matches(vault.find_totp(self.grep.as_deref()), &mut Box::new(ShowTotpTemplate))?;
+                handle_matches(vault.find_totp(self.grep.as_deref()), &mut Box::new(ShowTotpTemplate))
             }
         }
-        Ok(None)
     }
 }

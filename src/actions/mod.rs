@@ -14,7 +14,7 @@ use crate::{keychain};
 use crate::store;
 use crate::ui;
 use clap::ArgMatches;
-use log::info;
+use log::{debug};
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use crate::vault::entities::Error;
@@ -87,7 +87,6 @@ pub fn copy_to_clipboard(value: &String) {
 
 pub trait UnlockingAction {
     fn execute(&self) -> Result<Option<String>, Error> {
-        info!("Unlocking vault...");
         if self.is_totp_vault() {
             self.run_with_vault(&mut unlock_totp_vault()?)
         } else {
