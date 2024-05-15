@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.4.0]
+
+- Added support for TOTP (Time-based One-Time Password) codes
+- Refactor the code base significantly
+
 ## [2.3.2]
 
 - Switch to keepass-ng dependency
