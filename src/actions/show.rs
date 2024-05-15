@@ -134,6 +134,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} matching OTP authorizers:", matches.len());
+        ui::show_totp_table(matches);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -142,7 +143,6 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
     }
 
     fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error> {
-        ui::show_totp_table(&matches);
 
         match ui::ask_index(
             "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit:",
