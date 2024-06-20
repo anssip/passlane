@@ -1,22 +1,21 @@
 use rand::thread_rng;
 use rand::Rng;
 
+const LOW_CASE: &str = "abcdefghijklmnopqrstuvxyz";
+const UP_CASE: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ";
+const NUMBERS: &str = "0123456789";
+pub const SPECIAL: &str = "£$&()*+[]@#^-_!?:;,.{}<>~%/\\|\"'`´^¨=§";
 
 pub fn generate() -> String {
-    let low_case = "abcdefghijklmnopqrstuvxyz".to_string();
-    let up_case = "ABCDEFGHIJKLMNOPQRSTUVXYZ".to_string();
-    let numbers = "0123456789".to_string();
-    let special = "£$&()*+[]@#^-_!?".to_string();
-
     let mut password = "".to_string();
 
     for _ in 0..=14 {
         let char_group = random_index(4);
         password = match char_group {
-            0 => append(&password, &low_case),
-            1 => append(&password, &up_case),
-            2 => append(&password, &numbers),
-            3 => append(&password, &special),
+            0 => append(&password, &LOW_CASE.to_string()),
+            1 => append(&password, &UP_CASE.to_string()),
+            2 => append(&password, &NUMBERS.to_string()),
+            3 => append(&password, &SPECIAL.to_string()),
             _ => password,
         }
     }
@@ -24,8 +23,11 @@ pub fn generate() -> String {
 }
 
 pub fn validate_password(value: &String) -> bool {
-    // TODO: improve to check that all character classes are present
     value.len() >= 15
+        && value.chars().any(|c| LOW_CASE.contains(c))
+        && value.chars().any(|c| UP_CASE.contains(c))
+        && value.chars().any(|c| NUMBERS.contains(c))
+        && value.chars().any(|c| SPECIAL.contains(c))
 }
 
 fn random_index(range: usize) -> usize {
@@ -42,4 +44,3 @@ fn append(to: &String, charset: &String) -> String {
     result.push(character);
     result
 }
-

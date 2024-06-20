@@ -1,3 +1,4 @@
+use crate::vault::entities::{Credential, Error, Note, PaymentCard};
 use csv::{ReaderBuilder, Writer};
 use serde::Deserialize;
 use serde::Serialize;
@@ -6,8 +7,6 @@ use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
-use uuid::Uuid;
-use crate::vault::entities::{Credential, Error, Note, PaymentCard};
 
 impl From<csv::Error> for Error {
     fn from(e: csv::Error) -> Self {
@@ -26,13 +25,7 @@ pub struct CSVInputCredentials {
 
 impl CSVInputCredentials {
     pub fn to_credential(&self) -> Credential {
-        Credential {
-            uuid: Uuid::new_v4(),
-            service: self.service.clone(),
-            username: self.username.clone(),
-            password: self.password.clone(),
-            notes: None,
-        }
+        Credential::new(None, &self.password, &self.service, &self.username, None)
     }
 }
 
@@ -45,7 +38,6 @@ pub struct CSVPaymentCard {
     pub expiry: String,
     pub color: String,
     pub billing_address: String,
-
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -83,10 +75,12 @@ fn read_from_file(path: &PathBuf) -> Option<String> {
         .read(true)
         .write(false)
         .create_new(false)
-        .open(&path).unwrap();
+        .open(&path)
+        .unwrap();
 
     let mut file_content = String::new();
-    file.read_to_string(&mut file_content).expect("Unable to read master password file");
+    file.read_to_string(&mut file_content)
+        .expect("Unable to read master password file");
     Some(file_content.trim().parse().unwrap())
 }
 
@@ -108,10 +102,17 @@ pub(crate) fn get_totp_keyfile_path() -> Option<String> {
 }
 
 fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> String {
-    let default_path = dir_path().join(default_filename).to_str().unwrap().to_string();
+    let default_path = dir_path()
+        .join(default_filename)
+        .to_str()
+        .unwrap()
+        .to_string();
     let path = dir_path().join(path_config_filename);
     if path.exists() {
-        return read_from_file(&path).unwrap_or(default_path).trim().to_string();
+        return read_from_file(&path)
+            .unwrap_or(default_path)
+            .trim()
+            .to_string();
     }
     default_path
 }
@@ -124,35 +125,41 @@ pub(crate) fn get_totp_vault_path() -> String {
     resolve_vault_path("totp.kdbx", ".totp_vault_path")
 }
 
-pub(crate) fn write_credentials_to_csv(file_path: &str, creds: &Vec<Credential>) -> Result<i64, Error> {
+pub(crate) fn write_credentials_to_csv(
+    file_path: &str,
+    creds: &Vec<Credential>,
+) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
         wtr.serialize(CSVInputCredentials {
-            service: String::from(&cred.service),
-            username: String::from(&cred.username),
-            password: String::from(&cred.password),
+            service: String::from(cred.service()),
+            username: String::from(cred.username()),
+            password: String::from(cred.password()),
         })?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)
 }
 
-pub(crate) fn write_payment_cards_to_csv(file_path: &str, cards: &Vec<PaymentCard>) -> Result<i64, Error> {
+pub(crate) fn write_payment_cards_to_csv(
+    file_path: &str,
+    cards: &Vec<PaymentCard>,
+) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for card in cards {
         wtr.serialize(CSVPaymentCard {
-            name: String::from(&card.name),
-            name_on_card: String::from(&card.name_on_card),
-            number: String::from(&card.number),
-            cvv: String::from(&card.cvv),
-            expiry: format!("{}", card.expiry),
-            color: match &card.color {
+            name: String::from(card.name()),
+            name_on_card: String::from(card.name_on_card()),
+            number: String::from(card.number()),
+            cvv: String::from(card.cvv()),
+            expiry: format!("{}", card.expiry()),
+            color: match card.color() {
                 Some(color) => String::from(color),
-                None => String::from("")
+                None => String::from(""),
             },
-            billing_address: match &card.billing_address {
+            billing_address: match card.billing_address() {
                 Some(address) => format!("{}", address),
-                None => String::from("")
+                None => String::from(""),
             },
         })?;
     }
@@ -164,8 +171,8 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
     let mut wtr = Writer::from_path(file_path)?;
     for note in notes {
         wtr.serialize(CSVSecureNote {
-            title: String::from(&note.title),
-            note: String::from(&note.content),
+            title: note.title().to_string(),
+            note: note.content().to_string(),
         })?;
     }
     wtr.flush()?;

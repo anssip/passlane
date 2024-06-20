@@ -1,35 +1,44 @@
-pub mod show;
 pub mod add;
 pub mod delete;
 pub mod export;
-pub mod import;
-pub mod lock;
-pub mod unlock;
 pub mod generate;
 pub mod help;
+pub mod import;
+pub mod lock;
+pub mod show;
+pub mod unlock;
 
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
-use crate::{keychain};
+use crate::keychain;
 use crate::store;
 use crate::ui;
-use clap::ArgMatches;
+use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
-use crate::vault::entities::Error;
+use clap::ArgMatches;
+use clipboard::ClipboardContext;
+use clipboard::ClipboardProvider;
 
-pub(crate) trait MatchHandlerTemplate where Self::ItemType: Clone {
+pub(crate) trait MatchHandlerTemplate
+where
+    Self::ItemType: Clone,
+{
     type ItemType;
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>);
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error>;
-    fn handle_many_matches(&mut self, matches: Vec<Self::ItemType>) -> Result<Option<String>, Error>;
+    fn handle_many_matches(
+        &mut self,
+        matches: Vec<Self::ItemType>,
+    ) -> Result<Option<String>, Error>;
 }
 
-pub(crate) fn handle_matches<H>(matches: Vec<H::ItemType>, handler: &mut Box<H>) -> Result<Option<String>, Error>
-    where
-        H: MatchHandlerTemplate,
-        H::ItemType: Clone,
+pub(crate) fn handle_matches<H>(
+    matches: Vec<H::ItemType>,
+    handler: &mut Box<H>,
+) -> Result<Option<String>, Error>
+where
+    H: MatchHandlerTemplate,
+    H::ItemType: Clone,
 {
     if matches.is_empty() {
         Ok(Some("No matches found".to_string()))
@@ -73,13 +82,17 @@ fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     get_vault(&master_pwd, &filepath, keyfile_path)
 }
 
-fn get_vault(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<Box<dyn Vault>, Error> {
+fn get_vault(
+    password: &str,
+    filepath: &str,
+    keyfile_path: Option<String>,
+) -> Result<Box<dyn Vault>, Error> {
     // we could return some other Vault implementation here
     let vault = KeepassVault::new(password, filepath, keyfile_path)?;
     Ok(Box::new(vault))
 }
 
-pub fn copy_to_clipboard(value: &String) {
+pub fn copy_to_clipboard(value: &str) {
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     ctx.set_contents(String::from(value)).unwrap();
 }
@@ -112,9 +125,7 @@ pub enum ItemType {
 
 impl ItemType {
     pub fn new_from_args(matches: &ArgMatches) -> ItemType {
-        if matches
-            .get_one::<bool>("payments")
-            .map_or(false, |v| *v) {
+        if matches.get_one::<bool>("payments").map_or(false, |v| *v) {
             ItemType::Payment
         } else if matches.get_one("notes").map_or(false, |v| *v) {
             ItemType::Note

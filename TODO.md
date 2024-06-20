@@ -6,6 +6,8 @@
 
 fix:
 - [ ] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
+- [ ] Show dates for each entry
+- [ ] Editing of entries
 - [ ] remove anyhow?
 - [x] add TOTP support
 - [x] first time vault creation
@@ -17,4 +19,3 @@ fix:
 
 - [ ] edit functionality
 - [ ] push to vault from keychain
-

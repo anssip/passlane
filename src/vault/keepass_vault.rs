@@ -1,11 +1,15 @@
-use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Error, Totp};
+use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
-use keepass_ng::{db::Entry, db::Node, Database, DatabaseKey, error::DatabaseOpenError, group_get_children, NodeIterator, node_is_group, NodePtr, node_is_entry, search_node_by_uuid, DatabaseConfig, Group};
+use keepass_ng::error::{DatabaseSaveError, TOTPError};
+use keepass_ng::{
+    db::Entry, db::Node, error::DatabaseOpenError, group_get_children, node_is_entry,
+    node_is_group, search_node_by_uuid, Database, DatabaseConfig, DatabaseKey, Group, NodeIterator,
+    NodePtr,
+};
+use log::debug;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::str::FromStr;
-use keepass_ng::error::{DatabaseSaveError, TOTPError};
-use log::{debug};
 use uuid::Uuid;
 
 pub struct KeepassVault {
@@ -50,12 +54,20 @@ impl From<keepass_ng::error::Error> for Error {
 fn node_has_totp(node: &NodePtr) -> bool {
     let node = node.borrow();
     let e = node.as_any().downcast_ref::<Entry>().unwrap();
-    debug!("Checking node for TOTP: {:?}", e.get_otp());
+    debug!(
+        "Checking node for TOTP: {:?} {:?}",
+        e.get_title(),
+        e.get_otp()
+    );
     e.get_otp().is_ok()
 }
 
 impl KeepassVault {
-    pub fn new(password: &str, filepath: &str, keyfile_path: Option<String>) -> Result<KeepassVault, Error> {
+    pub fn new(
+        password: &str,
+        filepath: &str,
+        keyfile_path: Option<String>,
+    ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
         let db = Self::open_database(filepath, password, &keyfile_path)?;
         Ok(Self {
@@ -78,18 +90,26 @@ impl KeepassVault {
             .read(true)
             .write(true)
             .create_new(!Path::new(&self.filepath).exists())
-            .open(&self.filepath).unwrap();
+            .open(&self.filepath)
+            .unwrap();
 
-        let (_, key) = Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
+        let (_, key) =
+            Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
         debug!("Saving database to file '{}'", &self.filepath);
 
         self.db.save(&mut file, key)
     }
 
-
-    fn open_database(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<Database, Error> {
+    fn open_database(
+        filepath: &str,
+        password: &str,
+        keyfile: &Option<String>,
+    ) -> Result<Database, Error> {
         if !Path::new(filepath).exists() {
-            debug!("Database file '{}' does not exist, creating new database", filepath);
+            debug!(
+                "Database file '{}' does not exist, creating new database",
+                filepath
+            );
             return Ok(Database::new(DatabaseConfig::default()));
         }
         let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
@@ -99,25 +119,36 @@ impl KeepassVault {
     }
 
     fn create_group(&self, parent_uuid: Uuid, group_name: &str) -> Option<Uuid> {
-        self.db.create_new_group(parent_uuid, 0).map(|node| {
-            node.borrow_mut().as_any_mut().downcast_mut::<Group>().map(|group| {
-                group.set_title(Some(group_name));
-                group.get_uuid()
+        self.db
+            .create_new_group(parent_uuid, 0)
+            .map(|node| {
+                node.borrow_mut()
+                    .as_any_mut()
+                    .downcast_mut::<Group>()
+                    .map(|group| {
+                        group.set_title(Some(group_name));
+                        group.get_uuid()
+                    })
             })
-        }).unwrap()
+            .unwrap()
     }
 
-    fn get_database_key(filepath: &str, password: &str, keyfile: &Option<String>) -> Result<(File, DatabaseKey), DatabaseOpenError> {
+    fn get_database_key(
+        filepath: &str,
+        password: &str,
+        keyfile: &Option<String>,
+    ) -> Result<(File, DatabaseKey), DatabaseOpenError> {
         let db_file = File::open(filepath)?;
         let key = match keyfile {
             Some(kf) => {
                 debug!("Using keyfile '{}' and password", kf);
                 let file = &mut File::open(kf).expect("Failed to open keyfile");
-                DatabaseKey::new().with_password(password).with_keyfile(file).unwrap()
+                DatabaseKey::new()
+                    .with_password(password)
+                    .with_keyfile(file)
+                    .unwrap()
             }
-            None => {
-                DatabaseKey::new().with_password(password)
-            }
+            None => DatabaseKey::new().with_password(password),
         };
         Ok((db_file, key))
     }
@@ -128,12 +159,18 @@ impl KeepassVault {
             .map(Self::node_to_credential)
             .filter(|cred| {
                 if let Some(grep) = &grep {
-                    if !cred.username.to_lowercase().contains(&grep.to_lowercase()) && !cred.service.to_lowercase().contains(&grep.to_lowercase()) {
+                    if !cred
+                        .username()
+                        .to_lowercase()
+                        .contains(&grep.to_lowercase())
+                        && !cred.service().to_lowercase().contains(&grep.to_lowercase())
+                    {
                         return false;
                     }
                 }
                 true
-            }).collect()
+            })
+            .collect()
     }
 
     fn load_totps(&self, grep: Option<&str>) -> Vec<Totp> {
@@ -144,12 +181,15 @@ impl KeepassVault {
             .map(Self::node_to_totp)
             .filter(|totp| {
                 if let Some(grep) = &grep {
-                    if !totp.label.to_lowercase().contains(&grep.to_lowercase()) && !totp.issuer.to_lowercase().contains(&grep.to_lowercase()) {
+                    if !totp.label().to_lowercase().contains(&grep.to_lowercase())
+                        && !totp.issuer().to_lowercase().contains(&grep.to_lowercase())
+                    {
                         return false;
                     }
                 }
                 true
-            }).collect()
+            })
+            .collect()
     }
 
     fn load_payments(&self) -> Vec<PaymentCard> {
@@ -172,13 +212,7 @@ impl KeepassVault {
 
     fn node_to_credential(node: NodePtr) -> Credential {
         let (username, service, password, uuid) = Self::get_node_values(node);
-        Credential {
-            uuid,
-            password: password.to_string(),
-            service: service.to_string(),
-            username: username.to_string(),
-            notes: None,
-        }
+        Credential::new(Some(&uuid), &password, &service, &username, None)
     }
 
     fn node_to_totp(node: NodePtr) -> Totp {
@@ -189,16 +223,16 @@ impl KeepassVault {
             }
             Ok(totp) => {
                 let (url, label, issuer, secret, algorithm, period, digits, id) = totp;
-                Totp {
-                    id,
-                    url,
-                    label,
-                    issuer,
-                    secret,
-                    algorithm,
+                Totp::new(
+                    Some(&id),
+                    &url,
+                    &label,
+                    &issuer,
+                    &secret,
+                    &algorithm,
                     period,
                     digits,
-                }
+                )
             }
         }
     }
@@ -210,33 +244,46 @@ impl KeepassVault {
         let service = e.get_url().unwrap_or("(no service)");
         let password = e.get_password().unwrap_or("(no password)");
         let uuid = e.get_uuid();
-        (username.to_string(), service.to_string(), password.to_string(), uuid)
+        (
+            username.to_string(),
+            service.to_string(),
+            password.to_string(),
+            uuid,
+        )
     }
 
     fn node_to_payment(node: NodePtr) -> PaymentCard {
-        let (name, name_on_card, number, cvv, expiry, color, billing_address, id) = Self::get_node_payment_values(node).unwrap();
-        PaymentCard {
-            id,
-            name,
-            name_on_card,
-            number,
-            cvv,
-            expiry: Expiry::from_str(&expiry).unwrap(),
-            color,
-            billing_address: Some(Address::from_str(&billing_address).unwrap()),
-        }
+        let (name, name_on_card, number, cvv, expiry, color, billing_address, id) =
+            Self::get_node_payment_values(node).unwrap();
+        PaymentCard::new(
+            Some(&id),
+            &name,
+            &name_on_card,
+            &number,
+            &cvv,
+            Expiry::from_str(&expiry).unwrap(),
+            color.as_deref(),
+            Some(&Address::from_str(&billing_address).unwrap()),
+        )
     }
 
     fn node_to_note(node: NodePtr) -> Note {
         let (title, content, id) = Self::get_node_note_values(node).unwrap();
-        Note {
-            id,
-            title,
-            content,
-        }
+        Note::new(Some(&id), &title, &content)
     }
 
-    fn get_node_payment_values(node: NodePtr) -> Option<(String, String, String, String, String, Option<String>, String, Uuid)> {
+    fn get_node_payment_values(
+        node: NodePtr,
+    ) -> Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Uuid,
+    )> {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let note = e.get_notes()?;
@@ -248,7 +295,16 @@ impl KeepassVault {
         let color = Self::extract_value_from_note_opt(note, 4, "Color");
         let billing_address = Self::extract_value_from_note(note, 5, "Billing Address");
 
-        Some((name.to_string(), name_on_card, number, cvv, expiry, color, billing_address, e.get_uuid()))
+        Some((
+            name.to_string(),
+            name_on_card,
+            number,
+            cvv,
+            expiry,
+            color,
+            billing_address,
+            e.get_uuid(),
+        ))
     }
 
     fn get_node_note_values(node: NodePtr) -> Option<(String, String, Uuid)> {
@@ -262,7 +318,12 @@ impl KeepassVault {
 
     fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
         let no_value = &format!("(no {name} on card)");
-        note.lines().nth(line).unwrap_or(no_value).split(&format!("{name}: ")).nth(1).map(|v| String::from(v))
+        note.lines()
+            .nth(line)
+            .unwrap_or(no_value)
+            .split(&format!("{name}: "))
+            .nth(1)
+            .map(|v| String::from(v))
     }
 
     fn extract_value_from_note(note: &str, line: usize, name: &str) -> String {
@@ -270,17 +331,30 @@ impl KeepassVault {
         Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value)
     }
 
-    fn get_node_totp_values(node: NodePtr) -> Result<(String, String, String, String, String, u64, u32, Uuid), Error> {
+    fn get_node_totp_values(
+        node: NodePtr,
+    ) -> Result<(String, String, String, String, String, u64, u32, Uuid), Error> {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let otp = e.get_otp()?;
         let url = e.get_raw_otp_value().unwrap();
-        Ok((String::from(url), otp.label.to_string(), String::from(&otp.issuer), otp.get_secret(), otp.algorithm.to_string(), otp.period, otp.digits, e.get_uuid()))
+        Ok((
+            String::from(url),
+            otp.label.to_string(),
+            String::from(&otp.issuer),
+            otp.get_secret(),
+            otp.algorithm.to_string(),
+            otp.period,
+            otp.digits,
+            e.get_uuid(),
+        ))
     }
 
     fn get_groups(&self) -> Vec<NodePtr> {
         let root = self.get_root();
-        group_get_children(&root).unwrap().iter()
+        group_get_children(&root)
+            .unwrap()
+            .iter()
             .filter(|node| node_is_group(node))
             .cloned()
             .collect()
@@ -288,7 +362,8 @@ impl KeepassVault {
 
     fn find_group(&self, group_name: &str) -> Option<Uuid> {
         let groups = self.get_groups();
-        let group: Vec<&NodePtr> = groups.iter()
+        let group: Vec<&NodePtr> = groups
+            .iter()
             .filter(|node| node_is_group(node))
             .filter(|node| {
                 if let Some(entry) = node.borrow().as_any().downcast_ref::<Group>() {
@@ -296,7 +371,8 @@ impl KeepassVault {
                 } else {
                     false
                 }
-            }).collect();
+            })
+            .collect();
         if !group.is_empty() {
             Some(group[0].borrow().get_uuid())
         } else {
@@ -304,54 +380,83 @@ impl KeepassVault {
         }
     }
 
-    fn create_password_entry(&mut self, parent_uuid: &Uuid, credentials: &Credential) -> keepass_ng::Result<Option<Uuid>> {
-        self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
-            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
-                entry.set_title(Some(&credentials.service));
-                entry.set_username(Some(&credentials.username));
-                entry.set_password(Some(&credentials.password));
-                entry.set_url(Some(&credentials.service));
-                entry.get_uuid()
+    fn create_password_entry(
+        &mut self,
+        parent_uuid: &Uuid,
+        credentials: &Credential,
+    ) -> keepass_ng::Result<Option<Uuid>> {
+        self.db
+            .create_new_entry(parent_uuid.clone(), 0)
+            .map(|node| {
+                node.borrow_mut()
+                    .as_any_mut()
+                    .downcast_mut::<Entry>()
+                    .map(|entry| {
+                        entry.set_title(Some(credentials.service()));
+                        entry.set_username(Some(credentials.username()));
+                        entry.set_password(Some(credentials.password()));
+                        entry.set_url(Some(&credentials.service()));
+                        entry.get_uuid()
+                    })
             })
-        })
     }
 
-    fn create_totp_entry(&mut self, parent_uuid: &Uuid, totp: &Totp) -> Result<Option<Uuid>, Error> {
+    fn create_totp_entry(
+        &mut self,
+        parent_uuid: &Uuid,
+        totp: &Totp,
+    ) -> Result<Option<Uuid>, Error> {
         Ok(self.db.create_new_entry(*parent_uuid, 0).map(|node| {
-            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
-                entry.set_title(Some(&totp.label));
-                entry.set_otp(&totp.url);
-                entry.get_uuid()
-            })
+            node.borrow_mut()
+                .as_any_mut()
+                .downcast_mut::<Entry>()
+                .map(|entry| {
+                    entry.set_title(Some(totp.label()));
+                    entry.set_otp(totp.url());
+                    entry.get_uuid()
+                })
         })?)
     }
 
-    fn create_payment_entry(&mut self, parent_uuid: &Uuid, payment: &PaymentCard) -> keepass_ng::Result<Option<Uuid>> {
+    fn create_payment_entry(
+        &mut self,
+        parent_uuid: &Uuid,
+        payment: &PaymentCard,
+    ) -> keepass_ng::Result<Option<Uuid>> {
         self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
             let note = format!("Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
-                               payment.name_on_card,
-                               payment.number,
-                               payment.cvv,
+                               payment.name_on_card(),
+                               payment.number(),
+                               payment.cvv(),
                                payment.expiry_str(),
                                payment.color_str(),
-                               payment.billing_address.as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
+                               payment.billing_address().as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
             );
             node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
-                entry.set_title(Some(&payment.name));
+                entry.set_title(Some(payment.name()));
                 entry.set_notes(Some(&note));
                 entry.get_uuid()
             })
         })
     }
 
-    fn create_note_entry(&mut self, parent_uuid: &Uuid, note: &Note) -> keepass_ng::Result<Option<Uuid>> {
-        self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
-            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
-                entry.set_title(Some(&note.title));
-                entry.set_notes(Some(&note.content));
-                entry.get_uuid()
+    fn create_note_entry(
+        &mut self,
+        parent_uuid: &Uuid,
+        note: &Note,
+    ) -> keepass_ng::Result<Option<Uuid>> {
+        self.db
+            .create_new_entry(parent_uuid.clone(), 0)
+            .map(|node| {
+                node.borrow_mut()
+                    .as_any_mut()
+                    .downcast_mut::<Entry>()
+                    .map(|entry| {
+                        entry.set_title(Some(note.title()));
+                        entry.set_notes(Some(note.content()));
+                        entry.get_uuid()
+                    })
             })
-        })
     }
 
     fn do_delete(&mut self, uuid: &Uuid, save: bool) -> Result<(), Error> {
@@ -363,9 +468,8 @@ impl KeepassVault {
         Ok(())
     }
     fn find_or_create_group(&mut self, group_name: &str) -> Uuid {
-        self.find_group(group_name).unwrap_or_else(|| {
-            self.create_group(self.get_root_uuid(), group_name).unwrap()
-        })
+        self.find_group(group_name)
+            .unwrap_or_else(|| self.create_group(self.get_root_uuid(), group_name).unwrap())
     }
 }
 
@@ -407,7 +511,8 @@ impl PasswordVault for KeepassVault {
                 let username = e.get_username().unwrap_or("(no username)");
                 let service = e.get_url().unwrap_or("(no service)");
                 username.contains(grep) || service.contains(grep)
-            }).collect();
+            })
+            .collect();
         // delete
         for node in &matching {
             self.do_delete(&node.borrow().get_uuid(), false)?;
@@ -422,9 +527,10 @@ impl PaymentVault for KeepassVault {
         self.load_payments()
     }
 
-    fn save_payment(&mut self, payment: PaymentCard) -> Result<(), Error>{
+    fn save_payment(&mut self, payment: PaymentCard) -> Result<(), Error> {
         let group = self.find_or_create_group("Payments");
-        self.create_payment_entry(&group, &payment).expect("Failed to save payment");
+        self.create_payment_entry(&group, &payment)
+            .expect("Failed to save payment");
         self.save_database()?;
         Ok(())
     }
@@ -442,7 +548,8 @@ impl NoteVault for KeepassVault {
 
     fn save_note(&mut self, note: &Note) -> Result<(), Error> {
         let group = self.find_or_create_group("Notes");
-        self.create_note_entry(&group, &note).expect("Failed to save note");
+        self.create_note_entry(&group, &note)
+            .expect("Failed to save note");
         self.save_database()?;
         Ok(())
     }
@@ -459,7 +566,8 @@ impl TotpVault for KeepassVault {
 
     fn save_totp(&mut self, totp: &Totp) -> Result<(), Error> {
         let group = self.db.root.borrow().get_uuid();
-        self.create_totp_entry(&group, &totp).expect("Failed to save TOTP");
+        self.create_totp_entry(&group, &totp)
+            .expect("Failed to save TOTP");
         self.save_database()?;
         Ok(())
     }

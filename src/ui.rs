@@ -2,9 +2,8 @@ use comfy_table::*;
 use std::io;
 use std::io::Write;
 
-use std::cmp::min;
-use uuid::Uuid;
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
+use std::cmp::min;
 
 pub fn ask(question: &str) -> String {
     print!("{} ", question);
@@ -51,13 +50,7 @@ pub fn ask_number(question: &str) -> i32 {
 pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-    Credential {
-        uuid: Uuid::new_v4(),
-        service,
-        username,
-        password: String::from(password), // maybe rename the field because its not encrypted at this point
-        notes: None,
-    }
+    Credential::new(None, password, &service, &username, None)
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
@@ -67,7 +60,6 @@ pub fn ask_master_password(question: Option<&str>) -> String {
         ask_password("Please enter master password: ")
     }
 }
-
 
 pub(crate) fn ask_totp_master_password() -> String {
     ask_password("Please enter master password of the One Time Passwords vault: ")
@@ -88,18 +80,19 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
             .collect::<Vec<Cell>>(),
     );
     for (index, creds) in (0_i16..).zip(credentials.iter()) {
+        let service = creds.service().to_string();
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&creds.service[..min(creds.service.len(), 60)])),
-                Cell::new(String::from(&creds.username)),
-                Cell::new(String::from(&creds.password)),
+                Cell::new(service[..min(service.len(), 60)].to_string()),
+                Cell::new(String::from(creds.username())),
+                Cell::new(String::from(creds.password())),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&creds.service[..min(creds.service.len(), 60)])),
-                Cell::new(String::from(&creds.username)),
+                Cell::new(service[..min(service.len(), 60)].to_string()),
+                Cell::new(String::from(creds.username())),
             ]
         };
         table.add_row(columns);
@@ -136,21 +129,21 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
         let columns = if show_cleartext {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&card.name)),
-                Cell::new(String::from(if let Some(color) = &card.color {
+                Cell::new(String::from(card.name())),
+                Cell::new(String::from(if let Some(color) = card.color() {
                     &color
                 } else {
                     ""
                 })),
-                Cell::new(String::from(&card.number)),
-                Cell::new(String::from(format!("{}", &card.expiry))),
-                Cell::new(String::from(&card.cvv)),
-                Cell::new(String::from(&card.name_on_card)),
+                Cell::new(String::from(card.number())),
+                Cell::new(String::from(format!("{}", card.expiry()))),
+                Cell::new(String::from(card.cvv())),
+                Cell::new(String::from(card.name_on_card())),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&card.name)),
+                Cell::new(String::from(card.name())),
                 Cell::new(card.color_str()),
                 Cell::new(card.last_four()),
                 Cell::new(card.expiry_str()),
@@ -173,21 +166,21 @@ pub fn show_card(card: &PaymentCard) {
             Cell::new(value),
         ]);
     };
-    add_row("Name", &card.name, None);
+    add_row("Name", card.name(), None);
     add_row("Color", &card.color_str(), None);
-    add_row("Number", &card.number, None);
+    add_row("Number", card.number(), None);
     add_row("Expiry", &card.expiry_str(), None);
-    add_row("CVV", &card.cvv, None);
-    add_row("Name on card", &card.name_on_card, None);
-    if let Some(address) = &card.billing_address {
+    add_row("CVV", card.cvv(), None);
+    add_row("Name on card", card.name_on_card(), None);
+    if let Some(address) = card.billing_address() {
         add_row("Billing address", "", Some(comfy_table::Color::Cyan));
-        add_row("Street", &address.street, Some(comfy_table::Color::Cyan));
-        add_row("Zip", &address.zip, Some(comfy_table::Color::Cyan));
-        add_row("City", &address.city, Some(comfy_table::Color::Cyan));
-        if let Some(state) = &address.state {
+        add_row("Street", address.street(), Some(comfy_table::Color::Cyan));
+        add_row("Zip", address.zip(), Some(comfy_table::Color::Cyan));
+        add_row("City", address.city(), Some(comfy_table::Color::Cyan));
+        if let Some(state) = address.state() {
             add_row("State", &state, Some(comfy_table::Color::Cyan));
         }
-        add_row("Country", &address.country, Some(comfy_table::Color::Cyan));
+        add_row("Country", address.country(), Some(comfy_table::Color::Cyan));
     }
     println!("{table}");
 }
@@ -220,14 +213,18 @@ fn ask_address() -> Address {
     let zip = ask("Enter postal code:");
     let country = ask("Enter country:");
 
-    Address {
-        id: Uuid::new_v4(),
-        street,
-        city,
-        state: if state != "" { Some(state) } else { None },
-        zip,
-        country,
-    }
+    Address::new(
+        None,
+        &street,
+        &city,
+        &country,
+        if !state.is_empty() {
+            Some(&state)
+        } else {
+            None
+        },
+        &zip,
+    )
 }
 
 pub fn ask_payment_info() -> PaymentCard {
@@ -240,30 +237,30 @@ pub fn ask_payment_info() -> PaymentCard {
     let cvv = ask("Enter card cvv:");
     let address = ask_address();
 
-    PaymentCard {
-        id: Uuid::new_v4(),
-        name,
-        color: if !color.is_empty() { Some(color) } else { None },
-        number,
-        name_on_card,
-        expiry: Expiry {
+    PaymentCard::new(
+        None,
+        &name,
+        &name_on_card,
+        &number,
+        &cvv,
+        Expiry {
             month: card_expiration_month,
             year: card_expiration_year,
         },
-        cvv,
-        billing_address: Some(address),
-    }
+        if !color.is_empty() {
+            Some(&color)
+        } else {
+            None
+        },
+        Some(&address),
+    )
 }
 
 pub(crate) fn ask_note_info() -> Note {
     let title = ask("Enter note title:");
     let content = ask_multiline("Enter note content:");
 
-    Note {
-        id: Uuid::new_v4(),
-        title,
-        content,
-    }
+    Note::new(None, &title, &content)
 }
 
 pub(crate) fn ask_totp_info() -> Totp {
@@ -275,33 +272,38 @@ pub(crate) fn ask_totp_info() -> Totp {
     println!("Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?");
     let proceed = ask("Press y (yes) to add with defaults, n (no) to specify details:");
 
-    if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no"{
+    if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no" {
         let digits = ask_number("Enter number of digits:");
         let period = ask_number("Enter period:");
         let algorithm = ask_algorithm();
 
-        Totp {
-            id: Uuid::new_v4(),
-            url: format!("otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}", label, secret, &issuer, period, algorithm, digits),
-            label: label.to_string(),
-            issuer,
-            secret,
-            digits: digits as u32,
-            algorithm,
-            period: period as u64,
-        }
+        Totp::new(
+            None,
+            &format!(
+                "otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}",
+                label, secret, &issuer, period, algorithm, digits
+            ),
+            &label,
+            &issuer,
+            &secret,
+            &algorithm,
+            period as u64,
+            digits as u32,
+        )
     } else {
-
-        Totp {
-            id: Uuid::new_v4(),
-            url: format!("otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1&digits=6", label, secret, issuer),
-            label: label.to_string(),
-            issuer: String::from(&issuer),
-            secret,
-            digits: 6,
-            algorithm: String::from("SHA1"),
-            period: 30,
-        }
+        Totp::new(
+            None,
+            &format!(
+                "otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1&digits=6",
+                label, secret, issuer
+            ),
+            &label,
+            &issuer,
+            &secret,
+            "SHA1",
+            30,
+            6,
+        )
     }
 }
 
@@ -333,13 +335,13 @@ pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
         let columns = if show_cleartext {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&note.title)),
-                Cell::new(String::from(&note.content)),
+                Cell::new(note.title()),
+                Cell::new(note.content()),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(String::from(&note.title)),
+                Cell::new(&note.title()),
             ]
         };
         table.add_row(columns);
@@ -349,8 +351,8 @@ pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
 
 pub(crate) fn show_note(note: &Note) {
     println!("---------------------------");
-    println!("{}\n", note.title);
-    println!("{}", note.content);
+    println!("{}\n", note.title());
+    println!("{}", note.content());
     println!("---------------------------");
 }
 
@@ -362,14 +364,14 @@ pub(crate) fn show_totp_table(totps: &[Totp]) {
             header_cell(String::from("Label")),
             header_cell(String::from("Issuer")),
         ]
-            .into_iter()
-            .collect::<Vec<Cell>>(),
+        .into_iter()
+        .collect::<Vec<Cell>>(),
     );
     for (index, totp) in totps.iter().enumerate() {
         table.add_row(vec![
             Cell::new(index.to_string()).fg(Color::Yellow),
-            Cell::new(String::from(&totp.label)),
-            Cell::new(String::from(&totp.issuer)),
+            Cell::new(String::from(totp.label())),
+            Cell::new(String::from(totp.issuer())),
         ]);
     }
     println!("{table}");
