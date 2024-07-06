@@ -8,7 +8,13 @@ description = "A password manager for the command line"
 readme = "README.md"
 homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
-keywords = ["keepass", "password-manager", "password-generator", "totp", "authenticator"]
+keywords = [
+    "keepass",
+    "password-manager",
+    "password-generator",
+    "totp",
+    "authenticator",
+]
 categories = ["command-line-utilities"]
 
 [dependencies]
@@ -30,7 +36,7 @@ anyhow = "1.0.56"
 chrono = "0.4.19"
 env_logger = "0.10.0"
 hex = "0.4.3"
-keepass-ng = { version = "0.0.2", features = ["save_kdbx4", "totp"] }
+keepass-ng = { version = "0.0.3", features = ["save_kdbx4", "totp"] }
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
 percent-encoding = "2.3.1"

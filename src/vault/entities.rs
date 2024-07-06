@@ -1,11 +1,13 @@
-use std::fmt::{Display, Formatter};
-use uuid::Uuid;
-use std::num::ParseIntError;
+use keepass_ng::db::TOTP;
+use log::debug;
 use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::num::ParseIntError;
 use std::str::FromStr;
 use std::time::SystemTimeError;
-use keepass_ng::db::{TOTP};
-use log::debug;
+use uuid::Uuid;
+
+use crate::crypto::SPECIAL;
 
 #[derive(Clone)]
 pub struct Date(pub String);
@@ -61,40 +63,194 @@ impl Display for Error {
 
 #[derive(Clone)]
 pub struct Credential {
-    pub uuid: Uuid,
-    pub password: String,
-    pub service: String,
-    pub username: String,
-    pub notes: Option<String>,
+    uuid: Uuid,
+    password: String,
+    service: String,
+    username: String,
+    notes: Option<String>,
+}
+
+impl Credential {
+    pub fn new(
+        uuid: Option<&Uuid>,
+        password: &str,
+        service: &str,
+        username: &str,
+        notes: Option<&str>,
+    ) -> Self {
+        Credential {
+            uuid: uuid.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
+            password: password.to_string(),
+            service: sanitize(service),
+            username: sanitize(username),
+            notes: notes.map(sanitize),
+        }
+    }
+
+    pub fn uuid(&self) -> &Uuid {
+        &self.uuid
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn notes(&self) -> Option<&String> {
+        self.notes.as_ref()
+    }
 }
 
 #[derive(Clone)]
 pub struct PaymentCard {
-    pub id: Uuid,
-    pub name: String,
-    pub name_on_card: String,
-    pub number: String,
-    pub cvv: String,
-    pub expiry: Expiry,
-    pub color: Option<String>,
-    pub billing_address: Option<Address>,
+    id: Uuid,
+    name: String,
+    name_on_card: String,
+    number: String,
+    cvv: String,
+    expiry: Expiry,
+    color: Option<String>,
+    billing_address: Option<Address>,
+}
+
+impl PaymentCard {
+    pub fn new(
+        id: Option<&Uuid>,
+        name: &str,
+        name_on_card: &str,
+        number: &str,
+        cvv: &str,
+        expiry: Expiry,
+        color: Option<&str>,
+        billing_address: Option<&Address>,
+    ) -> Self {
+        PaymentCard {
+            id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
+            name: sanitize(name),
+            name_on_card: sanitize(name_on_card),
+            number: sanitize(number),
+            cvv: sanitize(cvv),
+            expiry,
+            color: color.map(sanitize),
+            billing_address: billing_address.cloned(),
+        }
+    }
+
+    pub fn id(&self) -> &Uuid {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn name_on_card(&self) -> &str {
+        &self.name_on_card
+    }
+
+    pub fn number(&self) -> &str {
+        &self.number
+    }
+
+    pub fn cvv(&self) -> &str {
+        &self.cvv
+    }
+
+    pub fn expiry(&self) -> &Expiry {
+        &self.expiry
+    }
+
+    pub fn color(&self) -> Option<&String> {
+        self.color.as_ref()
+    }
+
+    pub fn billing_address(&self) -> Option<&Address> {
+        self.billing_address.as_ref()
+    }
 }
 
 #[derive(Clone)]
 pub struct Totp {
-    pub id: Uuid,
-    pub url: String,
-    pub label: String,
-    pub issuer: String,
-    pub secret: String,
-    pub algorithm: String,
-    pub period: u64,
-    pub digits: u32,
+    id: Uuid,
+    url: String,
+    label: String,
+    issuer: String,
+    secret: String,
+    algorithm: String,
+    period: u64,
+    digits: u32,
+}
+
+impl Totp {
+    pub fn new(
+        id: Option<&Uuid>,
+        url: &str,
+        label: &str,
+        issuer: &str,
+        secret: &str,
+        algorithm: &str,
+        period: u64,
+        digits: u32,
+    ) -> Self {
+        Totp {
+            id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
+            url: url.to_string(),
+            label: sanitize(label),
+            issuer: issuer.to_string(),
+            secret: secret.to_string(),
+            algorithm: algorithm.to_string(),
+            period,
+            digits,
+        }
+    }
+
+    pub fn id(&self) -> &Uuid {
+        &self.id
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+
+    pub fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    pub fn period(&self) -> u64 {
+        self.period
+    }
+
+    pub fn digits(&self) -> u32 {
+        self.digits
+    }
 }
 
 impl Display for Totp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "label: {}, issuer: {}, secret: {}, algo: {}, digits: {}", self.label, self.issuer, self.secret, self.algorithm, self.digits)
+        write!(
+            f,
+            "label: {}, issuer: {}, secret: {}, algo: {}, digits: {}",
+            self.label, self.issuer, self.secret, self.algorithm, self.digits
+        )
     }
 }
 
@@ -179,29 +335,102 @@ impl FromStr for Expiry {
         if parts.len() != 2 {
             return Err(ExpiryParseError::InvalidFormat);
         }
-        let month = parts[0].parse::<i32>().map_err(ExpiryParseError::ParseError)?;
-        let year = parts[1].parse::<i32>().map_err(ExpiryParseError::ParseError)?;
+        let month = parts[0]
+            .parse::<i32>()
+            .map_err(ExpiryParseError::ParseError)?;
+        let year = parts[1]
+            .parse::<i32>()
+            .map_err(ExpiryParseError::ParseError)?;
         Ok(Expiry { month, year })
     }
 }
 
 #[derive(Clone)]
 pub struct Address {
-    pub id: Uuid,
-    pub street: String,
-    pub city: String,
-    pub country: String,
-    pub state: Option<String>,
-    pub zip: String,
+    id: Uuid,
+    street: String,
+    city: String,
+    country: String,
+    state: Option<String>,
+    zip: String,
+}
+
+impl Address {
+    pub fn new(
+        id: Option<&Uuid>,
+        street: &str,
+        city: &str,
+        country: &str,
+        state: Option<&str>,
+        zip: &str,
+    ) -> Self {
+        Address {
+            id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
+            street: sanitize(street),
+            city: sanitize(city),
+            country: sanitize(country),
+            state: state.map(sanitize),
+            zip: sanitize(zip),
+        }
+    }
+
+    pub fn id(&self) -> &Uuid {
+        &self.id
+    }
+
+    pub fn street(&self) -> &str {
+        &self.street
+    }
+
+    pub fn city(&self) -> &str {
+        &self.city
+    }
+
+    pub fn country(&self) -> &str {
+        &self.country
+    }
+
+    pub fn state(&self) -> Option<&String> {
+        self.state.as_ref()
+    }
+
+    pub fn zip(&self) -> &str {
+        &self.zip
+    }
 }
 
 #[derive(Clone)]
 pub struct Note {
-    pub id: Uuid,
-    pub title: String,
-    pub content: String,
+    id: Uuid,
+    title: String,
+    content: String,
 }
 
+fn sanitize(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || SPECIAL.contains(*c))
+        .collect::<String>()
+}
+
+impl Note {
+    pub fn new(id: Option<&Uuid>, title: &str, content: &str) -> Self {
+        Note {
+            id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
+            title: sanitize(title),
+            content: sanitize(content),
+        }
+    }
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+}
 
 impl Display for Address {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -222,7 +451,9 @@ pub enum AddressParseError {
 impl fmt::Display for AddressParseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            AddressParseError::InvalidFormat => write!(f, "Invalid format. Expected Street, Zip, City, Country"),
+            AddressParseError::InvalidFormat => {
+                write!(f, "Invalid format. Expected Street, Zip, City, Country")
+            }
             AddressParseError::ParseError(e) => e.fmt(f),
         }
     }
@@ -248,6 +479,13 @@ impl FromStr for Address {
         let zip = parts[1].trim().to_string();
         let city = parts[2].trim().to_string();
         let country = parts[3].trim().to_string();
-        Ok(Address { id: Uuid::new_v4(), street, city, country, state: None, zip })
+        Ok(Address {
+            id: Uuid::new_v4(),
+            street,
+            city,
+            country,
+            state: None,
+            zip,
+        })
     }
 }
