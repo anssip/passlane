@@ -2,9 +2,9 @@
 
 ![passlane-logo-small](https://github.com/anssip/passlane/assets/271711/6041f6fb-816f-43e9-b54c-325180addef1)
 
-A password manager CLI using Keepass as the storage backend. In addition to passwords, it supports 
-**authenticator functionality** with Timed One Time Passwords (TOTP), secure saving and managing of 
-**payment cards** and **secure notes**. 
+A password manager and authenticator CLI using Keepass as the storage backend. In addition to passwords, it supports
+**authenticator functionality** with Timed One Time Passwords (TOTP), secure saving and managing of
+**payment cards** and **secure notes**.
 
 Passlane uses the Keepass encrypted file format for storing the data.
 
@@ -66,8 +66,8 @@ See below for more information on how to use the CLI.
 ### First time setup
 
 When you run Passlane for the first time, it will create a new vault file at `~/.passlane/store.kdbx`. This is a
-Keepass compatible file that stores all your passwords, payment cards, and secure notes. You will be asked to enter a 
-master password that will be used to encrypt the vault contents. You can also store the master password in your 
+Keepass compatible file that stores all your passwords, payment cards, and secure notes. You will be asked to enter a
+master password that will be used to encrypt the vault contents. You can also store the master password in your
 computer's keychain to avoid typing it every time, see below for more info.
 
 You can also move the vault file to the cloud allowing access from all your devices. [See below for more info](#syncing-data-to-your-devices).
@@ -149,21 +149,21 @@ Run `passlane show foobard.com` --> shows foobar.com's password and also copies 
 If the search finds more than one matches:
 
 ```bash
-$ passlane show google.com
-Found 9 matches:
-+---+--------------------------------+------------------------------------+
-|   | Service                        | Username/email                     |
-+=========================================================================+
-| 0 | https://accounts.google.com    | jack@megacorp.com                  |
-|---+--------------------------------+------------------------------------|
-| 1 | https://accounts.google.com    | jack1p@gmail.com                   |
-|---+--------------------------------+------------------------------------|
-| 2 | https://accounts.google.com    | jck@hey.com                        |
-|---+--------------------------------+------------------------------------|
-| 3 | https://accounts.google.com    | jackrussel@gmail.com               |
-|---+--------------------------------+------------------------------------|
-To copy one of these passwords to clipboard, please enter a row number from
-the table above, or press q to exit: 3
+➜  bin passlane show google
+Unlocking vault...
+Found 6 credentials:
++---+-----------------------------------------------------+--------------------------------+------------------+
+|   | Service                                             | Username/email                 | Modified         |
++=============================================================================================================+
+| 0 | https://accounts.google.com/signin/v2/challenge/pwd | anssi@amm.co.jp                | 23.04.2024 14:15 |
+|---+-----------------------------------------------------+--------------------------------+------------------|
+| 1 | google.com                                          | anssi.piirainen@flowplayer.com | 23.04.2024 14:15 |
+|---+-----------------------------------------------------+--------------------------------+------------------|
+| 2 | google.com                                          | anssip                         | 23.04.2024 14:15 |
+|---+-----------------------------------------------------+--------------------------------+------------------|
+| 3 | google.com                                          | anssi@carbon.video             | 23.04.2024 14:15 |
++---+-----------------------------------------------------+--------------------------------+------------------+
+To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit: 3
 Password from index 3 copied to clipboard!
 ```
 
@@ -172,15 +172,15 @@ Password from index 3 copied to clipboard!
 To list all your saved payment cards.
 
 ```bash
-passlane show -p
-
+➜  bin passlane show -p
+Unlocking vault...
 Found 1 payment cards:
-+---+---------------+-------+--------+--------+
-|   | Name          | Color | Last 4 | Expiry |
-+=============================================+
-| 0 | Personal Visa | White | 1234   | 9/25   |
-+---+---------------+-------+--------+--------+
-Do you want to see the card details? (y/n) y
++---+----------------------+-------+--------+------------------+
+|   | Name                 | Color | Expiry | Modified         |
++==============================================================+
+| 0 | Visa Gold (personal) | Gold  | 6/2025 | 06.07.2024 10:51 |
++---+----------------------+-------+--------+------------------+
+Do you want to see the full card details? (y/n)
 ```
 
 To save a payment card:
@@ -224,12 +224,12 @@ you gain the benefit of two-factor authentication. You don't want to store these
 Here is an example where teh totp vault file is stored in Dropbox:
 
 ```bash
-~/.passlane > cat .totp_vault_path                                                                
-/Users/anssi/Dropbox/stuff/totp.kdbx        
+~/.passlane > cat .totp_vault_path
+/Users/anssi/Dropbox/stuff/totp.kdbx
 ```
 
-The TOTP vault has a separate master password that you need to enter when you access the one time passwords. 
-You can also store the master password in your computer's keychain to avoid typing it every time. Use 
+The TOTP vault has a separate master password that you need to enter when you access the one time passwords.
+You can also store the master password in your computer's keychain to avoid typing it every time. Use
 the unlock command with the `-o` option for this purpose.
 
 ```bash
@@ -317,9 +317,9 @@ passlane export -n notes.csv
 
 ## Syncing data to your devices
 
-You can place the vault file to a cloud storage service like Dropbox, Google Drive, or iCloud Drive. 
+You can place the vault file to a cloud storage service like Dropbox, Google Drive, or iCloud Drive.
 This way you can access your passwords from all your devices.
-By default, Passlane assumes that the file is located at `~/.passlane/store.kdbx`. 
+By default, Passlane assumes that the file is located at `~/.passlane/store.kdbx`.
 You can change the location by storing the file path in a text file called `.vault_path` at the `~/.passlane/` directory.
 
 For example, this shows how John has stored the path `/Users/john/Dropbox/Stuff/store.kdbx` to the `.vault_path` file:
@@ -337,4 +337,3 @@ There are several other Keepass compatible applications that you can use to acce
 - [KeepassXC-Browser](https://github.com/keepassxreboot/keepassxc-browser)
 - [KeePassium](https://keepassium.com/) is a mobile application for iOS
 - ... and many others
-

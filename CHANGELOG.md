@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.1]
+
+- Fix to validate all input from the command line to be stored (to remove all characters not allowed in Keepass XML)
+- Show last modified date for each entry in the results tables
+- Fix to store OTPs as protected values in the Keepass file
+
 ## [2.4.0]
 
 - Added support for TOTP (Time-based One-Time Password) codes

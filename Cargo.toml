@@ -1,10 +1,10 @@
 [package]
 name = "passlane"
-version = "2.4.0"
+version = "2.4.2"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
-description = "A password manager for the command line"
+description = "A password manager and authenticator for the command line"
 readme = "README.md"
 homepage = "https://github.com/anssip/passlane"
 repository = "https://github.com/anssip/passlane"
