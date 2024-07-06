@@ -25,7 +25,14 @@ pub struct CSVInputCredentials {
 
 impl CSVInputCredentials {
     pub fn to_credential(&self) -> Credential {
-        Credential::new(None, &self.password, &self.service, &self.username, None)
+        Credential::new(
+            None,
+            &self.password,
+            &self.service,
+            &self.username,
+            None,
+            None,
+        )
     }
 }
 

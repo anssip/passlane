@@ -50,7 +50,7 @@ pub fn ask_number(question: &str) -> i32 {
 pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service:");
     let username = ask("Enter username:");
-    Credential::new(None, password, &service, &username, None)
+    Credential::new(None, password, &service, &username, None, None)
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
@@ -69,9 +69,9 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
     let mut table = Table::new();
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
-        vec!["", "Service", "Username/email", "Password"]
+        vec!["", "Service", "Username/email", "Password", "Modified"]
     } else {
-        vec!["", "Service", "Username/email"]
+        vec!["", "Service", "Username/email", "Modified"]
     };
     table.set_header(
         headers
@@ -87,12 +87,14 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
                 Cell::new(service[..min(service.len(), 60)].to_string()),
                 Cell::new(String::from(creds.username())),
                 Cell::new(String::from(creds.password())),
+                Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(service[..min(service.len(), 60)].to_string()),
                 Cell::new(String::from(creds.username())),
+                Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         };
         table.add_row(columns);
@@ -115,9 +117,10 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
             "Expiry",
             "CVV",
             "Name on card",
+            "Modified",
         ]
     } else {
-        vec!["", "Name", "Color", "Last 4", "Expiry"]
+        vec!["", "Name", "Color", "Expiry", "Modified"]
     };
     table.set_header(
         headers
@@ -139,14 +142,15 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
                 Cell::new(String::from(format!("{}", card.expiry()))),
                 Cell::new(String::from(card.cvv())),
                 Cell::new(String::from(card.name_on_card())),
+                Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(String::from(card.name())),
                 Cell::new(card.color_str()),
-                Cell::new(card.last_four()),
                 Cell::new(card.expiry_str()),
+                Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         };
         table.add_row(columns);
@@ -253,6 +257,7 @@ pub fn ask_payment_info() -> PaymentCard {
             None
         },
         Some(&address),
+        None,
     )
 }
 
@@ -260,7 +265,7 @@ pub(crate) fn ask_note_info() -> Note {
     let title = ask("Enter note title:");
     let content = ask_multiline("Enter note content:");
 
-    Note::new(None, &title, &content)
+    Note::new(None, &title, &content, None)
 }
 
 pub(crate) fn ask_totp_info() -> Totp {
@@ -289,6 +294,7 @@ pub(crate) fn ask_totp_info() -> Totp {
             &algorithm,
             period as u64,
             digits as u32,
+            None,
         )
     } else {
         Totp::new(
@@ -303,6 +309,7 @@ pub(crate) fn ask_totp_info() -> Totp {
             "SHA1",
             30,
             6,
+            None,
         )
     }
 }
@@ -321,9 +328,9 @@ fn ask_algorithm() -> String {
 pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
     let mut table = Table::new();
     let headers = if show_cleartext {
-        vec!["", "Title", "Note"]
+        vec!["", "Title", "Note", "Modified"]
     } else {
-        vec!["", "Title"]
+        vec!["", "Title", "Modified"]
     };
     table.set_header(
         headers
@@ -337,11 +344,13 @@ pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(note.title()),
                 Cell::new(note.content()),
+                Cell::new(&note.last_modified().format("%Y-%m-%d %H:%M:%S").to_string()),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(&note.title()),
+                Cell::new(&note.last_modified().format("%Y-%m-%d %H:%M:%S").to_string()),
             ]
         };
         table.add_row(columns);
@@ -360,9 +369,10 @@ pub(crate) fn show_totp_table(totps: &[Totp]) {
     let mut table = Table::new();
     table.set_header(
         vec![
-            header_cell(String::from("")),
-            header_cell(String::from("Label")),
-            header_cell(String::from("Issuer")),
+            header_cell("".to_string()),
+            header_cell("Label".to_string()),
+            header_cell("Issuer".to_string()),
+            header_cell("Modified".to_string()),
         ]
         .into_iter()
         .collect::<Vec<Cell>>(),
@@ -370,8 +380,9 @@ pub(crate) fn show_totp_table(totps: &[Totp]) {
     for (index, totp) in totps.iter().enumerate() {
         table.add_row(vec![
             Cell::new(index.to_string()).fg(Color::Yellow),
-            Cell::new(String::from(totp.label())),
-            Cell::new(String::from(totp.issuer())),
+            Cell::new(totp.label().to_string()),
+            Cell::new(totp.issuer().to_string()),
+            Cell::new(totp.last_modified().format("%d.%m.%Y %H:%M").to_string()),
         ]);
     }
     println!("{table}");
