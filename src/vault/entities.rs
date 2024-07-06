@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use keepass_ng::db::TOTP;
 use log::debug;
 use std::fmt;
@@ -8,15 +9,6 @@ use std::time::SystemTimeError;
 use uuid::Uuid;
 
 use crate::crypto::SPECIAL;
-
-#[derive(Clone)]
-pub struct Date(pub String);
-
-impl Display for Date {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 #[derive(Debug)]
 pub struct Error {
@@ -68,6 +60,7 @@ pub struct Credential {
     service: String,
     username: String,
     notes: Option<String>,
+    last_modified: DateTime<Utc>,
 }
 
 impl Credential {
@@ -77,6 +70,7 @@ impl Credential {
         service: &str,
         username: &str,
         notes: Option<&str>,
+        last_modified: Option<DateTime<Utc>>,
     ) -> Self {
         Credential {
             uuid: uuid.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
@@ -84,6 +78,7 @@ impl Credential {
             service: sanitize(service),
             username: sanitize(username),
             notes: notes.map(sanitize),
+            last_modified: last_modified.unwrap_or(Utc::now()),
         }
     }
 
@@ -106,6 +101,10 @@ impl Credential {
     pub fn notes(&self) -> Option<&String> {
         self.notes.as_ref()
     }
+
+    pub fn last_modified(&self) -> &DateTime<Utc> {
+        &self.last_modified
+    }
 }
 
 #[derive(Clone)]
@@ -118,6 +117,7 @@ pub struct PaymentCard {
     expiry: Expiry,
     color: Option<String>,
     billing_address: Option<Address>,
+    last_modified: DateTime<Utc>,
 }
 
 impl PaymentCard {
@@ -130,6 +130,7 @@ impl PaymentCard {
         expiry: Expiry,
         color: Option<&str>,
         billing_address: Option<&Address>,
+        last_modified: Option<DateTime<Utc>>,
     ) -> Self {
         PaymentCard {
             id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
@@ -140,6 +141,7 @@ impl PaymentCard {
             expiry,
             color: color.map(sanitize),
             billing_address: billing_address.cloned(),
+            last_modified: last_modified.unwrap_or_else(|| Utc::now()),
         }
     }
 
@@ -174,6 +176,10 @@ impl PaymentCard {
     pub fn billing_address(&self) -> Option<&Address> {
         self.billing_address.as_ref()
     }
+
+    pub fn last_modified(&self) -> &DateTime<Utc> {
+        &self.last_modified
+    }
 }
 
 #[derive(Clone)]
@@ -186,6 +192,7 @@ pub struct Totp {
     algorithm: String,
     period: u64,
     digits: u32,
+    last_modified: DateTime<Utc>,
 }
 
 impl Totp {
@@ -198,6 +205,7 @@ impl Totp {
         algorithm: &str,
         period: u64,
         digits: u32,
+        last_modified: Option<DateTime<Utc>>,
     ) -> Self {
         Totp {
             id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
@@ -208,6 +216,7 @@ impl Totp {
             algorithm: algorithm.to_string(),
             period,
             digits,
+            last_modified: last_modified.unwrap_or_else(|| Utc::now()),
         }
     }
 
@@ -241,6 +250,10 @@ impl Totp {
 
     pub fn digits(&self) -> u32 {
         self.digits
+    }
+
+    pub fn last_modified(&self) -> &DateTime<Utc> {
+        &self.last_modified
     }
 }
 
@@ -404,6 +417,7 @@ pub struct Note {
     id: Uuid,
     title: String,
     content: String,
+    last_modified: DateTime<Utc>,
 }
 
 fn sanitize(value: &str) -> String {
@@ -414,11 +428,17 @@ fn sanitize(value: &str) -> String {
 }
 
 impl Note {
-    pub fn new(id: Option<&Uuid>, title: &str, content: &str) -> Self {
+    pub fn new(
+        id: Option<&Uuid>,
+        title: &str,
+        content: &str,
+        last_modified: Option<DateTime<Utc>>,
+    ) -> Self {
         Note {
             id: id.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
             title: sanitize(title),
             content: sanitize(content),
+            last_modified: last_modified.unwrap_or_else(Utc::now),
         }
     }
     pub fn id(&self) -> Uuid {
@@ -429,6 +449,9 @@ impl Note {
     }
     pub fn content(&self) -> &str {
         &self.content
+    }
+    pub fn last_modified(&self) -> DateTime<Utc> {
+        self.last_modified
     }
 }
 

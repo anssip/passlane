@@ -1,5 +1,6 @@
 use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::error::{DatabaseSaveError, TOTPError};
 use keepass_ng::{
     db::Entry, db::Node, error::DatabaseOpenError, group_get_children, node_is_entry,
@@ -211,8 +212,15 @@ impl KeepassVault {
     }
 
     fn node_to_credential(node: NodePtr) -> Credential {
-        let (username, service, password, uuid) = Self::get_node_values(node);
-        Credential::new(Some(&uuid), &password, &service, &username, None)
+        let (username, service, password, uuid, modified_date_time) = Self::get_node_values(node);
+        Credential::new(
+            Some(&uuid),
+            &password,
+            &service,
+            &username,
+            None,
+            modified_date_time.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
+        )
     }
 
     fn node_to_totp(node: NodePtr) -> Totp {
@@ -222,7 +230,8 @@ impl KeepassVault {
                 panic!("Failed to convert node to TOTP: {}", e.message);
             }
             Ok(totp) => {
-                let (url, label, issuer, secret, algorithm, period, digits, id) = totp;
+                let (url, label, issuer, secret, algorithm, period, digits, id, last_modified) =
+                    totp;
                 Totp::new(
                     Some(&id),
                     &url,
@@ -232,23 +241,26 @@ impl KeepassVault {
                     &algorithm,
                     period,
                     digits,
+                    last_modified.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
                 )
             }
         }
     }
 
-    fn get_node_values(node: NodePtr) -> (String, String, String, Uuid) {
+    fn get_node_values(node: NodePtr) -> (String, String, String, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let username = e.get_username().unwrap_or("(no username)");
         let service = e.get_url().unwrap_or("(no service)");
         let password = e.get_password().unwrap_or("(no password)");
         let uuid = e.get_uuid();
+        let last_modified = e.get_times().get_last_modification();
         (
             username.to_string(),
             service.to_string(),
             password.to_string(),
             uuid,
+            last_modified,
         )
     }
 
@@ -264,12 +276,18 @@ impl KeepassVault {
             Expiry::from_str(&expiry).unwrap(),
             color.as_deref(),
             Some(&Address::from_str(&billing_address).unwrap()),
+            None,
         )
     }
 
     fn node_to_note(node: NodePtr) -> Note {
-        let (title, content, id) = Self::get_node_note_values(node).unwrap();
-        Note::new(Some(&id), &title, &content)
+        let (title, content, id, last_modified) = Self::get_node_note_values(node).unwrap();
+        Note::new(
+            Some(&id),
+            &title,
+            &content,
+            last_modified.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
+        )
     }
 
     fn get_node_payment_values(
@@ -307,13 +325,21 @@ impl KeepassVault {
         ))
     }
 
-    fn get_node_note_values(node: NodePtr) -> Option<(String, String, Uuid)> {
+    fn get_node_note_values(
+        node: NodePtr,
+    ) -> Option<(String, String, Uuid, Option<NaiveDateTime>)> {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let content = e.get_notes()?;
         let title = e.get_title().unwrap_or("(no title)");
+        let last_modified = e.get_times().get_last_modification();
 
-        Some((title.to_string(), content.to_string(), e.get_uuid()))
+        Some((
+            title.to_string(),
+            content.to_string(),
+            e.get_uuid(),
+            last_modified,
+        ))
     }
 
     fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
@@ -333,11 +359,25 @@ impl KeepassVault {
 
     fn get_node_totp_values(
         node: NodePtr,
-    ) -> Result<(String, String, String, String, String, u64, u32, Uuid), Error> {
+    ) -> Result<
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            u64,
+            u32,
+            Uuid,
+            Option<NaiveDateTime>,
+        ),
+        Error,
+    > {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let otp = e.get_otp()?;
         let url = e.get_raw_otp_value().unwrap();
+        let last_modified = e.get_times().get_last_modification();
         Ok((
             String::from(url),
             otp.label.to_string(),
@@ -347,6 +387,7 @@ impl KeepassVault {
             otp.period,
             otp.digits,
             e.get_uuid(),
+            last_modified,
         ))
     }
 
