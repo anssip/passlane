@@ -1,9 +1,9 @@
-use clap::ArgMatches;
-use clipboard::{ClipboardContext, ClipboardProvider};
-use crate::actions::{Action, copy_to_clipboard, ItemType, unlock, unlock_totp_vault};
-use crate::{crypto, ui};
+use crate::actions::{copy_to_clipboard, unlock, unlock_totp_vault, Action, ItemType};
 use crate::vault::entities::Error;
 use crate::vault::vault_trait::Vault;
+use crate::{crypto, ui};
+use clap::ArgMatches;
+use clipboard::{ClipboardContext, ClipboardProvider};
 
 pub struct AddAction {
     pub generate: bool,
@@ -15,12 +15,8 @@ pub struct AddAction {
 impl AddAction {
     pub fn new(matches: &ArgMatches) -> AddAction {
         AddAction {
-            generate: matches
-                .get_one::<bool>("generate")
-                .map_or(false, |v| *v),
-            clipboard: matches
-                .get_one::<bool>("clipboard")
-                .map_or(false, |v| *v),
+            generate: matches.get_one::<bool>("generate").map_or(false, |v| *v),
+            clipboard: matches.get_one::<bool>("clipboard").map_or(false, |v| *v),
             item_type: ItemType::new_from_args(matches),
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
         }
@@ -41,7 +37,7 @@ impl AddAction {
         } else if self.clipboard {
             self.password_from_clipboard()
         } else {
-            Ok(ui::ask_password("Enter password to save: "))
+            Ok(ui::ask_password("Enter password to save"))
         }
     }
     fn get_vault(&self) -> Result<Box<dyn Vault>, Error> {

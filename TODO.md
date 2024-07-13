@@ -6,11 +6,11 @@
 
 fix:
 - [x] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
-- [ ] Show dates for each entry
+- [x] Show dates for each entry
+- [ ] Editing of entries
 - [ ] Add a list command to list all entries
 - [ ] Add an option to pass master password from the command line
 - [ ] Option to output JSON, for scripting
-- [ ] Editing of entries
 - [ ] remove anyhow?
 - [x] add TOTP support
 - [x] first time vault creation

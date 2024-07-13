@@ -421,6 +421,20 @@ impl KeepassVault {
         }
     }
 
+    fn find_node_by_uuid(&self, uuid: &Uuid) -> Option<NodePtr> {
+        let root = self.get_root();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.borrow().get_uuid() == *uuid {
+                return Some(node);
+            }
+            if node_is_group(&node) {
+                stack.extend(group_get_children(&node).unwrap());
+            }
+        }
+        None
+    }
+
     fn create_password_entry(
         &mut self,
         parent_uuid: &Uuid,
@@ -535,6 +549,39 @@ impl PasswordVault for KeepassVault {
     fn save_one_credential(&mut self, credentials: Credential) -> Result<(), Error> {
         self.save_credentials(&vec![credentials])?;
         Ok(())
+    }
+
+    fn update_credential(&mut self, credential: Credential) -> Result<(), Error> {
+        let uuid = credential.uuid();
+        let node = self.db.search_node_by_uuid(*uuid);
+
+        if let Some(node_ref) = node {
+            let service = credential.service().to_string();
+            let username = credential.username().to_string();
+            let password = credential.password().to_string();
+
+            // Perform the update within a single mutable borrow
+            {
+                let mut node = node_ref.borrow_mut();
+                if let Some(entry) = node.as_any_mut().downcast_mut::<Entry>() {
+                    entry.set_title(Some(&service));
+                    entry.set_username(Some(&username));
+                    entry.set_password(Some(&password));
+                    entry.set_url(Some(&service));
+                    entry.update_history();
+                } else {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    });
+                }
+            } // The mutable borrow ends here
+            self.save_database()?;
+            Ok(())
+        } else {
+            Err(Error {
+                message: format!("Credential with uuid '{}' not found", uuid),
+            })
+        }
     }
 
     fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {

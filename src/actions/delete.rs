@@ -27,7 +27,7 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
     ) -> Result<Option<String>, Error> {
         ui::show_credentials_table(&matches, false);
         match ui::ask_index(
-            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort:",
+            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -74,7 +74,7 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort:",
+            "To delete, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -118,7 +118,7 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort:",
+            "To delete, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -163,7 +163,7 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort:",
+            "To delete, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {

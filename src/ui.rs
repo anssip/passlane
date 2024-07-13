@@ -1,18 +1,47 @@
 use comfy_table::*;
-use std::io;
-use std::io::Write;
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
+use std::io::{self};
 
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
 use std::cmp::min;
 
 pub fn ask(question: &str) -> String {
-    print!("{} ", question);
-    io::stdout().flush().unwrap();
-    let mut buffer = String::new();
-    io::stdin()
-        .read_line(&mut buffer)
-        .expect("failed to read line");
-    buffer.trim().to_string()
+    ask_required(question, None)
+}
+
+pub fn ask_required(question: &str, default_answer: Option<&str>) -> String {
+    let mut rl = DefaultEditor::new().unwrap();
+    let prompt = format!("{}: ", question);
+    let default = default_answer.unwrap_or("");
+
+    loop {
+        let readline = rl.readline_with_initial(&prompt, (default, ""));
+        match readline {
+            Ok(line) => {
+                if line.trim().is_empty() {
+                    if let Some(answer) = default_answer {
+                        return answer.to_string();
+                    } else {
+                        println!("Please enter a value");
+                        continue;
+                    }
+                }
+                return line;
+            }
+            Err(ReadlineError::Interrupted) => {
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                break;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                break;
+            }
+        }
+    }
+    return "".to_string();
 }
 
 pub fn ask_multiline(question: &str) -> String {
@@ -34,35 +63,57 @@ pub fn ask_multiline(question: &str) -> String {
 }
 
 pub fn ask_password(question: &str) -> String {
-    rpassword::prompt_password(question).unwrap()
+    match rpassword::prompt_password(format!("{}: ", question)) {
+        Ok(password) => password,
+        Err(_) => ask_password(question),
+    }
 }
 
 pub fn ask_number(question: &str) -> i32 {
     match ask(question).parse() {
         Ok(n) => n,
         Err(_) => {
-            println!("Please enter a number");
+            println!("Please enter a number: ");
             ask_number(question)
         }
     }
 }
 
 pub fn ask_credentials(password: &str) -> Credential {
-    let service = ask("Enter URL or service:");
-    let username = ask("Enter username:");
+    let service = ask("Enter URL or service");
+    let username = ask("Enter username");
     Credential::new(None, password, &service, &username, None, None)
+}
+
+pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
+    let service = ask_required("Enter URL or service", Some(the_match.service()));
+    let username = ask_required("Enter username", Some(the_match.username()));
+    let password = ask_password("Enter password, or leave empty to keep the current value");
+
+    Credential::new(
+        Some(the_match.uuid()),
+        if password == "" {
+            the_match.password()
+        } else {
+            &password
+        },
+        &service,
+        &username,
+        None,
+        None,
+    )
 }
 
 pub fn ask_master_password(question: Option<&str>) -> String {
     if let Some(q) = question {
         ask_password(q)
     } else {
-        ask_password("Please enter master password: ")
+        ask_password("Please enter master password")
     }
 }
 
 pub(crate) fn ask_totp_master_password() -> String {
-    ask_password("Please enter master password of the One Time Passwords vault: ")
+    ask_password("Please enter master password of the One Time Passwords vault")
 }
 
 pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
@@ -190,7 +241,7 @@ pub fn show_card(card: &PaymentCard) {
 }
 
 pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
-    let answer = ask(question);
+    let answer = ask_required(question, None);
     if answer == "q" {
         return Err(String::from("Quitting"));
     }
@@ -232,13 +283,13 @@ fn ask_address() -> Address {
 }
 
 pub fn ask_payment_info() -> PaymentCard {
-    let name = ask("Enter card name:");
+    let name = ask_required("Enter card name:", None);
     let color = ask("Enter card color (optional):");
-    let number = ask("Enter card number:");
-    let name_on_card = ask("Enter card holder name:");
+    let number = ask_required("Enter card number:", None);
+    let name_on_card = ask_required("Enter card holder name:", None);
     let card_expiration_month = ask_number("Enter card expiration month:");
     let card_expiration_year = ask_number("Enter card expiration year:");
-    let cvv = ask("Enter card cvv:");
+    let cvv = ask_required("Enter card cvv:", None);
     let address = ask_address();
 
     PaymentCard::new(
@@ -262,20 +313,29 @@ pub fn ask_payment_info() -> PaymentCard {
 }
 
 pub(crate) fn ask_note_info() -> Note {
-    let title = ask("Enter note title:");
+    let title = ask_required("Enter note title:", None);
     let content = ask_multiline("Enter note content:");
 
     Note::new(None, &title, &content, None)
 }
 
 pub(crate) fn ask_totp_info() -> Totp {
-    let label = ask("Enter label, typically formatted like <issuer:username>:");
+    let label = ask_required(
+        "Enter label, typically formatted like <issuer:username>:",
+        None,
+    );
 
-    let issuer = ask("Enter issuer:");
-    let secret = ask("Enter secret:");
+    let issuer = ask_required("Enter issuer:", None);
+    let secret = ask_required(
+        "Enter secret, or leave empty to keep the current secret:",
+        None,
+    );
 
     println!("Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?");
-    let proceed = ask("Press y (yes) to add with defaults, n (no) to specify details:");
+    let proceed = ask_required(
+        "Press y (yes) to add with defaults, n (no) to specify details.",
+        Some("y"),
+    );
 
     if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no" {
         let digits = ask_number("Enter number of digits:");
@@ -316,11 +376,17 @@ pub(crate) fn ask_totp_info() -> Totp {
 
 fn ask_algorithm() -> String {
     let valid_algos = vec!["SHA1", "SHA256", "SHA512"];
-    let mut algo = ask("Enter algorithm (SHA1, SHA256, SHA512):");
+    let mut algo = ask_required(
+        "Enter algorithm; SHA1 (default), SHA256, SHA512:",
+        Some("SHA1"),
+    );
 
     while !valid_algos.contains(&algo.to_uppercase().as_str()) {
         println!("Invalid algorithm");
-        algo = ask("Enter algorithm (SHA1, SHA256, SHA512):");
+        algo = ask_required(
+            "Enter algorithm; SHA1 (default), SHA256, SHA512:",
+            Some("SHA1"),
+        );
     }
     algo
 }

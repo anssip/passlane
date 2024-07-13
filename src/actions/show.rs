@@ -35,7 +35,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         ui::show_credentials_table(&matches, self.verbose);
 
         match ui::ask_index(
-            "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit:",
+            "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -79,7 +79,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         ui::show_payment_cards_table(&matches, self.show_cleartext);
 
         match ui::ask_index(
-            "To see card details, enter a row number from the table above, or press q to exit:",
+            "To see card details, enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -119,7 +119,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         ui::show_notes_table(&matches, self.verbose);
 
         match ui::ask_index(
-            "To see the full note, please enter a row number from the table above, or press q to exit:",
+            "To see the full note, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
@@ -153,7 +153,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::ask_index(
-            "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit:",
+            "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
             Ok(index) => {
