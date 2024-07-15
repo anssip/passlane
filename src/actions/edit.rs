@@ -6,7 +6,6 @@ use crate::{handle_matches, ui, ItemType, MatchHandlerTemplate, UnlockingAction}
 
 struct EditCredentialsTemplate<'a> {
     vault: &'a mut Box<dyn Vault>,
-    grep: &'a str,
 }
 
 impl<'a> EditCredentialsTemplate<'a> {
@@ -53,6 +52,53 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
     }
 }
 
+struct EditNoteTemplate<'a> {
+    vault: &'a mut Box<dyn Vault>,
+}
+
+impl<'a> EditNoteTemplate<'a> {
+    fn edit_and_save_note(&mut self, note: &Note) -> Result<Option<String>, Error> {
+        let updated = ui::ask_modified_note(note);
+        println!("Saving...");
+        self.vault.update_note(updated)?;
+        Ok(Some("Saved".to_string()))
+    }
+}
+
+impl<'a> MatchHandlerTemplate for EditNoteTemplate<'a> {
+    type ItemType = Note;
+
+    fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
+        println!("Found {} payment cards", matches.len());
+        ui::show_notes_table(matches, false);
+    }
+
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
+        self.edit_and_save_note(&the_match)
+    }
+
+    fn handle_many_matches(
+        &mut self,
+        matches: Vec<Self::ItemType>,
+    ) -> Result<Option<String>, Error> {
+        match ui::ask_index(
+            "To edit, please enter a row number from the table above, or press q to abort",
+            matches.len() as i16 - 1,
+        ) {
+            Ok(index) => {
+                if index == usize::MAX {
+                    // ignore
+                    Ok(None)
+                } else {
+                    println!("Editing card with title '{}'...", matches[index].title());
+                    self.edit_and_save_note(&matches[index])
+                }
+            }
+            Err(message) => Err(Error { message }),
+        }
+    }
+}
+
 pub struct EditAction {
     pub grep: Option<String>,
     pub item_type: ItemType,
@@ -87,15 +133,16 @@ impl UnlockingAction for EditAction {
                 };
                 handle_matches(
                     vault.grep(Some(grep)),
-                    &mut Box::new(EditCredentialsTemplate { vault, grep }),
+                    &mut Box::new(EditCredentialsTemplate { vault }),
                 )
             }
             ItemType::Payment => {
                 todo!("Edit payment card")
             }
-            ItemType::Note => {
-                todo!("Edit note")
-            }
+            ItemType::Note => handle_matches(
+                vault.find_notes(),
+                &mut Box::new(EditNoteTemplate { vault }),
+            ),
             ItemType::Totp => {
                 todo!("Edit totp")
             }

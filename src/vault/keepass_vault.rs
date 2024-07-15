@@ -524,6 +524,33 @@ impl KeepassVault {
         self.find_group(group_name)
             .unwrap_or_else(|| self.create_group(self.get_root_uuid(), group_name).unwrap())
     }
+
+    fn update_entry<F>(&mut self, uuid: Uuid, update_fn: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Entry),
+    {
+        let node = self.db.search_node_by_uuid(uuid);
+
+        if let Some(node_ref) = node {
+            {
+                let mut node = node_ref.borrow_mut();
+                if let Some(entry) = node.as_any_mut().downcast_mut::<Entry>() {
+                    update_fn(entry);
+                    entry.update_history();
+                } else {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    });
+                }
+            }
+            self.save_database()?;
+            Ok(())
+        } else {
+            Err(Error {
+                message: format!("Entry with uuid '{}' not found", uuid),
+            })
+        }
+    }
 }
 
 impl PasswordVault for KeepassVault {
@@ -551,35 +578,12 @@ impl PasswordVault for KeepassVault {
 
     fn update_credential(&mut self, credential: Credential) -> Result<(), Error> {
         let uuid = credential.uuid();
-        let node = self.db.search_node_by_uuid(*uuid);
-
-        if let Some(node_ref) = node {
-            let service = credential.service().to_string();
-            let username = credential.username().to_string();
-            let password = credential.password().to_string();
-
-            // Perform the update within a single mutable borrow
-            {
-                let mut node = node_ref.borrow_mut();
-                if let Some(entry) = node.as_any_mut().downcast_mut::<Entry>() {
-                    entry.set_title(Some(&service));
-                    entry.set_username(Some(&username));
-                    entry.set_password(Some(&password));
-                    entry.set_url(Some(&service));
-                    entry.update_history();
-                } else {
-                    return Err(Error {
-                        message: "Node is not an Entry".to_string(),
-                    });
-                }
-            } // The mutable borrow ends here
-            self.save_database()?;
-            Ok(())
-        } else {
-            Err(Error {
-                message: format!("Credential with uuid '{}' not found", uuid),
-            })
-        }
+        self.update_entry(*uuid, |entry| {
+            entry.set_title(Some(credential.service()));
+            entry.set_username(Some(credential.username()));
+            entry.set_password(Some(credential.password()));
+            entry.set_url(Some(credential.service()));
+        })
     }
 
     fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {
@@ -642,6 +646,14 @@ impl NoteVault for KeepassVault {
 
     fn delete_note(&mut self, id: &Uuid) -> Result<(), Error> {
         self.do_delete(id, true)
+    }
+
+    fn update_note(&mut self, note: Note) -> Result<(), Error> {
+        let uuid = note.id();
+        self.update_entry(uuid, |entry| {
+            entry.set_title(Some(note.title()));
+            entry.set_notes(Some(note.content()));
+        })
     }
 }
 

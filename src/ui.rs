@@ -216,6 +216,18 @@ pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credenti
     )
 }
 
+pub(crate) fn ask_modified_note<'a>(the_match: &'a Note) -> Note {
+    let title = ask_with_initial("Enter title", Some(the_match.title()));
+    let content = ask_multiline_with_initial("Enter content", Some(the_match.content()));
+
+    Note::new(
+        Some(&the_match.id()),
+        &title,
+        &content,
+        Some(the_match.last_modified()),
+    )
+}
+
 pub fn ask_master_password(question: Option<&str>) -> String {
     if let Some(q) = question {
         ask_password(q)

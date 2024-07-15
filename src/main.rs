@@ -47,14 +47,15 @@ fn cli() -> Command {
                     -l --clipboard "Get the password to save from the clipboard."
                 ).action(ArgAction::SetTrue))
         )
-        .subcommand(Command::new("edit")
-            .about("Edit an entry.")
-            .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to edit.").group("search"))
-            .arg(arg!(-c --credentials "Edit credentials.").action(ArgAction::SetTrue).requires("search"))
-            .arg(arg!(-p --payments "Edit payment cards.").action(ArgAction::SetTrue))
-            .arg(arg!(-n --notes "Edit secure notes.").action(ArgAction::SetTrue))
-            .arg(arg!(-o --otp "Edit One Time Password authorizer.").action(ArgAction::SetTrue))
-            .arg_required_else_help(true)
+        .subcommand(
+            Command::new("edit")
+                .about("Edit an entry.")
+                .arg(arg!(-c --credentials "Edit credentials.").action(ArgAction::SetTrue).requires("search"))
+                .arg(arg!(-p --payments "Edit payment cards.").action(ArgAction::SetTrue))
+                .arg(arg!(-n --notes "Edit secure notes.").action(ArgAction::SetTrue))
+                .arg(arg!(-o --otp "Edit One Time Password authorizer.").action(ArgAction::SetTrue))
+                .arg(arg!(<REGEXP> "The regular expression used to search services whose credentials to edit.").group("search").required(false))
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("csv")

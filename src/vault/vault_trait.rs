@@ -31,6 +31,8 @@ pub trait NoteVault {
     fn save_note(&mut self, note: &Note) -> Result<(), Error>;
 
     fn delete_note(&mut self, uuid: &Uuid) -> Result<(), Error>;
+
+    fn update_note(&mut self, note: Note) -> Result<(), Error>;
 }
 
 pub trait TotpVault {
