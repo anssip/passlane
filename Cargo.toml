@@ -44,4 +44,5 @@ keepass-ng = { path = "/Users/anssipiirainen/projects/keepass-rs", features = [
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
 percent-encoding = "2.3.1"
+rustyline-derive = "0.10.0"
 rustyline = "14.0.0"

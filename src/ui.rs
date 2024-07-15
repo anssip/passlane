@@ -1,16 +1,128 @@
 use comfy_table::*;
+
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::{Hinter, HistoryHinter};
+use rustyline::validate::{MatchingBracketValidator, Validator};
+use rustyline::{Config, DefaultEditor, Editor, Result as RustylineResult};
+use rustyline_derive::Helper;
+
 use std::io::{self};
 
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
 use std::cmp::min;
 
-pub fn ask(question: &str) -> String {
-    ask_required(question, None)
+#[derive(Helper)]
+struct MultilineHelper {
+    validator: MatchingBracketValidator,
+    hinter: HistoryHinter,
 }
 
-pub fn ask_required(question: &str, default_answer: Option<&str>) -> String {
+impl Validator for MultilineHelper {}
+impl Highlighter for MultilineHelper {}
+
+impl Hinter for MultilineHelper {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<String> {
+        self.hinter.hint(line, pos, ctx)
+    }
+}
+
+impl Completer for MultilineHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        _: &str,
+        pos: usize,
+        _: &rustyline::Context<'_>,
+    ) -> RustylineResult<(usize, Vec<Self::Candidate>)> {
+        Ok((pos, vec![])) // No completion, just return an empty vector
+    }
+}
+
+pub fn ask_multiline_with_initial(question: &str, default_answer: Option<&str>) -> String {
+    let config = Config::builder()
+        .edit_mode(rustyline::EditMode::Emacs)
+        .auto_add_history(true)
+        .build();
+    let mut rl = Editor::with_config(config).unwrap();
+    let helper = MultilineHelper {
+        validator: MatchingBracketValidator::new(),
+        hinter: HistoryHinter {},
+    };
+    rl.set_helper(Some(helper));
+
+    let initial_prompt = format!(
+        "{}\n(Press Enter on an empty line to finish, Ctrl+C to cancel, use \\\\n for newlines)\n> ",
+        question
+    );
+    let continuation_prompt = "| ";
+
+    let default = default_answer.unwrap_or("");
+
+    let mut full_input = String::new();
+    let mut is_first_line = true;
+
+    loop {
+        let prompt = if is_first_line {
+            &initial_prompt
+        } else {
+            continuation_prompt
+        };
+        let readline = if is_first_line && !default.is_empty() {
+            rl.readline_with_initial(prompt, (default, ""))
+        } else {
+            rl.readline(prompt)
+        };
+
+        match readline {
+            Ok(line) => {
+                if line.trim().is_empty() {
+                    if full_input.trim().is_empty() && default_answer.is_none() {
+                        println!("Please enter a value");
+                        continue;
+                    }
+                    break;
+                }
+                let processed_line = line.replace("\\\\n", "\n");
+
+                if !full_input.is_empty() {
+                    full_input.push('\n');
+                }
+                full_input.push_str(&processed_line);
+                is_first_line = false;
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("Interrupted");
+                return String::new();
+            }
+            Err(ReadlineError::Eof) => {
+                if !full_input.trim().is_empty() {
+                    break;
+                } else if default_answer.is_some() {
+                    return default_answer.unwrap().to_string();
+                } else {
+                    println!("Cancelled");
+                    return String::new();
+                }
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                return String::new();
+            }
+        }
+    }
+    full_input.trim_end().to_string()
+}
+
+pub fn ask(question: &str) -> String {
+    ask_with_initial(question, None)
+}
+
+pub fn ask_with_initial(question: &str, default_answer: Option<&str>) -> String {
     let mut rl = DefaultEditor::new().unwrap();
     let prompt = format!("{}: ", question);
     let default = default_answer.unwrap_or("");
@@ -86,8 +198,8 @@ pub fn ask_credentials(password: &str) -> Credential {
 }
 
 pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
-    let service = ask_required("Enter URL or service", Some(the_match.service()));
-    let username = ask_required("Enter username", Some(the_match.username()));
+    let service = ask_with_initial("Enter URL or service", Some(the_match.service()));
+    let username = ask_with_initial("Enter username", Some(the_match.username()));
     let password = ask_password("Enter password, or leave empty to keep the current value");
 
     Credential::new(
@@ -241,7 +353,7 @@ pub fn show_card(card: &PaymentCard) {
 }
 
 pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
-    let answer = ask_required(question, None);
+    let answer = ask_with_initial(question, None);
     if answer == "q" {
         return Err(String::from("Quitting"));
     }
@@ -283,13 +395,13 @@ fn ask_address() -> Address {
 }
 
 pub fn ask_payment_info() -> PaymentCard {
-    let name = ask_required("Enter card name:", None);
+    let name = ask_with_initial("Enter card name:", None);
     let color = ask("Enter card color (optional):");
-    let number = ask_required("Enter card number:", None);
-    let name_on_card = ask_required("Enter card holder name:", None);
+    let number = ask_with_initial("Enter card number:", None);
+    let name_on_card = ask_with_initial("Enter card holder name:", None);
     let card_expiration_month = ask_number("Enter card expiration month:");
     let card_expiration_year = ask_number("Enter card expiration year:");
-    let cvv = ask_required("Enter card cvv:", None);
+    let cvv = ask_with_initial("Enter card cvv:", None);
     let address = ask_address();
 
     PaymentCard::new(
@@ -313,26 +425,26 @@ pub fn ask_payment_info() -> PaymentCard {
 }
 
 pub(crate) fn ask_note_info() -> Note {
-    let title = ask_required("Enter note title:", None);
-    let content = ask_multiline("Enter note content:");
+    let title = ask_with_initial("Enter note title:", None);
+    let content = ask_multiline_with_initial("Enter note content:", Some("Default\nline1\nline2"));
 
     Note::new(None, &title, &content, None)
 }
 
 pub(crate) fn ask_totp_info() -> Totp {
-    let label = ask_required(
+    let label = ask_with_initial(
         "Enter label, typically formatted like <issuer:username>:",
         None,
     );
 
-    let issuer = ask_required("Enter issuer:", None);
-    let secret = ask_required(
+    let issuer = ask_with_initial("Enter issuer:", None);
+    let secret = ask_with_initial(
         "Enter secret, or leave empty to keep the current secret:",
         None,
     );
 
     println!("Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?");
-    let proceed = ask_required(
+    let proceed = ask_with_initial(
         "Press y (yes) to add with defaults, n (no) to specify details.",
         Some("y"),
     );
@@ -376,14 +488,14 @@ pub(crate) fn ask_totp_info() -> Totp {
 
 fn ask_algorithm() -> String {
     let valid_algos = vec!["SHA1", "SHA256", "SHA512"];
-    let mut algo = ask_required(
+    let mut algo = ask_with_initial(
         "Enter algorithm; SHA1 (default), SHA256, SHA512:",
         Some("SHA1"),
     );
 
     while !valid_algos.contains(&algo.to_uppercase().as_str()) {
         println!("Invalid algorithm");
-        algo = ask_required(
+        algo = ask_with_initial(
             "Enter algorithm; SHA1 (default), SHA256, SHA512:",
             Some("SHA1"),
         );

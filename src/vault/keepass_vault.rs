@@ -281,7 +281,7 @@ impl KeepassVault {
     }
 
     fn node_to_note(node: NodePtr) -> Note {
-        let (title, content, id, last_modified) = Self::get_node_note_values(node).unwrap();
+        let (title, content, id, last_modified) = Self::get_node_note_values(node);
         Note::new(
             Some(&id),
             &title,
@@ -325,21 +325,19 @@ impl KeepassVault {
         ))
     }
 
-    fn get_node_note_values(
-        node: NodePtr,
-    ) -> Option<(String, String, Uuid, Option<NaiveDateTime>)> {
+    fn get_node_note_values(node: NodePtr) -> (String, String, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
-        let content = e.get_notes()?;
+        let content = e.get_notes().unwrap_or("");
         let title = e.get_title().unwrap_or("(no title)");
         let last_modified = e.get_times().get_last_modification();
 
-        Some((
+        (
             title.to_string(),
             content.to_string(),
             e.get_uuid(),
             last_modified,
-        ))
+        )
     }
 
     fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
