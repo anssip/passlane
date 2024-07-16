@@ -123,8 +123,25 @@ pub fn ask(question: &str) -> String {
 }
 
 pub fn ask_with_initial(question: &str, default_answer: Option<&str>) -> String {
+    loop {
+        let answer = ask_with_initial_optional(question, default_answer, false);
+        if let Some(answer) = answer {
+            return answer;
+        }
+    }
+}
+
+pub fn ask_with_initial_optional(
+    question: &str,
+    default_answer: Option<&str>,
+    optional: bool,
+) -> Option<String> {
     let mut rl = DefaultEditor::new().unwrap();
-    let prompt = format!("{}: ", question);
+    let prompt = format!(
+        "{}{}: ",
+        question,
+        if optional { " (optional)" } else { "" }
+    );
     let default = default_answer.unwrap_or("");
 
     loop {
@@ -133,13 +150,15 @@ pub fn ask_with_initial(question: &str, default_answer: Option<&str>) -> String 
             Ok(line) => {
                 if line.trim().is_empty() {
                     if let Some(answer) = default_answer {
-                        return answer.to_string();
-                    } else {
+                        return Some(answer.to_string());
+                    } else if !optional {
                         println!("Please enter a value");
                         continue;
+                    } else {
+                        return None;
                     }
                 }
-                return line;
+                return Some(line);
             }
             Err(ReadlineError::Interrupted) => {
                 break;
@@ -153,7 +172,7 @@ pub fn ask_with_initial(question: &str, default_answer: Option<&str>) -> String 
             }
         }
     }
-    return "".to_string();
+    return None;
 }
 
 pub fn ask_multiline(question: &str) -> String {
@@ -212,6 +231,64 @@ pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credenti
         &service,
         &username,
         None,
+        None,
+    )
+}
+
+pub(crate) fn ask_modified_address(address: &Address) -> Address {
+    let street = ask_with_initial("Enter street", Some(address.street()));
+    let city = ask_with_initial("Enter city", Some(address.city()));
+    let zip = ask_with_initial("Enter ZIP code", Some(address.zip()));
+    let country = ask_with_initial("Enter country", Some(address.country()));
+    let state = ask_with_initial_optional("Enter state", address.state().map(|s| s.as_str()), true);
+
+    Address::new(
+        Some(address.id()),
+        &street,
+        &city,
+        &country,
+        state.as_deref(),
+        &zip,
+    )
+}
+
+pub(crate) fn ask_modified_payment_info<'a>(payment_card: &'a PaymentCard) -> PaymentCard {
+    let name = ask_with_initial("Enter card name", Some(payment_card.name()));
+    let color = ask_with_initial_optional(
+        "Enter color",
+        payment_card.color().map(|s| s.as_str()),
+        true,
+    );
+    let cardholder_name =
+        ask_with_initial("Enter card holder name", Some(payment_card.name_on_card()));
+    let card_number = ask_with_initial("Enter card number", Some(payment_card.number()));
+    let expiration_month = ask_with_initial(
+        "Enter card expiration month",
+        Some(&payment_card.expiry().month.to_string()),
+    );
+    let expiration_year = ask_with_initial(
+        "Enter card expiration year",
+        Some(&payment_card.expiry().year.to_string()),
+    );
+    let security_code = ask_with_initial("Enter card cvv", Some(payment_card.cvv()));
+    println!("Billing address:");
+    let address = match payment_card.billing_address() {
+        Some(address) => ask_modified_address(&address),
+        None => ask_address(),
+    };
+
+    PaymentCard::new(
+        Some(payment_card.id()),
+        &name,
+        &cardholder_name,
+        &card_number,
+        &security_code,
+        Expiry {
+            year: expiration_year.parse().unwrap(),
+            month: expiration_month.parse().unwrap(),
+        },
+        color.as_deref(),
+        Some(&address),
         None,
     )
 }
@@ -385,35 +462,24 @@ pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
 }
 
 fn ask_address() -> Address {
-    println!("Enter billing address:");
-    let street = ask("Enter street address:");
-    let city = ask("Enter city:");
-    let state = ask("Enter state:");
-    let zip = ask("Enter postal code:");
-    let country = ask("Enter country:");
+    println!("Enter billing address");
+    let street = ask("Enter street address");
+    let city = ask("Enter city");
+    let state = ask_with_initial_optional("Enter state", None, true);
+    let zip = ask("Enter postal code");
+    let country = ask("Enter country");
 
-    Address::new(
-        None,
-        &street,
-        &city,
-        &country,
-        if !state.is_empty() {
-            Some(&state)
-        } else {
-            None
-        },
-        &zip,
-    )
+    Address::new(None, &street, &city, &country, state.as_deref(), &zip)
 }
 
 pub fn ask_payment_info() -> PaymentCard {
-    let name = ask_with_initial("Enter card name:", None);
-    let color = ask("Enter card color (optional):");
-    let number = ask_with_initial("Enter card number:", None);
-    let name_on_card = ask_with_initial("Enter card holder name:", None);
-    let card_expiration_month = ask_number("Enter card expiration month:");
-    let card_expiration_year = ask_number("Enter card expiration year:");
-    let cvv = ask_with_initial("Enter card cvv:", None);
+    let name = ask_with_initial("Enter card name", None);
+    let color = ask_with_initial_optional("Enter card color", None, true);
+    let number = ask_with_initial("Enter card number", None);
+    let name_on_card = ask_with_initial("Enter card holder name", None);
+    let card_expiration_month = ask_number("Enter card expiration month");
+    let card_expiration_year = ask_number("Enter card expiration year");
+    let cvv = ask_with_initial("Enter card cvv", None);
     let address = ask_address();
 
     PaymentCard::new(
@@ -426,19 +492,15 @@ pub fn ask_payment_info() -> PaymentCard {
             month: card_expiration_month,
             year: card_expiration_year,
         },
-        if !color.is_empty() {
-            Some(&color)
-        } else {
-            None
-        },
+        color.as_deref(),
         Some(&address),
         None,
     )
 }
 
 pub(crate) fn ask_note_info() -> Note {
-    let title = ask_with_initial("Enter note title:", None);
-    let content = ask_multiline_with_initial("Enter note content:", Some("Default\nline1\nline2"));
+    let title = ask_with_initial("Enter note title", None);
+    let content = ask_multiline_with_initial("Enter note content", Some("Default\nline1\nline2"));
 
     Note::new(None, &title, &content, None)
 }

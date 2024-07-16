@@ -23,6 +23,8 @@ pub trait PaymentVault {
     fn save_payment(&mut self, payment: PaymentCard) -> Result<(), Error>;
 
     fn delete_payment(&mut self, uuid: &Uuid) -> Result<(), Error>;
+
+    fn update_payment(&mut self, payment: PaymentCard) -> Result<(), Error>;
 }
 
 pub trait NoteVault {

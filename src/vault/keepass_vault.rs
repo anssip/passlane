@@ -629,6 +629,28 @@ impl PaymentVault for KeepassVault {
         self.do_delete(id, true)?;
         Ok(())
     }
+
+    fn update_payment(&mut self, payment: PaymentCard) -> Result<(), Error> {
+        let uuid = payment.id();
+        self.update_entry(*uuid, |entry| {
+            let note = format!(
+                "Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
+                payment.name_on_card(),
+                payment.number(),
+                payment.cvv(),
+                payment.expiry_str(),
+                payment.color_str(),
+                payment
+                    .billing_address()
+                    .as_ref()
+                    .map(|a| a.to_string())
+                    .unwrap_or("".to_string())
+            );
+
+            entry.set_title(Some(payment.name()));
+            entry.set_notes(Some(&note));
+        })
+    }
 }
 
 impl NoteVault for KeepassVault {
