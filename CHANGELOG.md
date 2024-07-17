@@ -1,10 +1,19 @@
 # Changelog
 
-## [2.4.1]
+## [2.4.3]
+
+- Added the edit command to edit entries in the vault
+- Fixed a panic that occurred when generating passwords with running passlane without any options
+
+## [2.4.2]
 
 - Fix to validate all input from the command line to be stored (to remove all characters not allowed in Keepass XML)
 - Show last modified date for each entry in the results tables
 - Fix to store OTPs as protected values in the Keepass file
+
+## [2.4.1]
+
+(skipped)
 
 ## [2.4.0]
 

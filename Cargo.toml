@@ -1,6 +1,6 @@
 [package]
 name = "passlane"
-version = "2.4.2"
+version = "2.4.3"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
@@ -36,11 +36,7 @@ anyhow = "1.0.56"
 chrono = "0.4.19"
 env_logger = "0.10.0"
 hex = "0.4.3"
-# keepass-ng = { version = "0.0.3", features = ["save_kdbx4", "totp"] }
-keepass-ng = { path = "/Users/anssipiirainen/projects/keepass-rs", features = [
-    "save_kdbx4",
-    "totp",
-] }
+keepass-ng = { version = "0.0.4", features = ["save_kdbx4", "totp"] }
 keyring = "2.3.2"
 uuid = { version = "1.8.0", features = ["v4"] }
 percent-encoding = "2.3.1"

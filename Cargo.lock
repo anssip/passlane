@@ -1202,7 +1202,9 @@ dependencies = [
 
 [[package]]
 name = "keepass-ng"
-version = "0.0.3"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c2cd05032da7c9a49908da6003865f27a4a581a9e67b70b2d23df8efdf17f94"
 dependencies = [
  "aes 0.8.4",
  "as-any",
@@ -1571,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "passlane"
-version = "2.4.2"
+version = "2.4.3"
 dependencies = [
  "anyhow",
  "chrono",

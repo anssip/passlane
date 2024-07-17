@@ -97,13 +97,15 @@ passlane lock
 To get help on the available commands:
 
 ```bash
-$  passlane -h
+➜ passlane -h
+
 A password manager using Keepass as the storage backend.
 
 Usage: passlane [COMMAND]
 
 Commands:
   add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.
+  edit    Edit an entry.
   csv     Imports credentials from a CSV file.
   delete  Deletes one or more entries.
   show    Shows one or more entries.
@@ -196,7 +198,7 @@ You can delete a note with the delete command and the -n option.
 
 You can also save and manage **secure notes** in Passlane. The contents of notes, the title and the note text itself, are all fully encrypted and only visible to you.
 
-To add a secure note:
+You can store multiline notes in the vault. To add a secure note:
 
 ```
 passlane add -n
