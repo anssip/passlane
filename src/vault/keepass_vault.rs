@@ -281,7 +281,7 @@ impl KeepassVault {
     }
 
     fn node_to_note(node: NodePtr) -> Note {
-        let (title, content, id, last_modified) = Self::get_node_note_values(node).unwrap();
+        let (title, content, id, last_modified) = Self::get_node_note_values(node);
         Note::new(
             Some(&id),
             &title,
@@ -325,21 +325,19 @@ impl KeepassVault {
         ))
     }
 
-    fn get_node_note_values(
-        node: NodePtr,
-    ) -> Option<(String, String, Uuid, Option<NaiveDateTime>)> {
+    fn get_node_note_values(node: NodePtr) -> (String, String, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
-        let content = e.get_notes()?;
+        let content = e.get_notes().unwrap_or("");
         let title = e.get_title().unwrap_or("(no title)");
         let last_modified = e.get_times().get_last_modification();
 
-        Some((
+        (
             title.to_string(),
             content.to_string(),
             e.get_uuid(),
             last_modified,
-        ))
+        )
     }
 
     fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
@@ -419,6 +417,20 @@ impl KeepassVault {
         } else {
             None
         }
+    }
+
+    fn find_node_by_uuid(&self, uuid: &Uuid) -> Option<NodePtr> {
+        let root = self.get_root();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.borrow().get_uuid() == *uuid {
+                return Some(node);
+            }
+            if node_is_group(&node) {
+                stack.extend(group_get_children(&node).unwrap());
+            }
+        }
+        None
     }
 
     fn create_password_entry(
@@ -512,6 +524,33 @@ impl KeepassVault {
         self.find_group(group_name)
             .unwrap_or_else(|| self.create_group(self.get_root_uuid(), group_name).unwrap())
     }
+
+    fn update_entry<F>(&mut self, uuid: Uuid, update_fn: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Entry),
+    {
+        let node = self.db.search_node_by_uuid(uuid);
+
+        if let Some(node_ref) = node {
+            {
+                let mut node = node_ref.borrow_mut();
+                if let Some(entry) = node.as_any_mut().downcast_mut::<Entry>() {
+                    update_fn(entry);
+                    entry.update_history();
+                } else {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    });
+                }
+            }
+            self.save_database()?;
+            Ok(())
+        } else {
+            Err(Error {
+                message: format!("Entry with uuid '{}' not found", uuid),
+            })
+        }
+    }
 }
 
 impl PasswordVault for KeepassVault {
@@ -535,6 +574,16 @@ impl PasswordVault for KeepassVault {
     fn save_one_credential(&mut self, credentials: Credential) -> Result<(), Error> {
         self.save_credentials(&vec![credentials])?;
         Ok(())
+    }
+
+    fn update_credential(&mut self, credential: Credential) -> Result<(), Error> {
+        let uuid = credential.uuid();
+        self.update_entry(*uuid, |entry| {
+            entry.set_title(Some(credential.service()));
+            entry.set_username(Some(credential.username()));
+            entry.set_password(Some(credential.password()));
+            entry.set_url(Some(credential.service()));
+        })
     }
 
     fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {
@@ -580,6 +629,28 @@ impl PaymentVault for KeepassVault {
         self.do_delete(id, true)?;
         Ok(())
     }
+
+    fn update_payment(&mut self, payment: PaymentCard) -> Result<(), Error> {
+        let uuid = payment.id();
+        self.update_entry(*uuid, |entry| {
+            let note = format!(
+                "Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
+                payment.name_on_card(),
+                payment.number(),
+                payment.cvv(),
+                payment.expiry_str(),
+                payment.color_str(),
+                payment
+                    .billing_address()
+                    .as_ref()
+                    .map(|a| a.to_string())
+                    .unwrap_or("".to_string())
+            );
+
+            entry.set_title(Some(payment.name()));
+            entry.set_notes(Some(&note));
+        })
+    }
 }
 
 impl NoteVault for KeepassVault {
@@ -598,6 +669,14 @@ impl NoteVault for KeepassVault {
     fn delete_note(&mut self, id: &Uuid) -> Result<(), Error> {
         self.do_delete(id, true)
     }
+
+    fn update_note(&mut self, note: Note) -> Result<(), Error> {
+        let uuid = note.id();
+        self.update_entry(uuid, |entry| {
+            entry.set_title(Some(note.title()));
+            entry.set_notes(Some(note.content()));
+        })
+    }
 }
 
 impl TotpVault for KeepassVault {
@@ -615,6 +694,14 @@ impl TotpVault for KeepassVault {
 
     fn delete_totp(&mut self, uuid: &Uuid) -> Result<(), Error> {
         self.do_delete(uuid, true)
+    }
+
+    fn update_totp(&mut self, totp: Totp) -> Result<(), Error> {
+        let uuid = totp.id();
+        self.update_entry(*uuid, |entry| {
+            entry.set_title(Some(totp.label()));
+            entry.set_otp(totp.url());
+        })
     }
 }
 

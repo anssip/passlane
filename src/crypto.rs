@@ -36,10 +36,11 @@ fn random_index(range: usize) -> usize {
 }
 
 fn append(to: &String, charset: &String) -> String {
-    let character = charset
-        .chars()
-        .nth(random_index(charset.len() - 1))
-        .unwrap();
+    let character = charset.chars().nth(random_index(charset.len() - 1));
+    let character = match character {
+        Some(c) => c,
+        None => '-',
+    };
     let mut result = String::from(to);
     result.push(character);
     result
