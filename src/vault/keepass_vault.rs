@@ -419,20 +419,6 @@ impl KeepassVault {
         }
     }
 
-    fn find_node_by_uuid(&self, uuid: &Uuid) -> Option<NodePtr> {
-        let root = self.get_root();
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            if node.borrow().get_uuid() == *uuid {
-                return Some(node);
-            }
-            if node_is_group(&node) {
-                stack.extend(group_get_children(&node).unwrap());
-            }
-        }
-        None
-    }
-
     fn create_password_entry(
         &mut self,
         parent_uuid: &Uuid,

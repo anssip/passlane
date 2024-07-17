@@ -8,8 +8,6 @@ use rustyline::validate::Validator;
 use rustyline::{Config, DefaultEditor, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
-use std::io::{self};
-
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
 use std::cmp::min;
 
@@ -161,24 +159,6 @@ pub fn ask_with_initial_optional(
         }
     }
     return None;
-}
-
-pub fn ask_multiline(question: &str) -> String {
-    // read multiple lines from stdin
-    println!("{} (press Ctrl+D when done)", question);
-    let mut buffer = String::new();
-    loop {
-        let mut line = String::new();
-        match io::stdin().read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => buffer.push_str(&line),
-            Err(error) => {
-                println!("error: {}", error);
-                break;
-            }
-        }
-    }
-    buffer.trim().to_string()
 }
 
 pub fn ask_password(question: &str) -> String {
