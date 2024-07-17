@@ -146,6 +146,53 @@ impl<'a> MatchHandlerTemplate for EditPaymentTemplate<'a> {
     }
 }
 
+struct EditTotpTemplate<'a> {
+    vault: &'a mut Box<dyn Vault>,
+}
+
+impl<'a> EditTotpTemplate<'a> {
+    fn edit_and_save(&mut self, totp: &Totp) -> Result<Option<String>, Error> {
+        let updated = ui::ask_modified_totp(totp);
+        println!("Saving...");
+        self.vault.update_totp(updated)?;
+        Ok(Some("Saved".to_string()))
+    }
+}
+
+impl<'a> MatchHandlerTemplate for EditTotpTemplate<'a> {
+    type ItemType = Totp;
+
+    fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
+        println!("Found {} TOTP entries", matches.len());
+        ui::show_totp_table(matches);
+    }
+
+    fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
+        self.edit_and_save(&the_match)
+    }
+
+    fn handle_many_matches(
+        &mut self,
+        matches: Vec<Self::ItemType>,
+    ) -> Result<Option<String>, Error> {
+        match ui::ask_index(
+            "To edit, please enter a row number from the table above, or press q to abort",
+            matches.len() as i16 - 1,
+        ) {
+            Ok(index) => {
+                if index == usize::MAX {
+                    // ignore
+                    Ok(None)
+                } else {
+                    println!("Editing TOTP with label '{}'...", matches[index].label());
+                    self.edit_and_save(&matches[index])
+                }
+            }
+            Err(message) => Err(Error { message }),
+        }
+    }
+}
+
 pub struct EditAction {
     pub grep: Option<String>,
     pub item_type: ItemType,
@@ -191,9 +238,10 @@ impl UnlockingAction for EditAction {
                 vault.find_notes(),
                 &mut Box::new(EditNoteTemplate { vault }),
             ),
-            ItemType::Totp => {
-                todo!("Edit totp")
-            }
+            ItemType::Totp => handle_matches(
+                vault.find_totp(self.grep.as_deref()),
+                &mut Box::new(EditTotpTemplate { vault }),
+            ),
         }
     }
 }

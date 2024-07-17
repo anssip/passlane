@@ -307,8 +307,8 @@ impl PaymentCard {
 
 #[derive(Clone)]
 pub struct Expiry {
-    pub month: i32,
-    pub year: i32,
+    pub month: u32,
+    pub year: u32,
 }
 
 impl Display for Expiry {
@@ -349,10 +349,10 @@ impl FromStr for Expiry {
             return Err(ExpiryParseError::InvalidFormat);
         }
         let month = parts[0]
-            .parse::<i32>()
+            .parse::<u32>()
             .map_err(ExpiryParseError::ParseError)?;
         let year = parts[1]
-            .parse::<i32>()
+            .parse::<u32>()
             .map_err(ExpiryParseError::ParseError)?;
         Ok(Expiry { month, year })
     }

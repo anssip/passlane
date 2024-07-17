@@ -4,7 +4,7 @@ use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
-use rustyline::validate::{MatchingBracketValidator, Validator};
+use rustyline::validate::Validator;
 use rustyline::{Config, DefaultEditor, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
@@ -15,7 +15,6 @@ use std::cmp::min;
 
 #[derive(Helper)]
 struct MultilineHelper {
-    validator: MatchingBracketValidator,
     hinter: HistoryHinter,
 }
 
@@ -50,13 +49,12 @@ pub fn ask_multiline_with_initial(question: &str, default_answer: Option<&str>) 
         .build();
     let mut rl = Editor::with_config(config).unwrap();
     let helper = MultilineHelper {
-        validator: MatchingBracketValidator::new(),
         hinter: HistoryHinter {},
     };
     rl.set_helper(Some(helper));
 
     let initial_prompt = format!(
-        "{}\n(Press Enter on an empty line to finish, Ctrl+C to cancel, use \\\\n for newlines)\n> ",
+        "{}\n(Press Enter on an empty line to finish, Ctrl+D to finish editing, use \\\\n for newlines)\n> ",
         question
     );
     let continuation_prompt = "| ";
@@ -80,19 +78,10 @@ pub fn ask_multiline_with_initial(question: &str, default_answer: Option<&str>) 
 
         match readline {
             Ok(line) => {
-                if line.trim().is_empty() {
-                    if full_input.trim().is_empty() && default_answer.is_none() {
-                        println!("Please enter a value");
-                        continue;
-                    }
-                    break;
-                }
-                let processed_line = line.replace("\\\\n", "\n");
-
                 if !full_input.is_empty() {
                     full_input.push('\n');
                 }
-                full_input.push_str(&processed_line);
+                full_input.push_str(&line.replace("\\\\n", "\n"));
                 is_first_line = false;
             }
             Err(ReadlineError::Interrupted) => {
@@ -105,7 +94,6 @@ pub fn ask_multiline_with_initial(question: &str, default_answer: Option<&str>) 
                 } else if default_answer.is_some() {
                     return default_answer.unwrap().to_string();
                 } else {
-                    println!("Cancelled");
                     return String::new();
                 }
             }
@@ -200,7 +188,7 @@ pub fn ask_password(question: &str) -> String {
     }
 }
 
-pub fn ask_number(question: &str) -> i32 {
+pub fn ask_number(question: &str) -> u64 {
     match ask(question).parse() {
         Ok(n) => n,
         Err(_) => {
@@ -302,6 +290,31 @@ pub(crate) fn ask_modified_note<'a>(the_match: &'a Note) -> Note {
         &title,
         &content,
         Some(the_match.last_modified()),
+    )
+}
+
+pub(crate) fn ask_modified_totp<'a>(the_match: &'a Totp) -> Totp {
+    let label = ask_with_initial("Enter label", Some(the_match.label()));
+    let issuer = ask_with_initial("Enter issuer", Some(the_match.issuer()));
+    let secret = ask_with_initial("Secret", Some(the_match.secret()));
+    let digits = ask_with_initial("Digits", Some(&the_match.digits().to_string()))
+        .parse::<u32>()
+        .unwrap();
+    let period = ask_with_initial("Period", Some(&the_match.period().to_string()))
+        .parse::<u64>()
+        .unwrap();
+    let algorithm = ask_with_initial("Algorithm", Some(the_match.algorithm()));
+
+    Totp::new(
+        Some(the_match.id()),
+        &format_totp_url(&label, &secret, &issuer, period, &algorithm, digits),
+        &label,
+        &issuer,
+        &secret,
+        &algorithm,
+        period as u64,
+        digits,
+        None,
     )
 }
 
@@ -489,8 +502,8 @@ pub fn ask_payment_info() -> PaymentCard {
         &number,
         &cvv,
         Expiry {
-            month: card_expiration_month,
-            year: card_expiration_year,
+            month: card_expiration_month as u32,
+            year: card_expiration_year as u32,
         },
         color.as_deref(),
         Some(&address),
@@ -500,9 +513,23 @@ pub fn ask_payment_info() -> PaymentCard {
 
 pub(crate) fn ask_note_info() -> Note {
     let title = ask_with_initial("Enter note title", None);
-    let content = ask_multiline_with_initial("Enter note content", Some("Default\nline1\nline2"));
+    let content = ask_multiline_with_initial("Enter note content", None);
 
     Note::new(None, &title, &content, None)
+}
+
+fn format_totp_url(
+    label: &str,
+    secret: &str,
+    issuer: &str,
+    period: u64,
+    algo: &str,
+    digits: u32,
+) -> String {
+    format!(
+        "otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}",
+        label, secret, &issuer, period, algo, digits
+    )
 }
 
 pub(crate) fn ask_totp_info() -> Totp {
@@ -523,6 +550,7 @@ pub(crate) fn ask_totp_info() -> Totp {
         Some("y"),
     );
 
+    // TODO: change to ask with default Algo, period, digits
     if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no" {
         let digits = ask_number("Enter number of digits:");
         let period = ask_number("Enter period:");
@@ -530,9 +558,13 @@ pub(crate) fn ask_totp_info() -> Totp {
 
         Totp::new(
             None,
-            &format!(
-                "otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}",
-                label, secret, &issuer, period, algorithm, digits
+            &format_totp_url(
+                &label,
+                &secret,
+                &issuer,
+                period as u64,
+                &algorithm,
+                digits as u32,
             ),
             &label,
             &issuer,
@@ -545,10 +577,7 @@ pub(crate) fn ask_totp_info() -> Totp {
     } else {
         Totp::new(
             None,
-            &format!(
-                "otpauth://totp/{}?secret={}&issuer={}&period=30&alorithm=sha1&digits=6",
-                label, secret, issuer
-            ),
+            &format_totp_url(&label, &secret, &issuer, 30, "SHA1", 6),
             &label,
             &issuer,
             &secret,

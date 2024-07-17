@@ -43,6 +43,8 @@ pub trait TotpVault {
     fn save_totp(&mut self, totp: &Totp) -> Result<(), Error>;
 
     fn delete_totp(&mut self, uuid: &Uuid) -> Result<(), Error>;
+
+    fn update_totp(&mut self, totp: Totp) -> Result<(), Error>;
 }
 
 pub trait Vault: PasswordVault + PaymentVault + NoteVault + TotpVault {}

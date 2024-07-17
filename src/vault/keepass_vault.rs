@@ -695,6 +695,14 @@ impl TotpVault for KeepassVault {
     fn delete_totp(&mut self, uuid: &Uuid) -> Result<(), Error> {
         self.do_delete(uuid, true)
     }
+
+    fn update_totp(&mut self, totp: Totp) -> Result<(), Error> {
+        let uuid = totp.id();
+        self.update_entry(*uuid, |entry| {
+            entry.set_title(Some(totp.label()));
+            entry.set_otp(totp.url());
+        })
+    }
 }
 
 impl Vault for KeepassVault {}
