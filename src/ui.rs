@@ -181,7 +181,7 @@ pub fn ask_number(question: &str) -> u64 {
 pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service");
     let username = ask("Enter username");
-    Credential::new(None, password, &service, &username, None, None)
+    Credential::new(None, password, &service, &username, None)
 }
 
 pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
@@ -198,7 +198,6 @@ pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credenti
         },
         &service,
         &username,
-        None,
         None,
     )
 }

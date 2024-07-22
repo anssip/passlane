@@ -59,7 +59,6 @@ pub struct Credential {
     password: String,
     service: String,
     username: String,
-    notes: Option<String>,
     last_modified: DateTime<Utc>,
 }
 
@@ -69,7 +68,6 @@ impl Credential {
         password: &str,
         service: &str,
         username: &str,
-        notes: Option<&str>,
         last_modified: Option<DateTime<Utc>>,
     ) -> Self {
         Credential {
@@ -77,7 +75,6 @@ impl Credential {
             password: password.to_string(),
             service: sanitize(service),
             username: sanitize(username),
-            notes: notes.map(sanitize),
             last_modified: last_modified.unwrap_or(Utc::now()),
         }
     }
@@ -96,10 +93,6 @@ impl Credential {
 
     pub fn username(&self) -> &str {
         &self.username
-    }
-
-    pub fn notes(&self) -> Option<&String> {
-        self.notes.as_ref()
     }
 
     pub fn last_modified(&self) -> &DateTime<Utc> {
@@ -286,13 +279,6 @@ impl Totp {
 }
 
 impl PaymentCard {
-    pub fn last_four(&self) -> String {
-        self.number
-            .chars()
-            .skip(self.number.len() - 4)
-            .take(4)
-            .collect::<String>()
-    }
     pub fn color_str(&self) -> String {
         if let Some(color) = &self.color {
             color.clone()

@@ -218,7 +218,6 @@ impl KeepassVault {
             &password,
             &service,
             &username,
-            None,
             modified_date_time.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
         )
     }
