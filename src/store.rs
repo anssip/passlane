@@ -1,6 +1,5 @@
 use crate::vault::entities::{Credential, Error, Note, PaymentCard};
 use csv::{ReaderBuilder, Writer};
-use serde::Deserialize;
 use serde::Serialize;
 use std::fs::create_dir;
 use std::fs::OpenOptions;
@@ -16,20 +15,15 @@ impl From<csv::Error> for Error {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CSVInputCredentials {
-    pub service: String,
-    pub username: String,
-    pub password: String,
-}
-
-impl CSVInputCredentials {
-    pub fn to_credential(&self) -> Credential {
-        Credential::new(None, &self.password, &self.service, &self.username, None)
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error {
+            message: e.to_string(),
+        }
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CSVPaymentCard {
     pub name: String,
     pub name_on_card: String,
@@ -40,7 +34,7 @@ pub struct CSVPaymentCard {
     pub billing_address: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CSVSecureNote {
     pub title: String,
     pub note: String,
@@ -59,7 +53,7 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
-pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
+pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
@@ -131,11 +125,7 @@ pub(crate) fn write_credentials_to_csv(
 ) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
-        wtr.serialize(CSVInputCredentials {
-            service: String::from(cred.service()),
-            username: String::from(cred.username()),
-            password: String::from(cred.password()),
-        })?;
+        wtr.serialize(cred)?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)

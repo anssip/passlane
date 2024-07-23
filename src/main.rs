@@ -121,6 +121,9 @@ fn cli() -> Command {
                 .arg(arg!(
                     -n --notes "Export secure notes."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Shows one time passwords (OTPs)"
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<file_path> "The the CSV file to export to."))
         )
 }
