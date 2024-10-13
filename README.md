@@ -53,7 +53,7 @@ Passlane is written in Rust.
 
 ### Nix
 
-Run with nix  - following creates a new password:
+Run with nix - following creates a new password:
 
 ```bash
 nix run github:anssip/passlane
@@ -89,6 +89,15 @@ passlane unlock
 ```
 
 You can later remove the master password from the keychain with the lock command.
+
+The one time passwords (OTPs) are stored in a separate vault file. You can unlock it with the same command
+accompanied with the -o option.
+
+```bash
+passlane unlock -o
+```
+
+To lock the vaults use the lock command. This locks both the password vault and the OTP vault:
 
 ```bash
 passlane lock
@@ -193,7 +202,6 @@ passlane add -p
 
 You can delete a note with the delete command and the -n option.
 
-
 ### Secure notes
 
 You can also save and manage **secure notes** in Passlane. The contents of notes, the title and the note text itself, are all fully encrypted and only visible to you.
@@ -255,6 +263,7 @@ To look up by name of the issuer, use the following command:
 ```bash
 passlane show -o heroku
 ```
+
 the output will be:
 
 ```bash

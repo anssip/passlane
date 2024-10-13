@@ -1,5 +1,8 @@
 use clap::ArgMatches;
 
+use crate::ui::output::{
+    show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
+};
 use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
 use crate::{handle_matches, ui, ItemType, MatchHandlerTemplate, UnlockingAction};
@@ -35,7 +38,7 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        ui::show_credentials_table(&matches, false);
+        show_credentials_table(&matches, false);
         match ui::ask_index(
             "To edit, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
@@ -70,7 +73,7 @@ impl<'a> MatchHandlerTemplate for EditNoteTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} payment cards", matches.len());
-        ui::show_notes_table(matches, false);
+        show_notes_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -117,7 +120,7 @@ impl<'a> MatchHandlerTemplate for EditPaymentTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} payment cards", matches.len());
-        ui::show_payment_cards_table(matches, false);
+        show_payment_cards_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -164,7 +167,7 @@ impl<'a> MatchHandlerTemplate for EditTotpTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} TOTP entries", matches.len());
-        ui::show_totp_table(matches);
+        show_totp_table(matches);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
