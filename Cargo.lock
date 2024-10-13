@@ -311,15 +311,21 @@ checksum = "f1fdabc7756949593fe60f30ec81974b613357de856987752631dea1e3394c80"
 
 [[package]]
 name = "base32"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23ce669cd6c8588f79e15cf450314f9638f967fc5770ff1c7c1deb0925ea7cfa"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
 
 [[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bitflags"
@@ -818,6 +824,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "erased-serde"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24e2389d65ab4fab27dc2a5de7b191e1f6617d1f1c8855c0dc569c94a4cbb18d"
+dependencies = [
+ "serde",
+ "typeid",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1202,23 +1218,24 @@ dependencies = [
 
 [[package]]
 name = "keepass-ng"
-version = "0.0.4"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c2cd05032da7c9a49908da6003865f27a4a581a9e67b70b2d23df8efdf17f94"
+checksum = "88801de2cea4a0ca35efd3aa549da568b6eae950dd1f0418b62b302abfc93670"
 dependencies = [
  "aes 0.8.4",
  "as-any",
  "base32",
- "base64",
+ "base64 0.22.1",
  "block-modes 0.9.1",
  "byteorder",
  "cbc",
  "chacha20",
  "chrono",
  "cipher 0.4.4",
- "erased-serde",
+ "erased-serde 0.4.5",
  "flate2",
  "getrandom",
+ "hex",
  "hex-literal",
  "hmac",
  "rust-argon2",
@@ -1231,6 +1248,7 @@ dependencies = [
  "url",
  "uuid",
  "xml-rs",
+ "zeroize",
 ]
 
 [[package]]
@@ -1314,7 +1332,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c42f95f9d296f2dcb50665f507ed5a68a171453142663ce44d77a4eb217b053"
 dependencies = [
  "aes 0.7.5",
- "base64",
+ "base64 0.21.7",
  "block-modes 0.8.1",
  "crc-any",
  "des",
@@ -1583,7 +1601,7 @@ dependencies = [
  "csv",
  "dirs",
  "env_logger",
- "erased-serde",
+ "erased-serde 0.3.31",
  "hex",
  "keepass-ng",
  "keyring",
@@ -1807,14 +1825,13 @@ dependencies = [
 
 [[package]]
 name = "rust-argon2"
-version = "1.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5885493fdf0be6cdff808d1533ce878d21cfa49c7086fa00c66355cd9141bfc"
+checksum = "9d9848531d60c9cbbcf9d166c885316c24bc0e2a9d3eba0956bb6cbbd79bc6e8"
 dependencies = [
- "base64",
+ "base64 0.21.7",
  "blake2b_simd",
  "constant_time_eq",
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -2274,6 +2291,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typeid"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e13db2e0ccd5e14a544e8a246ba2312cd25223f616442d7f2cb0e3db614236e"
+
+[[package]]
 name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2709,6 +2732,26 @@ dependencies = [
  "serde",
  "static_assertions",
  "zvariant",
+]
+
+[[package]]
+name = "zeroize"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce36e65b0d2999d2aafac989fb249189a141aee1f53c612c1f37d72631959f69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.60",
 ]
 
 [[package]]

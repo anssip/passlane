@@ -267,7 +267,8 @@ pub struct TotpCode {
 
 impl Totp {
     pub fn get_code(&self) -> Result<TotpCode, Error> {
-        let totp = TOTP::from_str(&self.url)?;
+        let totp = TOTP::from_str(&self.url)
+            .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
 
         debug!("Getting code for totp: {}", totp);
         let code = totp.value_now()?;

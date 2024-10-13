@@ -4,24 +4,19 @@
 
 ### Next
 
-fix:
+- [ ] Add note field to credentials (userful when you have several accounts on the same service)
+- [ ] Make sure first usage asks for configuration values to be stored in the config file
+- [ ] Show only the domain (no path etries) in the Service column of credentials
 - [x] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
 - [x] Show dates for each entry
-- [ ] Editing of entries
-- [ ] Add a list command to list all entries
+- [x] Editing of entries
 - [ ] Add an option to pass master password from the command line
 - [ ] Option to output JSON, for scripting
 - [ ] remove anyhow?
 - [x] add TOTP support
 - [x] first time vault creation
 - [x] invalid password error message
-
-- [ ] OTP support
-
-### 3.0
-
-- [ ] edit functionality
-- [ ] push to vault from keychain
+- [x] OTP support
 
 ### Scription examples
 

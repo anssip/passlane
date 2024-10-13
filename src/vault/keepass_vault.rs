@@ -1,12 +1,13 @@
 use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use keepass_ng::error::{DatabaseSaveError, TOTPError};
-use keepass_ng::{
-    db::Entry, db::Node, error::DatabaseOpenError, group_get_children, node_is_entry,
-    node_is_group, search_node_by_uuid, Database, DatabaseConfig, DatabaseKey, Group, NodeIterator,
-    NodePtr,
+use keepass_ng::db::{
+    group_get_children, node_is_entry, node_is_group, search_node_by_uuid, Database, Entry, Group,
+    Node, NodeIterator, NodePtr, SerializableNodePtr,
 };
+use keepass_ng::error::DatabaseSaveError;
+use keepass_ng::{error::DatabaseOpenError, DatabaseConfig, DatabaseKey};
+
 use log::debug;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -30,14 +31,6 @@ impl From<DatabaseOpenError> for Error {
 
 impl From<DatabaseSaveError> for Error {
     fn from(e: DatabaseSaveError) -> Self {
-        Error {
-            message: e.to_string(),
-        }
-    }
-}
-
-impl From<TOTPError> for Error {
-    fn from(e: TOTPError) -> Self {
         Error {
             message: e.to_string(),
         }
@@ -78,7 +71,7 @@ impl KeepassVault {
             keyfile: keyfile_path,
         })
     }
-    fn get_root(&self) -> NodePtr {
+    fn get_root(&self) -> SerializableNodePtr {
         self.db.root.clone()
     }
 
@@ -371,9 +364,16 @@ impl KeepassVault {
         Error,
     > {
         let node = node.borrow();
-        let e = node.as_any().downcast_ref::<Entry>().unwrap();
-        let otp = e.get_otp()?;
-        let url = e.get_raw_otp_value().unwrap();
+        let e = node
+            .as_any()
+            .downcast_ref::<Entry>()
+            .ok_or(Error::new("Failed to downcast keepass node"))?;
+        let otp = e
+            .get_otp()
+            .map_err(|e| Error::new(&format!("Failed to get OTP from keepass node: {:?}", e)))?;
+        let url = e
+            .get_raw_otp_value()
+            .ok_or(Error::new("Failed to get URL from keepass node"))?;
         let last_modified = e.get_times().get_last_modification();
         Ok((
             String::from(url),
