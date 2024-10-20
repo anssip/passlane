@@ -57,7 +57,7 @@ fn node_has_totp(node: &NodePtr) -> bool {
 }
 
 impl KeepassVault {
-    pub fn new(
+    pub fn open(
         password: &str,
         filepath: &str,
         keyfile_path: Option<String>,
@@ -71,6 +71,31 @@ impl KeepassVault {
             keyfile: keyfile_path,
         })
     }
+
+    pub fn new(
+        filepath: &str,
+        password: &str,
+        keyfile: Option<&str>,
+    ) -> Result<KeepassVault, Error> {
+        let mut db = Database::new(DatabaseConfig::default());
+        db.meta.database_name = Some("Passlane database".to_string());
+
+        let mut key = DatabaseKey::new().with_password(password);
+
+        if let Some(keyfile_path) = keyfile {
+            let mut file = File::open(keyfile_path)?;
+            key = key.with_keyfile(&mut file)?;
+        }
+        db.save(&mut File::create(filepath)?, key)?;
+
+        Ok(KeepassVault {
+            db,
+            password: password.to_string(),
+            filepath: filepath.to_string(),
+            keyfile: keyfile.map(ToString::to_string),
+        })
+    }
+
     fn get_root(&self) -> SerializableNodePtr {
         self.db.root.clone()
     }

@@ -1,5 +1,7 @@
 pub mod output;
 
+use std::path::Path;
+
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -304,6 +306,17 @@ pub fn ask_master_password(question: Option<&str>) -> String {
     }
 }
 
+pub fn ask_new_master_password() -> String {
+    let pwd1 = ask_password("Please enter new master password");
+    let pwd2 = ask_password("Retype new master password");
+    if pwd1 != pwd2 {
+        println!("Passwords do not match, please try again");
+        ask_new_master_password()
+    } else {
+        pwd1
+    }
+}
+
 pub(crate) fn ask_totp_master_password() -> String {
     ask_password("Please enter master password of the One Time Passwords vault")
 }
@@ -404,7 +417,6 @@ pub(crate) fn ask_totp_info() -> Totp {
         Some("y"),
     );
 
-    // TODO: change to ask with default Algo, period, digits
     if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no" {
         let digits = ask_number("Enter number of digits:");
         let period = ask_number("Enter period:");
@@ -458,4 +470,73 @@ fn ask_algorithm() -> String {
         );
     }
     algo
+}
+
+pub fn ask_vault_path(current_path: &str) -> String {
+    ask_path("Enter vault location", current_path, "store.kdbx")
+}
+
+pub fn ask_totp_vault_path(current_path: &str) -> String {
+    ask_path(
+        "Enter vault location for Timed One Time Passwords, a.k.a. TOTPs",
+        current_path,
+        "totp.kdbx",
+    )
+}
+
+pub fn ask_path(question: &str, default_answer: &str, default_filename: &str) -> String {
+    let location = ask_with_initial(question, Some(default_answer));
+    if !parent_path_exists(&location) {
+        println!("Directory '{}' does not exist, please try again", &location);
+        ask_path(question, default_answer, default_filename)
+    } else {
+        verify_file_path(&location, default_filename)
+    }
+}
+
+fn verify_file_path(location: &str, default_filename: &str) -> String {
+    let file_path = Path::new(location);
+    if file_path.is_file() {
+        println!("File '{}' already exists, please try again", location);
+        ask_path("Enter vault location", location, default_filename)
+    } else {
+        let path = Path::new(location);
+        if path.is_dir() {
+            let location_with_filename = path.join(default_filename);
+            location_with_filename.to_str().unwrap().to_string()
+        } else {
+            location.to_string()
+        }
+    }
+}
+
+fn parent_path_exists(location: &str) -> bool {
+    let file_path = Path::new(location);
+    if file_path.is_dir() {
+        return true;
+    }
+    if location.ends_with(".kdbx") {
+        return file_path.parent().unwrap().exists();
+    }
+    file_path.exists()
+}
+
+fn parent_path(location: &str) -> &str {
+    let file_path = Path::new(location);
+    file_path.parent().unwrap().to_str().unwrap()
+}
+
+pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
+    println!(
+        ">> To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles\n"
+    );
+    ask_with_initial_optional(
+        "Enter location for the Keyfile to encrypt the vault with, or leave empty to not use a keyfile",
+        current_path,
+        true
+    )
+}
+
+pub fn newline() {
+    println!();
 }

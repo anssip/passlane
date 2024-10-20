@@ -90,7 +90,7 @@ fn get_vault(
     keyfile_path: Option<String>,
 ) -> Result<Box<dyn Vault>, Error> {
     // we could return some other Vault implementation here
-    let vault = KeepassVault::new(password, filepath, keyfile_path)?;
+    let vault = KeepassVault::open(password, filepath, keyfile_path)?;
     Ok(Box::new(vault))
 }
 
