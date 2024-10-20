@@ -1,6 +1,6 @@
-use keyring::{Entry};
-use log::{debug};
 use crate::vault::entities::Error;
+use keyring::Entry;
+use log::debug;
 
 const SERVICE_NAME: &str = "passlane_master_pwd";
 const SERVICE_NAME_TOTP: &str = "passlane_totp_master_pwd";
@@ -39,7 +39,7 @@ pub(crate) fn get_totp_master_password() -> Result<String, Error> {
     Ok(entry.get_password()?)
 }
 
-pub(crate) fn delete_totp_master_password() -> Result<(), Error>{
+pub(crate) fn delete_totp_master_password() -> Result<(), Error> {
     let entry = Entry::new(SERVICE_NAME_TOTP, USERNAME)?;
     Ok(entry.delete_password()?)
 }

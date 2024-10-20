@@ -148,10 +148,10 @@ pub fn ask_with_initial_optional(
                 return Some(line);
             }
             Err(ReadlineError::Interrupted) => {
-                break;
+                panic!("interrupted");
             }
             Err(ReadlineError::Eof) => {
-                break;
+                panic!("interrupted");
             }
             Err(err) => {
                 println!("Error: {:?}", err);
@@ -494,6 +494,16 @@ pub fn ask_path(question: &str, default_answer: &str, default_filename: &str) ->
     }
 }
 
+pub fn ask_existing_path() -> String {
+    let location = ask_with_initial("Enter path to existing vault file", None);
+    if !Path::new(&location).is_file() {
+        println!("File '{}' does not exist, please try again", &location);
+        ask_existing_path()
+    } else {
+        location
+    }
+}
+
 fn verify_file_path(location: &str, default_filename: &str) -> String {
     let file_path = Path::new(location);
     if file_path.is_file() {
@@ -521,17 +531,14 @@ fn parent_path_exists(location: &str) -> bool {
     file_path.exists()
 }
 
-fn parent_path(location: &str) -> &str {
-    let file_path = Path::new(location);
-    file_path.parent().unwrap().to_str().unwrap()
-}
-
 pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
+    println!("The keyfile should be created with KeepassXC.");
     println!(
-        ">> To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles\n"
+        ">> To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles"
     );
+
     ask_with_initial_optional(
-        "Enter location for the Keyfile to encrypt the vault with, or leave empty to not use a keyfile",
+        "Enter location for the Keyfile to encrypt the vaults with, or leave empty to not use a keyfile",
         current_path,
         true
     )
@@ -539,4 +546,31 @@ pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
 
 pub fn newline() {
     println!();
+}
+
+pub fn ask_store_master_password() -> bool {
+    ask_with_initial(
+        "Store master password in keychain? You can also save it later using the 'unlock' command.",
+        Some("y"),
+    )
+    .to_lowercase()
+        == "y"
+}
+
+pub fn ask_open_existing_vault() -> bool {
+    ask_with_initial(
+        "Do you want to create a new vault or open an existing one? n=new, e=existing",
+        Some("n"),
+    )
+    .to_lowercase()
+        == "e"
+}
+
+pub fn ask_open_existing_totp_vault() -> bool {
+    ask_with_initial(
+        "Do you want to create a new TOTP vault or open an existing one? n=new, e=existing",
+        Some("n"),
+    )
+    .to_lowercase()
+        == "e"
 }

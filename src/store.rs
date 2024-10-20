@@ -111,6 +111,10 @@ fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> Str
     default_path
 }
 
+fn config_file_exists(path_config_filename: &str) -> bool {
+    dir_path().join(path_config_filename).exists()
+}
+
 pub(crate) fn get_vault_path() -> String {
     resolve_vault_path("store.kdbx", ".vault_path")
 }
@@ -167,4 +171,40 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
+}
+
+pub fn save_config_path(config_file: &str, path: &str) -> Result<(), Error> {
+    let config_path = dir_path().join(config_file);
+    let exists = config_path.exists();
+    let mut file = OpenOptions::new()
+        .create(!exists)
+        .write(true)
+        .truncate(true)
+        .open(config_path)?;
+    file.write_all(String::from(path).as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn save_vault_path(path: &str) -> Result<(), Error> {
+    save_config_path(".vault_path", path)
+}
+
+pub(crate) fn save_totp_vault_path(path: &str) -> Result<(), Error> {
+    save_config_path(".totp_vault_path", path)
+}
+
+pub(crate) fn save_keyfile_path(path: &str) -> Result<(), Error> {
+    save_config_path(".keyfile_path", path)
+}
+
+pub fn has_vault_path() -> bool {
+    config_file_exists(".vault_path")
+}
+
+pub fn has_totp_vault_path() -> bool {
+    config_file_exists(".totp_vault_path")
+}
+
+pub fn has_keyfile_path() -> bool {
+    config_file_exists(".keyfile_path")
 }
