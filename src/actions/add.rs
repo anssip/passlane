@@ -37,7 +37,7 @@ impl AddAction {
         } else if self.clipboard {
             self.password_from_clipboard()
         } else {
-            Ok(ui::input::ask_password("Enter password to save"))
+            Ok(ui::input::ask_password("Enter password to save", None))
         }
     }
     fn get_vault(&self) -> Result<Box<dyn Vault>, Error> {

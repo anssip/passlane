@@ -42,3 +42,4 @@ uuid = { version = "1.8.0", features = ["v4", "serde"] }
 percent-encoding = "2.3.1"
 rustyline-derive = "0.10.0"
 rustyline = "14.0.0"
+inquire = "0.7.5"

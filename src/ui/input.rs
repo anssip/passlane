@@ -5,10 +5,11 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
 use rustyline::validate::Validator;
-use rustyline::{Config, DefaultEditor, Editor, Result as RustylineResult};
+use rustyline::{Config, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
+use inquire::{Confirm, CustomType, Password, Select, Text};
 
 #[derive(Helper)]
 struct MultilineHelper {
@@ -104,77 +105,57 @@ pub fn ask_multiline_with_initial(question: &str, default_answer: Option<&str>) 
 }
 
 pub fn ask(question: &str) -> String {
-    ask_with_initial(question, None)
+    Text::new(question).prompt().unwrap()
 }
 
-pub fn ask_with_initial(question: &str, default_answer: Option<&str>) -> String {
-    loop {
-        let answer = ask_with_initial_optional(question, default_answer, false);
-        if let Some(answer) = answer {
-            return answer;
-        }
+pub fn ask_with_initial(
+    question: &str,
+    default_answer: Option<&str>,
+    help_message: Option<&str>,
+) -> String {
+    let mut prompt = Text::new(question);
+    if let Some(default) = default_answer {
+        prompt = prompt.with_default(default);
     }
+    if let Some(message) = help_message {
+        prompt = prompt.with_help_message(message);
+    }
+    prompt.prompt().unwrap()
 }
 
 pub fn ask_with_initial_optional(
     question: &str,
     default_answer: Option<&str>,
+    help_message: Option<&str>,
     optional: bool,
 ) -> Option<String> {
-    let mut rl = DefaultEditor::new().unwrap();
-    let prompt = format!(
-        "{}{}: ",
-        question,
-        if optional { " (optional)" } else { "" }
-    );
-    let default = default_answer.unwrap_or("");
-
-    loop {
-        let readline = rl.readline_with_initial(&prompt, (default, ""));
-        match readline {
-            Ok(line) => {
-                if line.trim().is_empty() {
-                    if let Some(answer) = default_answer {
-                        return Some(answer.to_string());
-                    } else if !optional {
-                        println!("Please enter a value");
-                        continue;
-                    } else {
-                        return None;
-                    }
-                }
-                return Some(line);
-            }
-            Err(ReadlineError::Interrupted) => {
-                panic!("interrupted");
-            }
-            Err(ReadlineError::Eof) => {
-                panic!("interrupted");
-            }
-            Err(err) => {
-                println!("Error: {:?}", err);
-                break;
-            }
-        }
+    let mut prompt = Text::new(question);
+    if let Some(default) = default_answer {
+        prompt = prompt.with_default(default);
     }
-    return None;
+    if let Some(message) = help_message {
+        prompt = prompt.with_help_message(message);
+    }
+    if optional {
+        prompt.prompt().ok()
+    } else {
+        Some(prompt.prompt().unwrap())
+    }
 }
 
-pub fn ask_password(question: &str) -> String {
-    match rpassword::prompt_password(format!("{}: ", question)) {
-        Ok(password) => password,
-        Err(_) => ask_password(question),
+pub fn ask_password(question: &str, help_message: Option<&str>) -> String {
+    let mut prompt = Password::new(question);
+    if let Some(message) = help_message {
+        prompt = prompt.with_help_message(message);
     }
+    prompt.prompt().unwrap()
 }
 
 pub fn ask_number(question: &str) -> u64 {
-    match ask(question).parse() {
-        Ok(n) => n,
-        Err(_) => {
-            println!("Please enter a number: ");
-            ask_number(question)
-        }
-    }
+    CustomType::<u64>::new(question)
+        .with_error_message("Please enter a valid number")
+        .prompt()
+        .unwrap()
 }
 
 pub fn ask_credentials(password: &str) -> Credential {
@@ -184,9 +165,12 @@ pub fn ask_credentials(password: &str) -> Credential {
 }
 
 pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
-    let service = ask_with_initial("Enter URL or service", Some(the_match.service()));
-    let username = ask_with_initial("Enter username", Some(the_match.username()));
-    let password = ask_password("Enter password, or leave empty to keep the current value");
+    let service = ask_with_initial("Enter URL or service", Some(the_match.service()), None);
+    let username = ask_with_initial("Enter username", Some(the_match.username()), None);
+    let password = ask_password(
+        "Enter password",
+        Some("Leave empty to keep the current value"),
+    );
 
     Credential::new(
         Some(the_match.uuid()),
@@ -202,11 +186,16 @@ pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credenti
 }
 
 pub(crate) fn ask_modified_address(address: &Address) -> Address {
-    let street = ask_with_initial("Enter street", Some(address.street()));
-    let city = ask_with_initial("Enter city", Some(address.city()));
-    let zip = ask_with_initial("Enter ZIP code", Some(address.zip()));
-    let country = ask_with_initial("Enter country", Some(address.country()));
-    let state = ask_with_initial_optional("Enter state", address.state().map(|s| s.as_str()), true);
+    let street = ask_with_initial("Enter street", Some(address.street()), None);
+    let city = ask_with_initial("Enter city", Some(address.city()), None);
+    let zip = ask_with_initial("Enter ZIP code", Some(address.zip()), None);
+    let country = ask_with_initial("Enter country", Some(address.country()), None);
+    let state = ask_with_initial_optional(
+        "Enter state",
+        address.state().map(|s| s.as_str()),
+        None,
+        true,
+    );
 
     Address::new(
         Some(address.id()),
@@ -219,24 +208,30 @@ pub(crate) fn ask_modified_address(address: &Address) -> Address {
 }
 
 pub(crate) fn ask_modified_payment_info<'a>(payment_card: &'a PaymentCard) -> PaymentCard {
-    let name = ask_with_initial("Enter card name", Some(payment_card.name()));
+    let name = ask_with_initial("Enter card name", Some(payment_card.name()), None);
     let color = ask_with_initial_optional(
         "Enter color",
         payment_card.color().map(|s| s.as_str()),
+        None,
         true,
     );
-    let cardholder_name =
-        ask_with_initial("Enter card holder name", Some(payment_card.name_on_card()));
-    let card_number = ask_with_initial("Enter card number", Some(payment_card.number()));
+    let cardholder_name = ask_with_initial(
+        "Enter card holder name",
+        Some(payment_card.name_on_card()),
+        None,
+    );
+    let card_number = ask_with_initial("Enter card number", Some(payment_card.number()), None);
     let expiration_month = ask_with_initial(
         "Enter card expiration month",
         Some(&payment_card.expiry().month.to_string()),
+        None,
     );
     let expiration_year = ask_with_initial(
         "Enter card expiration year",
         Some(&payment_card.expiry().year.to_string()),
+        None,
     );
-    let security_code = ask_with_initial("Enter card cvv", Some(payment_card.cvv()));
+    let security_code = ask_with_initial("Enter card cvv", Some(payment_card.cvv()), None);
     println!("Billing address:");
     let address = match payment_card.billing_address() {
         Some(address) => ask_modified_address(&address),
@@ -260,7 +255,7 @@ pub(crate) fn ask_modified_payment_info<'a>(payment_card: &'a PaymentCard) -> Pa
 }
 
 pub(crate) fn ask_modified_note<'a>(the_match: &'a Note) -> Note {
-    let title = ask_with_initial("Enter title", Some(the_match.title()));
+    let title = ask_with_initial("Enter title", Some(the_match.title()), None);
     let content = ask_multiline_with_initial("Enter content", Some(the_match.content()));
 
     Note::new(
@@ -272,16 +267,16 @@ pub(crate) fn ask_modified_note<'a>(the_match: &'a Note) -> Note {
 }
 
 pub(crate) fn ask_modified_totp<'a>(the_match: &'a Totp) -> Totp {
-    let label = ask_with_initial("Enter label", Some(the_match.label()));
-    let issuer = ask_with_initial("Enter issuer", Some(the_match.issuer()));
-    let secret = ask_with_initial("Secret", Some(the_match.secret()));
-    let digits = ask_with_initial("Digits", Some(&the_match.digits().to_string()))
+    let label = ask_with_initial("Enter label", Some(the_match.label()), None);
+    let issuer = ask_with_initial("Enter issuer", Some(the_match.issuer()), None);
+    let secret = ask_with_initial("Secret", Some(the_match.secret()), None);
+    let digits = ask_with_initial("Digits", Some(&the_match.digits().to_string()), None)
         .parse::<u32>()
         .unwrap();
-    let period = ask_with_initial("Period", Some(&the_match.period().to_string()))
+    let period = ask_with_initial("Period", Some(&the_match.period().to_string()), None)
         .parse::<u64>()
         .unwrap();
-    let algorithm = ask_with_initial("Algorithm", Some(the_match.algorithm()));
+    let algorithm = ask_with_initial("Algorithm", Some(the_match.algorithm()), None);
 
     Totp::new(
         Some(the_match.id()),
@@ -298,15 +293,15 @@ pub(crate) fn ask_modified_totp<'a>(the_match: &'a Totp) -> Totp {
 
 pub fn ask_master_password(question: Option<&str>) -> String {
     if let Some(q) = question {
-        ask_password(q)
+        ask_password(q, None)
     } else {
-        ask_password("Please enter master password")
+        ask_password("Please enter master password", None)
     }
 }
 
 pub fn ask_new_master_password() -> String {
-    let pwd1 = ask_password("Please enter new master password");
-    let pwd2 = ask_password("Retype new master password");
+    let pwd1 = ask_password("Please enter new master password", None);
+    let pwd2 = ask_password("Retype new master password", None);
     if pwd1 != pwd2 {
         println!("Passwords do not match, please try again");
         ask_new_master_password()
@@ -316,26 +311,27 @@ pub fn ask_new_master_password() -> String {
 }
 
 pub(crate) fn ask_totp_master_password() -> String {
-    ask_password("Please enter master password of the One Time Passwords vault")
+    ask_password(
+        "Please enter master password of the One Time Passwords vault",
+        None,
+    )
 }
 
 pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
-    let answer = ask_with_initial(question, None);
-    if answer == "q" {
-        return Err(String::from("Quitting"));
-    }
-    if answer == "a" {
-        return Ok(usize::MAX);
-    }
-    match answer.parse::<i16>() {
-        Ok(num) => {
-            if num >= 0 && num <= max_index as i16 {
-                Ok(num.try_into().unwrap())
-            } else {
-                Err(String::from("Invalid index"))
-            }
-        }
-        Err(_) => Err(String::from("Invalid index")),
+    let mut options = (0..=max_index).map(|i| i.to_string()).collect::<Vec<_>>();
+    options.push("q".to_string());
+    options.push("a".to_string());
+
+    let answer = Select::new(question, options)
+        .prompt()
+        .map_err(|e| e.to_string())?;
+
+    match answer.as_str() {
+        "q" => Err(String::from("Quitting")),
+        "a" => Ok(usize::MAX),
+        num => num
+            .parse::<usize>()
+            .map_err(|_| String::from("Invalid index")),
     }
 }
 
@@ -343,7 +339,12 @@ fn ask_address() -> Address {
     println!("Enter billing address");
     let street = ask("Enter street address");
     let city = ask("Enter city");
-    let state = ask_with_initial_optional("Enter state", None, true);
+    let state = ask_with_initial_optional(
+        "Enter state",
+        None,
+        Some("leave empty if not applicable"),
+        true,
+    );
     let zip = ask("Enter postal code");
     let country = ask("Enter country");
 
@@ -351,13 +352,17 @@ fn ask_address() -> Address {
 }
 
 pub fn ask_payment_info() -> PaymentCard {
-    let name = ask_with_initial("Enter card name", None);
-    let color = ask_with_initial_optional("Enter card color", None, true);
-    let number = ask_with_initial("Enter card number", None);
-    let name_on_card = ask_with_initial("Enter card holder name", None);
+    let name = ask_with_initial("Enter card name", None, None);
+    let color = ask_with_initial_optional("Enter card color", None, None, true);
+    let number = ask_with_initial("Enter card number", None, None);
+    let name_on_card = ask_with_initial("Enter card holder name", None, None);
     let card_expiration_month = ask_number("Enter card expiration month");
     let card_expiration_year = ask_number("Enter card expiration year");
-    let cvv = ask_with_initial("Enter card cvv", None);
+    let cvv = ask_with_initial(
+        "Enter card cvv",
+        None,
+        Some("Card Verification Value: 3 or 4 digits that are usually located on the back of the card in the signature panel"),
+    );
     let address = ask_address();
 
     PaymentCard::new(
@@ -377,7 +382,7 @@ pub fn ask_payment_info() -> PaymentCard {
 }
 
 pub(crate) fn ask_note_info() -> Note {
-    let title = ask_with_initial("Enter note title", None);
+    let title = ask_with_initial("Enter note title", None, None);
     let content = ask_multiline_with_initial("Enter note content", None);
 
     Note::new(None, &title, &content, None)
@@ -401,11 +406,13 @@ pub(crate) fn ask_totp_info() -> Totp {
     let label = ask_with_initial(
         "Enter label, typically formatted like <issuer:username>:",
         None,
+        None,
     );
 
-    let issuer = ask_with_initial("Enter issuer:", None);
+    let issuer = ask_with_initial("Enter issuer:", None, None);
     let secret = ask_with_initial(
         "Enter secret, or leave empty to keep the current secret:",
+        None,
         None,
     );
 
@@ -413,6 +420,7 @@ pub(crate) fn ask_totp_info() -> Totp {
     let proceed = ask_with_initial(
         "Press y (yes) to add with defaults, n (no) to specify details.",
         Some("y"),
+        None,
     );
 
     if proceed.to_lowercase() == "n" || proceed.to_lowercase() == "no" {
@@ -458,6 +466,7 @@ fn ask_algorithm() -> String {
     let mut algo = ask_with_initial(
         "Enter algorithm; SHA1 (default), SHA256, SHA512:",
         Some("SHA1"),
+        None,
     );
 
     while !valid_algos.contains(&algo.to_uppercase().as_str()) {
@@ -465,6 +474,7 @@ fn ask_algorithm() -> String {
         algo = ask_with_initial(
             "Enter algorithm; SHA1 (default), SHA256, SHA512:",
             Some("SHA1"),
+            None,
         );
     }
     algo
@@ -482,8 +492,9 @@ pub fn ask_totp_vault_path(current_path: &str) -> String {
     )
 }
 
+// TODO: Add help message, can be used to hint about using Dropbox or other cloud storage
 pub fn ask_path(question: &str, default_answer: &str, default_filename: &str) -> String {
-    let location = ask_with_initial(question, Some(default_answer));
+    let location = ask_with_initial(question, Some(default_answer), None);
     if !parent_path_exists(&location) {
         println!("Directory '{}' does not exist, please try again", &location);
         ask_path(question, default_answer, default_filename)
@@ -493,7 +504,7 @@ pub fn ask_path(question: &str, default_answer: &str, default_filename: &str) ->
 }
 
 pub fn ask_existing_path() -> String {
-    let location = ask_with_initial("Enter path to existing vault file", None);
+    let location = ask_with_initial("Enter path to existing vault file", None, None);
     if !Path::new(&location).is_file() {
         println!("File '{}' does not exist, please try again", &location);
         ask_existing_path()
@@ -530,15 +541,11 @@ fn parent_path_exists(location: &str) -> bool {
 }
 
 pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
-    println!("The keyfile should be created with KeepassXC.");
-    println!(
-        ">> To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles"
-    );
-
     ask_with_initial_optional(
         "Enter location for the Keyfile to encrypt the vaults with, or leave empty to not use a keyfile",
         current_path,
-        true
+        Some("The keyfile should be created with KeepassXC. To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles"),
+        true,
     )
 }
 
@@ -547,28 +554,30 @@ pub fn newline() {
 }
 
 pub fn ask_store_master_password() -> bool {
-    ask_with_initial(
+    Confirm::new(
         "Store master password in keychain? You can also save it later using the 'unlock' command.",
-        Some("y"),
     )
-    .to_lowercase()
-        == "y"
+    .with_default(true)
+    .prompt()
+    .unwrap()
 }
 
 pub fn ask_open_existing_vault() -> bool {
-    ask_with_initial(
-        "Do you want to create a new vault or open an existing one? n=new, e=existing",
-        Some("n"),
+    Select::new(
+        "Do you want to create a new vault or open an existing one?",
+        vec!["New", "Existing"],
     )
-    .to_lowercase()
-        == "e"
+    .prompt()
+    .unwrap()
+        == "Existing"
 }
 
 pub fn ask_open_existing_totp_vault() -> bool {
-    ask_with_initial(
-        "Do you want to create a new TOTP vault or open an existing one? n=new, e=existing",
-        Some("n"),
+    Select::new(
+        "Do you want to create a new TOTP vault or open an existing one?",
+        vec!["New", "Existing"],
     )
-    .to_lowercase()
-        == "e"
+    .prompt()
+    .unwrap()
+        == "Existing"
 }
