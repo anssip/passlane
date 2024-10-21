@@ -83,6 +83,7 @@ impl KeepassVault {
         let mut key = DatabaseKey::new().with_password(password);
 
         if let Some(keyfile_path) = keyfile {
+            println!("Using keyfile '{}'", keyfile_path);
             let mut file = File::open(keyfile_path)?;
             key = key.with_keyfile(&mut file)?;
         }

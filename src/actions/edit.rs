@@ -40,8 +40,9 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
     ) -> Result<Option<String>, Error> {
         show_credentials_table(&matches, false);
         match ui::input::ask_index(
-            "To edit, please enter a row number from the table above, or press q to abort",
+            "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without editing"),
         ) {
             Ok(index) => {
                 println!(
@@ -85,8 +86,9 @@ impl<'a> MatchHandlerTemplate for EditNoteTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To edit, please enter a row number from the table above, or press q to abort",
+            "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without editing"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -132,8 +134,9 @@ impl<'a> MatchHandlerTemplate for EditPaymentTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To edit, please enter a row number from the table above, or press q to abort",
+            "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without editing"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -179,8 +182,9 @@ impl<'a> MatchHandlerTemplate for EditTotpTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To edit, please enter a row number from the table above, or press q to abort",
+            "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without editing"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {

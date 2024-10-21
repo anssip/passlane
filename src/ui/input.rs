@@ -136,10 +136,15 @@ pub fn ask_with_initial_optional(
     if let Some(message) = help_message {
         prompt = prompt.with_help_message(message);
     }
-    if optional {
-        prompt.prompt().ok()
+    let result = prompt.prompt().unwrap();
+    if !optional && result.is_empty() {
+        ask_with_initial_optional(question, default_answer, help_message, optional)
     } else {
-        Some(prompt.prompt().unwrap())
+        if result == "" {
+            None
+        } else {
+            Some(result)
+        }
     }
 }
 
@@ -149,6 +154,14 @@ pub fn ask_password(question: &str, help_message: Option<&str>) -> String {
         prompt = prompt.with_help_message(message);
     }
     prompt.prompt().unwrap()
+}
+
+pub fn ask_new_password(question: &str) -> Option<String> {
+    if ask_with_options("Do you want to change the password?", vec!["y", "n"]) == "n" {
+        return Some("".to_string());
+    }
+    let prompt = Password::new(question);
+    Some(prompt.prompt().unwrap())
 }
 
 pub fn ask_number(question: &str) -> u64 {
@@ -165,20 +178,21 @@ pub fn ask_credentials(password: &str) -> Credential {
 }
 
 pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
-    let service = ask_with_initial("Enter URL or service", Some(the_match.service()), None);
-    let username = ask_with_initial("Enter username", Some(the_match.username()), None);
-    let password = ask_password(
-        "Enter password",
-        Some("Leave empty to keep the current value"),
+    let service = ask_with_initial(
+        "Enter URL or service",
+        Some(the_match.service()),
+        Some("Press enter and leave empty to keep the current value shown in parantheses"),
     );
+    let username = ask_with_initial(
+        "Enter username",
+        Some(the_match.username()),
+        Some("Press enter and leave empty to keep the current value shown in parantheses"),
+    );
+    let password = ask_new_password("Enter new password");
 
     Credential::new(
         Some(the_match.uuid()),
-        if password == "" {
-            the_match.password()
-        } else {
-            &password
-        },
+        password.as_deref().unwrap_or(the_match.password()),
         &service,
         &username,
         None,
@@ -317,21 +331,27 @@ pub(crate) fn ask_totp_master_password() -> String {
     )
 }
 
-pub fn ask_index(question: &str, max_index: i16) -> Result<usize, String> {
-    let mut options = (0..=max_index).map(|i| i.to_string()).collect::<Vec<_>>();
-    options.push("q".to_string());
-    options.push("a".to_string());
-
-    let answer = Select::new(question, options)
-        .prompt()
-        .map_err(|e| e.to_string())?;
-
-    match answer.as_str() {
-        "q" => Err(String::from("Quitting")),
-        "a" => Ok(usize::MAX),
-        num => num
-            .parse::<usize>()
-            .map_err(|_| String::from("Invalid index")),
+pub fn ask_index(
+    question: &str,
+    max_index: i16,
+    help_message: Option<&str>,
+) -> Result<usize, String> {
+    let answer = ask_with_initial(question, None, help_message);
+    if answer == "q" {
+        return Err(String::from("Quitting"));
+    }
+    if answer == "a" {
+        return Ok(usize::MAX);
+    }
+    match answer.parse::<i16>() {
+        Ok(num) => {
+            if num >= 0 && num <= max_index as i16 {
+                Ok(num.try_into().unwrap())
+            } else {
+                Err(String::from("Invalid index"))
+            }
+        }
+        Err(_) => Err(String::from("Invalid index")),
     }
 }
 
@@ -480,8 +500,15 @@ fn ask_algorithm() -> String {
     algo
 }
 
+const VAULT_HELP_MESSAGE: &str = "You can specify your Dropbox folder here to make it easier to sync the vault between devices, or any other folder you want to store the vault in.";
+
 pub fn ask_vault_path(current_path: &str) -> String {
-    ask_path("Enter vault location", current_path, "store.kdbx")
+    ask_path(
+        "Enter vault location",
+        current_path,
+        "store.kdbx",
+        Some(VAULT_HELP_MESSAGE),
+    )
 }
 
 pub fn ask_totp_vault_path(current_path: &str) -> String {
@@ -489,15 +516,20 @@ pub fn ask_totp_vault_path(current_path: &str) -> String {
         "Enter vault location for Timed One Time Passwords, a.k.a. TOTPs",
         current_path,
         "totp.kdbx",
+        Some(VAULT_HELP_MESSAGE),
     )
 }
 
-// TODO: Add help message, can be used to hint about using Dropbox or other cloud storage
-pub fn ask_path(question: &str, default_answer: &str, default_filename: &str) -> String {
-    let location = ask_with_initial(question, Some(default_answer), None);
+pub fn ask_path(
+    question: &str,
+    default_answer: &str,
+    default_filename: &str,
+    help_message: Option<&str>,
+) -> String {
+    let location = ask_with_initial(question, Some(default_answer), help_message);
     if !parent_path_exists(&location) {
-        println!("Directory '{}' does not exist, please try again", &location);
-        ask_path(question, default_answer, default_filename)
+        println!("'{}' does not exist, please try again", &location);
+        ask_path(question, default_answer, default_filename, help_message)
     } else {
         verify_file_path(&location, default_filename)
     }
@@ -517,7 +549,7 @@ fn verify_file_path(location: &str, default_filename: &str) -> String {
     let file_path = Path::new(location);
     if file_path.is_file() {
         println!("File '{}' already exists, please try again", location);
-        ask_path("Enter vault location", location, default_filename)
+        ask_path("Enter vault location", location, default_filename, None)
     } else {
         let path = Path::new(location);
         if path.is_dir() {
@@ -580,4 +612,8 @@ pub fn ask_open_existing_totp_vault() -> bool {
     .prompt()
     .unwrap()
         == "Existing"
+}
+
+pub fn ask_with_options(question: &str, options: Vec<&str>) -> String {
+    Select::new(question, options).prompt().unwrap().to_string()
 }

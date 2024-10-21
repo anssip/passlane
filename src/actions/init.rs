@@ -27,6 +27,7 @@ impl Action for InitAction {
         let master_pwd = self.initialize_master_password()?;
 
         if is_new_vault {
+            println!("Initializing new vault...");
             self.create_keepass_vault(&vault_location, &master_pwd, keyfile_location.as_deref())?;
         }
 
@@ -105,7 +106,9 @@ impl InitAction {
         }
         let keyfile_location = ask_keyfile_path(store::get_keyfile_path().as_deref());
         if let Some(keyfile) = &keyfile_location {
-            store::save_keyfile_path(keyfile)?;
+            if keyfile != "" {
+                store::save_keyfile_path(keyfile)?;
+            }
         }
         Ok(keyfile_location)
     }

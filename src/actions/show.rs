@@ -2,7 +2,7 @@ use crate::actions::{
     copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction,
 };
 
-use crate::ui::input::{ask, ask_index};
+use crate::ui::input::{ask_index, ask_with_options};
 use crate::ui::output::{
     show_card, show_credentials_table, show_note, show_notes_table, show_payment_cards_table,
     show_totp_table,
@@ -40,8 +40,9 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         show_credentials_table(&matches, self.verbose);
 
         match ask_index(
-            "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit",
+            "To copy one of these passwords to clipboard, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without copying the password"),
         ) {
             Ok(index) => {
                 copy_to_clipboard(matches[index].password());
@@ -68,8 +69,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
         copy_to_clipboard(the_match.number());
-        match ask("Do you want to see the full card details? (y/n)").as_str() {
-            "y" => {
+        match ask_with_options(
+            "Do you want to see the full card details? (yes/no)",
+            vec!["yes", "no"],
+        )
+        .as_str()
+        {
+            "yes" => {
                 show_card(&the_match);
                 Ok(Some("Card number copied to clipboard!".to_string()))
             }
@@ -84,8 +90,9 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         show_payment_cards_table(&matches, self.show_cleartext);
 
         match ask_index(
-            "To see card details, enter a row number from the table above, or press q to exit",
+            "To see card details, enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without showing"),
         ) {
             Ok(index) => {
                 show_card(&matches[index]);
@@ -110,8 +117,11 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_notes_table(&vec![the_match.clone()], self.verbose);
-        let response = ask("Do you want to see the full note? (y/n)");
-        if response == "y" {
+        let response = ask_with_options(
+            "Do you want to see the full note? (yes/no)",
+            vec!["yes", "no"],
+        );
+        if response == "yes" {
             show_note(&the_match);
         }
         Ok(None)
@@ -124,16 +134,15 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         show_notes_table(&matches, self.verbose);
 
         match ask_index(
-            "To see the full note, please enter a row number from the table above, or press q to exit",
+            "To see the full note, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without showing the note"),
         ) {
             Ok(index) => {
                 show_note(&matches[index]);
                 Ok(None)
             }
-            Err(message) => {
-                Err(Error { message })
-            }
+            Err(message) => Err(Error { message }),
         }
     }
 }
@@ -158,8 +167,9 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ask_index(
-            "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit",
+            "To see the code for one of these OTP authorizers, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without showing the code"),
         ) {
             Ok(index) => {
                 Self::show_code(matches[index].clone())

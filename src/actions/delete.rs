@@ -30,22 +30,24 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
     ) -> Result<Option<String>, Error> {
         show_credentials_table(&matches, false);
         match ui::input::ask_index(
-            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort",
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
                     self.vault.delete_matching(self.grep)?;
                     Ok(Some("Deleted".to_string()))
                 } else {
-                    println!("Deleting credential for service '{}'...", matches[index].service());
+                    println!(
+                        "Deleting credential for service '{}'...",
+                        matches[index].service()
+                    );
                     self.vault.delete_credentials(matches[index].uuid())?;
                     Ok(Some("Deleted".to_string()))
                 }
             }
-            Err(message) => {
-                Err(Error { message })
-            }
+            Err(message) => Err(Error { message }),
         }
     }
 }
@@ -77,8 +79,9 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -121,8 +124,9 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -166,8 +170,9 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         match ui::input::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
