@@ -1,7 +1,8 @@
 use crate::actions::{
     copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction,
 };
-use crate::ui;
+
+use crate::ui::input::{ask, ask_index};
 use crate::ui::output::{
     show_card, show_credentials_table, show_note, show_notes_table, show_payment_cards_table,
     show_totp_table,
@@ -38,7 +39,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
     ) -> Result<Option<String>, Error> {
         show_credentials_table(&matches, self.verbose);
 
-        match ui::ask_index(
+        match ask_index(
             "To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
@@ -67,7 +68,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
         copy_to_clipboard(the_match.number());
-        match ui::ask("Do you want to see the full card details? (y/n)").as_str() {
+        match ask("Do you want to see the full card details? (y/n)").as_str() {
             "y" => {
                 show_card(&the_match);
                 Ok(Some("Card number copied to clipboard!".to_string()))
@@ -82,7 +83,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     ) -> Result<Option<String>, Error> {
         show_payment_cards_table(&matches, self.show_cleartext);
 
-        match ui::ask_index(
+        match ask_index(
             "To see card details, enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
@@ -109,7 +110,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_notes_table(&vec![the_match.clone()], self.verbose);
-        let response = ui::ask("Do you want to see the full note? (y/n)");
+        let response = ask("Do you want to see the full note? (y/n)");
         if response == "y" {
             show_note(&the_match);
         }
@@ -122,7 +123,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     ) -> Result<Option<String>, Error> {
         show_notes_table(&matches, self.verbose);
 
-        match ui::ask_index(
+        match ask_index(
             "To see the full note, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {
@@ -156,7 +157,7 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
+        match ask_index(
             "To see the code for one of these OTP authorizers, please enter a row number from the table above, or press q to exit",
             matches.len() as i16 - 1,
         ) {

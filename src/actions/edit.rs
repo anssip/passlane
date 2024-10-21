@@ -16,7 +16,7 @@ impl<'a> EditCredentialsTemplate<'a> {
         &mut self,
         credential: &Credential,
     ) -> Result<Option<String>, Error> {
-        let updated = ui::ask_modified_credential(credential);
+        let updated = ui::input::ask_modified_credential(credential);
         println!("Saving...");
         self.vault.update_credential(updated)?;
         Ok(Some("Saved".to_string()))
@@ -39,7 +39,7 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
         show_credentials_table(&matches, false);
-        match ui::ask_index(
+        match ui::input::ask_index(
             "To edit, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
@@ -61,7 +61,7 @@ struct EditNoteTemplate<'a> {
 
 impl<'a> EditNoteTemplate<'a> {
     fn edit_and_save_note(&mut self, note: &Note) -> Result<Option<String>, Error> {
-        let updated = ui::ask_modified_note(note);
+        let updated = ui::input::ask_modified_note(note);
         println!("Saving...");
         self.vault.update_note(updated)?;
         Ok(Some("Saved".to_string()))
@@ -84,7 +84,7 @@ impl<'a> MatchHandlerTemplate for EditNoteTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
+        match ui::input::ask_index(
             "To edit, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
@@ -108,7 +108,7 @@ struct EditPaymentTemplate<'a> {
 
 impl<'a> EditPaymentTemplate<'a> {
     fn edit_and_save(&mut self, card: &PaymentCard) -> Result<Option<String>, Error> {
-        let updated = ui::ask_modified_payment_info(card);
+        let updated = ui::input::ask_modified_payment_info(card);
         println!("Saving...");
         self.vault.update_payment(updated)?;
         Ok(Some("Saved".to_string()))
@@ -131,7 +131,7 @@ impl<'a> MatchHandlerTemplate for EditPaymentTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
+        match ui::input::ask_index(
             "To edit, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {
@@ -155,7 +155,7 @@ struct EditTotpTemplate<'a> {
 
 impl<'a> EditTotpTemplate<'a> {
     fn edit_and_save(&mut self, totp: &Totp) -> Result<Option<String>, Error> {
-        let updated = ui::ask_modified_totp(totp);
+        let updated = ui::input::ask_modified_totp(totp);
         println!("Saving...");
         self.vault.update_totp(updated)?;
         Ok(Some("Saved".to_string()))
@@ -178,7 +178,7 @@ impl<'a> MatchHandlerTemplate for EditTotpTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
+        match ui::input::ask_index(
             "To edit, please enter a row number from the table above, or press q to abort",
             matches.len() as i16 - 1,
         ) {

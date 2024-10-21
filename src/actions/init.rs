@@ -1,10 +1,10 @@
 use crate::actions::Action;
 use crate::keychain;
 use crate::store;
-use crate::ui::ask_open_existing_totp_vault;
-use crate::ui::{
-    ask_existing_path, ask_keyfile_path, ask_new_master_password, ask_open_existing_vault,
-    ask_store_master_password, ask_totp_vault_path, ask_vault_path, newline,
+use crate::ui::input::{
+    ask_existing_path, ask_keyfile_path, ask_new_master_password, ask_open_existing_totp_vault,
+    ask_open_existing_vault, ask_store_master_password, ask_totp_vault_path, ask_vault_path,
+    newline,
 };
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;

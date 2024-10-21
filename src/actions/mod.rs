@@ -12,7 +12,8 @@ pub mod unlock;
 
 use crate::keychain;
 use crate::store;
-use crate::ui;
+
+use crate::ui::input::{ask_master_password, ask_totp_master_password};
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
@@ -63,7 +64,7 @@ pub trait Action {
 
 fn get_vault_properties() -> (String, String, Option<String>) {
     let stored_password = keychain::get_master_password();
-    let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_master_password(None));
+    let master_pwd = stored_password.unwrap_or_else(|_| ask_master_password(None));
     let filepath = store::get_vault_path();
     let keyfile_path = store::get_keyfile_path();
     (master_pwd, filepath, keyfile_path)
@@ -77,7 +78,7 @@ fn unlock() -> Result<Box<dyn Vault>, Error> {
 
 fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     let stored_password = keychain::get_totp_master_password();
-    let master_pwd = stored_password.unwrap_or_else(|_| ui::ask_totp_master_password());
+    let master_pwd = stored_password.unwrap_or_else(|_| ask_totp_master_password());
     let filepath = store::get_totp_vault_path();
     let keyfile_path = store::get_totp_keyfile_path();
     println!("Unlocking TOTP vault...");
