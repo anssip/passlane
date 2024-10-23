@@ -31,7 +31,7 @@ fn cli() -> Command {
         .allow_external_subcommands(true)
         .subcommand(
             Command::new("init")
-                .about("Initializes the configuration.")
+                .about("Initialize passlane. Walks you through the configuration process.")
         )
         .subcommand(
             Command::new("add")

@@ -1,6 +1,6 @@
 [package]
 name = "passlane"
-version = "2.4.3"
+version = "2.5.0"
 edition = "2021"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
@@ -28,7 +28,6 @@ erased-serde = "0.3"
 magic-crypt = "3.1.10"
 dirs = "5.0.1"
 regex = "1.5.5"
-rpassword = "7.2.0"
 comfy-table = "7.0.1"
 serde_urlencoded = "0.7.1"
 log = "0.4.16"
