@@ -140,13 +140,13 @@ passlane
 To save new credentials by copying the password from clipboard:
 
 ```bash
-passlane add -c --clipboard
+passlane add --clipboard
 ```
 
 To generate a new password and save credentials with one command:
 
 ```bash
-passlane add -c -g
+passlane add -g
 ```
 
 ### Using saved credentials
