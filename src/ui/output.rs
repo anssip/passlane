@@ -22,7 +22,7 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service[..min(service.len(), 60)].to_string()),
+                Cell::new(service[..min(service.len(), 30)].to_string()),
                 Cell::new(String::from(creds.username())),
                 Cell::new(String::from(creds.password())),
                 Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
@@ -30,7 +30,7 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service[..min(service.len(), 60)].to_string()),
+                Cell::new(service[..min(service.len(), 30)].to_string()),
                 Cell::new(String::from(creds.username())),
                 Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
