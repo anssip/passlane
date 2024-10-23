@@ -5,8 +5,8 @@
 ### Next
 
 - [ ] Add note field to credentials (userful when you have several accounts on the same service)
-- [ ] Make sure first usage asks for configuration values to be stored in the config file
-- [ ] Show only the domain (no path etries) in the Service column of credentials
+- [x] Make sure first usage asks for configuration values to be stored in the config file
+- [x] Show service field with only 30 first characters
 - [x] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
 - [x] Show dates for each entry
 - [x] Editing of entries

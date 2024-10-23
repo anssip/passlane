@@ -20,6 +20,7 @@ use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
 use actions::*;
 use clap::{arg, ArgAction, Command};
+use init::InitAction;
 use std::env;
 
 fn cli() -> Command {
@@ -28,6 +29,10 @@ fn cli() -> Command {
         .subcommand_required(false)
         .arg_required_else_help(false)
         .allow_external_subcommands(true)
+        .subcommand(
+            Command::new("init")
+                .about("Initialize passlane. Walks you through the configuration process.")
+        )
         .subcommand(
             Command::new("add")
                 .about("Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.")
@@ -121,6 +126,9 @@ fn cli() -> Command {
                 .arg(arg!(
                     -n --notes "Export secure notes."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "Shows one time passwords (OTPs)"
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<file_path> "The the CSV file to export to."))
         )
 }
@@ -135,6 +143,7 @@ fn main() {
     }
 
     let action = match matches.subcommand() {
+        Some(("init", _)) => VaultAction::Action(Box::new(InitAction {})),
         Some(("add", sub_matches)) => VaultAction::Action(Box::new(AddAction::new(sub_matches))),
         Some(("show", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches)))

@@ -1,6 +1,5 @@
 use crate::vault::entities::{Credential, Error, Note, PaymentCard};
 use csv::{ReaderBuilder, Writer};
-use serde::Deserialize;
 use serde::Serialize;
 use std::fs::create_dir;
 use std::fs::OpenOptions;
@@ -16,20 +15,15 @@ impl From<csv::Error> for Error {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CSVInputCredentials {
-    pub service: String,
-    pub username: String,
-    pub password: String,
-}
-
-impl CSVInputCredentials {
-    pub fn to_credential(&self) -> Credential {
-        Credential::new(None, &self.password, &self.service, &self.username, None)
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error {
+            message: e.to_string(),
+        }
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CSVPaymentCard {
     pub name: String,
     pub name_on_card: String,
@@ -40,7 +34,7 @@ pub struct CSVPaymentCard {
     pub billing_address: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CSVSecureNote {
     pub title: String,
     pub note: String,
@@ -59,7 +53,7 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
-pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<CSVInputCredentials>> {
+pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
@@ -117,6 +111,10 @@ fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> Str
     default_path
 }
 
+fn config_file_exists(path_config_filename: &str) -> bool {
+    dir_path().join(path_config_filename).exists()
+}
+
 pub(crate) fn get_vault_path() -> String {
     resolve_vault_path("store.kdbx", ".vault_path")
 }
@@ -131,11 +129,7 @@ pub(crate) fn write_credentials_to_csv(
 ) -> Result<i64, Error> {
     let mut wtr = Writer::from_path(file_path)?;
     for cred in creds {
-        wtr.serialize(CSVInputCredentials {
-            service: String::from(cred.service()),
-            username: String::from(cred.username()),
-            password: String::from(cred.password()),
-        })?;
+        wtr.serialize(cred)?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)
@@ -177,4 +171,40 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
+}
+
+pub fn save_config_path(config_file: &str, path: &str) -> Result<(), Error> {
+    let config_path = dir_path().join(config_file);
+    let exists = config_path.exists();
+    let mut file = OpenOptions::new()
+        .create(!exists)
+        .write(true)
+        .truncate(true)
+        .open(config_path)?;
+    file.write_all(String::from(path).as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn save_vault_path(path: &str) -> Result<(), Error> {
+    save_config_path(".vault_path", path)
+}
+
+pub(crate) fn save_totp_vault_path(path: &str) -> Result<(), Error> {
+    save_config_path(".totp_vault_path", path)
+}
+
+pub(crate) fn save_keyfile_path(path: &str) -> Result<(), Error> {
+    save_config_path(".keyfile_path", path)
+}
+
+pub fn has_vault_path() -> bool {
+    config_file_exists(".vault_path")
+}
+
+pub fn has_totp_vault_path() -> bool {
+    config_file_exists(".totp_vault_path")
+}
+
+pub fn has_keyfile_path() -> bool {
+    config_file_exists(".keyfile_path")
 }

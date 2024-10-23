@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.5.0]
+
+- Added the init command to easily start using this tool
+- Made the UI prompts more user friendly and look better
+
 ## [2.4.3]
 
 - Added the edit command to edit entries in the vault

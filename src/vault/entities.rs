@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use keepass_ng::db::TOTP;
 use log::debug;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
@@ -53,13 +54,19 @@ impl Display for Error {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
+    #[serde(skip_serializing, skip_deserializing)]
     uuid: Uuid,
     password: String,
     service: String,
     username: String,
+    #[serde(default = "default_last_modified")]
     last_modified: DateTime<Utc>,
+}
+
+fn default_last_modified() -> DateTime<Utc> {
+    Utc::now()
 }
 
 impl Credential {

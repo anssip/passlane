@@ -37,7 +37,7 @@ impl AddAction {
         } else if self.clipboard {
             self.password_from_clipboard()
         } else {
-            Ok(ui::ask_password("Enter password to save"))
+            Ok(ui::input::ask_password("Enter password to save", None))
         }
     }
     fn get_vault(&self) -> Result<Box<dyn Vault>, Error> {
@@ -50,28 +50,28 @@ impl AddAction {
     fn add_credential(&self) -> Result<String, Error> {
         let password = self.get_password()?;
 
-        let creds = ui::ask_credentials(&password);
+        let creds = ui::input::ask_credentials(&password);
         let mut vault = self.get_vault()?;
         vault.save_one_credential(creds.clone())?;
         copy_to_clipboard(&password);
-        Ok(format!("Password - also copied to clipboard: {}", password))
+        Ok("Password copied to clipboard".to_string())
     }
     fn add_payment(&self) -> Result<String, Error> {
-        let payment = ui::ask_payment_info();
+        let payment = ui::input::ask_payment_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
         vault.save_payment(payment)?;
         Ok("Payment saved.".to_string())
     }
     fn add_note(&self) -> anyhow::Result<String, Error> {
-        let note = ui::ask_note_info();
+        let note = ui::input::ask_note_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
         vault.save_note(&note)?;
         Ok("Note saved.".to_string())
     }
     fn add_totp(&self) -> Result<String, Error> {
-        let totp = ui::ask_totp_info();
+        let totp = ui::input::ask_totp_info();
         println!("Saving...");
         let mut vault = self.get_vault()?;
         vault.save_totp(&totp)?;

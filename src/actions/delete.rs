@@ -1,5 +1,8 @@
 use crate::actions::{handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
 use crate::ui;
+use crate::ui::output::{
+    show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
+};
 use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
 use clap::ArgMatches;
@@ -25,24 +28,26 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        ui::show_credentials_table(&matches, false);
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, press a to delete all, or press q to abort",
+        show_credentials_table(&matches, false);
+        match ui::input::ask_index(
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
                     self.vault.delete_matching(self.grep)?;
                     Ok(Some("Deleted".to_string()))
                 } else {
-                    println!("Deleting credential for service '{}'...", matches[index].service());
+                    println!(
+                        "Deleting credential for service '{}'...",
+                        matches[index].service()
+                    );
                     self.vault.delete_credentials(matches[index].uuid())?;
                     Ok(Some("Deleted".to_string()))
                 }
             }
-            Err(message) => {
-                Err(Error { message })
-            }
+            Err(message) => Err(Error { message }),
         }
     }
 }
@@ -56,11 +61,11 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} payment cards...", matches.len());
-        ui::show_payment_cards_table(matches, false);
+        show_payment_cards_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        let response = ui::ask("Do you want to delete this card? (y/n)");
+        let response = ui::input::ask("Do you want to delete this card? (y/n)");
         if response == "y" {
             println!("Deleting payment card '{}'...", the_match.name());
             self.vault.delete_payment(the_match.id())?;
@@ -73,9 +78,10 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+        match ui::input::ask_index(
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -100,11 +106,11 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} notes", matches.len());
-        ui::show_notes_table(matches, false);
+        show_notes_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        let response = ui::ask("Do you want to delete this note? (y/n)");
+        let response = ui::input::ask("Do you want to delete this note? (y/n)");
         if response == "y" {
             println!("Deleting note with title '{}'...", the_match.title());
             self.vault.delete_note(&the_match.id())?;
@@ -117,9 +123,10 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+        match ui::input::ask_index(
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {
@@ -145,11 +152,11 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} TOTP entries", matches.len());
-        ui::show_totp_table(matches);
+        show_totp_table(matches);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        let response = ui::ask("Do you want to delete this TOTP entry? (y/n)");
+        let response = ui::input::ask("Do you want to delete this TOTP entry? (y/n)");
         if response == "y" {
             println!("Deleting TOTP entry '{}'...", the_match.label());
             self.vault.delete_totp(&the_match.id())?;
@@ -162,9 +169,10 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        match ui::ask_index(
-            "To delete, please enter a row number from the table above, or press q to abort",
+        match ui::input::ask_index(
+            "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
+            Some("Press q to exit without deleting"),
         ) {
             Ok(index) => {
                 if index == usize::MAX {

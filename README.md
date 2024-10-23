@@ -53,7 +53,7 @@ Passlane is written in Rust.
 
 ### Nix
 
-Run with nix  - following creates a new password:
+Run with nix - following creates a new password:
 
 ```bash
 nix run github:anssip/passlane
@@ -65,12 +65,13 @@ See below for more information on how to use the CLI.
 
 ### First time setup
 
-When you run Passlane for the first time, it will create a new vault file at `~/.passlane/store.kdbx`. This is a
-Keepass compatible file that stores all your passwords, payment cards, and secure notes. You will be asked to enter a
-master password that will be used to encrypt the vault contents. You can also store the master password in your
-computer's keychain to avoid typing it every time, see below for more info.
+Run the init command to create a new vault file, or to link passlane to an existing Keepass compatible vault file. The command will interactively ask you for the required information.
 
-You can also move the vault file to the cloud allowing access from all your devices. [See below for more info](#syncing-data-to-your-devices).
+```bash
+passlane init
+```
+
+You place the vault file to the cloud allowing access from all your devices. [See below for more info](#syncing-data-to-your-devices).
 
 ### Keypass key file
 
@@ -90,6 +91,15 @@ passlane unlock
 
 You can later remove the master password from the keychain with the lock command.
 
+The one time passwords (OTPs) are stored in a separate vault file. You can unlock it with the same command
+accompanied with the -o option.
+
+```bash
+passlane unlock -o
+```
+
+To lock the vaults use the lock command. This locks both the password vault and the OTP vault:
+
 ```bash
 passlane lock
 ```
@@ -104,6 +114,7 @@ A password manager using Keepass as the storage backend.
 Usage: passlane [COMMAND]
 
 Commands:
+  init    Initialize passlane. Walks you through the configuration process.
   add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.
   edit    Edit an entry.
   csv     Imports credentials from a CSV file.
@@ -154,19 +165,22 @@ If the search finds more than one matches:
 ➜  bin passlane show google
 Unlocking vault...
 Found 6 credentials:
-+---+-----------------------------------------------------+--------------------------------+------------------+
-|   | Service                                             | Username/email                 | Modified         |
-+=============================================================================================================+
-| 0 | https://accounts.google.com/signin/v2/challenge/pwd | anssi@amm.co.jp                | 23.04.2024 14:15 |
-|---+-----------------------------------------------------+--------------------------------+------------------|
-| 1 | google.com                                          | anssi.piirainen@flowplayer.com | 23.04.2024 14:15 |
-|---+-----------------------------------------------------+--------------------------------+------------------|
-| 2 | google.com                                          | anssip                         | 23.04.2024 14:15 |
-|---+-----------------------------------------------------+--------------------------------+------------------|
-| 3 | google.com                                          | anssi@carbon.video             | 23.04.2024 14:15 |
-+---+-----------------------------------------------------+--------------------------------+------------------+
-To copy one of these passwords to clipboard, please enter a row number from the table above, or press q to exit: 3
-Password from index 3 copied to clipboard!
++---+--------------------------------+--------------------------------+------------------+
+|   | Service                        | Username/email                 | Modified         |
++========================================================================================+
+|---+--------------------------------+--------------------------------+------------------|
+| 0 | google.com                     | anssi@emmy.fi                  | 23.10.2024 07:22 |
+|---+--------------------------------+--------------------------------+------------------|
+| 1 | https://accounts.google.com/si | anssi@amm.co.jp                | 23.04.2024 14:15 |
+|---+--------------------------------+--------------------------------+------------------|
+| 2 | google.com                     | anssi.piirainen@flowplayer.com | 23.04.2024 14:15 |
+|---+--------------------------------+--------------------------------+------------------|
+| 3 | google.com                     | anssip                         | 23.04.2024 14:15 |
+|---+--------------------------------+--------------------------------+------------------|
+| 4 | google.com                     | anssi@carbon.video             | 23.04.2024 14:15 |
++---+--------------------------------+--------------------------------+------------------+
+? To copy one of these passwords to clipboard, please enter a row number from the table above  
+[Press q to exit without copying the password]
 ```
 
 ### Payment cards
@@ -176,13 +190,18 @@ To list all your saved payment cards.
 ```bash
 ➜  bin passlane show -p
 Unlocking vault...
-Found 1 payment cards:
-+---+----------------------+-------+--------+------------------+
-|   | Name                 | Color | Expiry | Modified         |
-+==============================================================+
-| 0 | Visa Gold (personal) | Gold  | 6/2025 | 06.07.2024 10:51 |
-+---+----------------------+-------+--------+------------------+
-Do you want to see the full card details? (y/n)
+Found 3 payment cards:
++---+-------------------------+-------+--------+------------------+
+|   | Name                    | Color | Expiry | Modified         |
++=================================================================+
+| 0 | OP Corporate Gold (NPD) | Gold  | 1/2029 | 23.10.2024 13:15 |
+|---+-------------------------+-------+--------+------------------|
+| 1 | Binance                 | black | 4/2010 | 23.10.2024 13:15 |
+|---+-------------------------+-------+--------+------------------|
+| 2 | Visa Gold (personal)    | Gold  | 6/2025 | 23.10.2024 13:15 |
++---+-------------------------+-------+--------+------------------+
+? To see card details, enter a row number from the table above  
+[Press q to exit without showing]
 ```
 
 To save a payment card:
@@ -192,7 +211,6 @@ passlane add -p
 ```
 
 You can delete a note with the delete command and the -n option.
-
 
 ### Secure notes
 
@@ -255,6 +273,7 @@ To look up by name of the issuer, use the following command:
 ```bash
 passlane show -o heroku
 ```
+
 the output will be:
 
 ```bash
