@@ -158,7 +158,7 @@ pub fn ask_password(question: &str, help_message: Option<&str>) -> String {
 
 pub fn ask_new_password(question: &str) -> Option<String> {
     if ask_with_options("Do you want to change the password?", vec!["y", "n"]) == "n" {
-        return Some("".to_string());
+        return None;
     }
     let prompt = Password::new(question);
     Some(prompt.prompt().unwrap())

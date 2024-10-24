@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.5.1]
+
+- Fix to not clear the password prompt when editing a credential and skipping the password change
+
 ## [2.5.0]
 
 - Added the init command to easily start using this tool
