@@ -4,6 +4,7 @@
 
 ### Next
 
+- [ ] Make it possible to sign up to a mailing list to be notified of updates
 - [ ] Add note field to credentials (userful when you have several accounts on the same service)
 - [x] Make sure first usage asks for configuration values to be stored in the config file
 - [x] Show service field with only 30 first characters
