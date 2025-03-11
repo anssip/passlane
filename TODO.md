@@ -6,6 +6,9 @@
 
 - [ ] Make it possible to sign up to a mailing list to be notified of updates
 - [ ] Add note field to credentials (userful when you have several accounts on the same service)
+- [ ] Improve readme
+- [ ] try icloud db storage
+- [ ] Show first 4 in payment card list
 - [x] Make sure first usage asks for configuration values to be stored in the config file
 - [x] Show service field with only 30 first characters
 - [x] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
