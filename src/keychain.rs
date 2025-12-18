@@ -31,7 +31,7 @@ pub fn get_master_password() -> Result<String, Error> {
 
 pub fn delete_master_password() -> Result<(), Error> {
     let entry = Entry::new(SERVICE_NAME, USERNAME)?;
-    Ok(entry.delete_password()?)
+    Ok(entry.delete_credential()?)
 }
 
 pub(crate) fn get_totp_master_password() -> Result<String, Error> {
@@ -41,5 +41,5 @@ pub(crate) fn get_totp_master_password() -> Result<String, Error> {
 
 pub(crate) fn delete_totp_master_password() -> Result<(), Error> {
     let entry = Entry::new(SERVICE_NAME_TOTP, USERNAME)?;
-    Ok(entry.delete_password()?)
+    Ok(entry.delete_credential()?)
 }

@@ -36,7 +36,7 @@ chrono = { version = "0.4.19", features = ["serde"] }
 env_logger = "0.10.0"
 hex = "0.4.3"
 keepass-ng = { version = "0.9.0", features = ["save_kdbx4", "totp"] }
-keyring = "2.3.2"
+keyring = { version = "3.6.3", features = ["apple-native"] }
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 percent-encoding = "2.3.1"
 rustyline-derive = "0.10.0"

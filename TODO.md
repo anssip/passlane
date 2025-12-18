@@ -2,21 +2,70 @@
 
 ## Roadmap
 
-### Next
+### High Priority / Next Up
 
+#### Core Features
+- [ ] **JSON Output for Scripting** ⭐ - Add `--json` flag to show, export, and new list command for automation
+- [ ] Add note field to credentials (useful when you have several accounts on the same service)
+- [ ] **Configurable Password Generation** - Support options like `--length`, `--no-special`, `--passphrase`
+- [ ] **Fuzzy Search** - Support fuzzy matching instead of just regex (e.g., `passlane show goog` finds "google.com")
+- [ ] **Password Strength Analysis** - Built-in password strength checker and audit command
+
+#### Security Enhancements
+- [ ] **Password Audit Command** - Identify weak, reused, or old passwords
+- [ ] Check against pwned passwords API integration
+- [ ] **Password History/Versioning** - Track password changes over time
+- [ ] **Clipboard Timeout** - Auto-clear clipboard after X seconds
+- [ ] **Auto-lock on Timeout** - Remove from keychain after period of inactivity
+- [ ] Master password strength enforcement on init
+
+#### UX Improvements
+- [ ] Show first 4 digits of payment card numbers in list
+- [ ] **Shell Completion** - Generate completion scripts for bash/zsh/fish
+- [ ] **Duplicate Detection** - Warn when adding similar credentials
+- [ ] Better table formatting with color coding for password age/strength
+- [ ] Interactive mode / REPL (`passlane shell`)
+
+#### Advanced Features
+- [ ] **Tags/Categories** - Tag credentials and filter by tags
+- [ ] **Favorites/Pinning** - Quick access to frequently used credentials
+- [ ] **Multi-Vault Support** - Manage multiple vaults (personal, work, family)
+- [ ] **Custom Fields** - Support arbitrary fields (API keys, security questions, etc.)
+- [ ] **Attachment Support** - Store files in vault (Keepass supports this)
+
+### Future Enhancements
+
+#### Import/Export
+- [ ] Direct import from Chrome/Firefox password exports
+- [ ] Import from Bitwarden export
+- [ ] Import from KeePassXC
+- [ ] **QR Code Export for TOTP** - Generate QR codes to transfer to mobile apps
+
+#### Management Features
+- [ ] **Vault Backup Management** - `backup create`, `backup list`, `backup restore`
+- [ ] **Vault Statistics Dashboard** - `passlane stats` showing password health metrics
+- [ ] **Template System** - Pre-defined templates for common services (AWS, GitHub, etc.)
+- [ ] **Alias Support** - Create shortcuts for frequently accessed entries
+- [ ] **Batch Operations** - Delete/export multiple entries by tag or pattern
+
+#### Additional Entry Types
+- [ ] **SSH Key Management** - Store and manage SSH keys
+- [ ] SSH Agent integration for automation
+
+#### Nice to Have
+- [ ] Update notifications (opt-in check for new versions)
 - [ ] Make it possible to sign up to a mailing list to be notified of updates
-- [ ] Add note field to credentials (userful when you have several accounts on the same service)
 - [ ] Improve readme
-- [ ] try icloud db storage
-- [ ] Show first 4 in payment card list
+- [ ] Try icloud db storage
+- [ ] Add an option to pass master password from the command line
+- [ ] remove anyhow?
+
+### Completed
 - [x] Make sure first usage asks for configuration values to be stored in the config file
 - [x] Show service field with only 30 first characters
 - [x] Sanitize all input to be stored (to remove all characters not allowed in Keepass XML)
 - [x] Show dates for each entry
 - [x] Editing of entries
-- [ ] Add an option to pass master password from the command line
-- [ ] Option to output JSON, for scripting
-- [ ] remove anyhow?
 - [x] add TOTP support
 - [x] first time vault creation
 - [x] invalid password error message
