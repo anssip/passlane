@@ -25,6 +25,7 @@ Passlane is written in Rust.
 
 ## Table of contents
 
+- [Interactive Mode (REPL)](#interactive-mode-repl)
 - [Installation](#installation)
 - [Usage](#usage)
   - [Locking and unlocking the vault](#locking-and-unlocking-the-vault)
@@ -39,6 +40,66 @@ Passlane is written in Rust.
   - [Scripting and Automation](#scripting-and-automation)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
+
+## Interactive Mode (REPL)
+
+The easiest way to get started with Passlane is to simply run it:
+
+```bash
+passlane
+```
+
+This launches an interactive session where you can use all of Passlane's features with short, easy-to-remember commands. If this is your first time, Passlane will walk you through creating a vault automatically.
+
+```
+🔐 Passlane — interactive mode
+Type 'help' for commands, 'quit' to exit.
+
+passlane> show
+Found 3 credentials:
++---+------------------+---------------------+
+|   | Service          | Username/email      |
++===+==================+=====================+
+| 0 | github.com       | user@example.com    |
+| 1 | google.com       | user@gmail.com      |
+| 2 | aws.amazon.com   | admin@company.com   |
++---+------------------+---------------------+
+
+passlane> show github
+Password copied to clipboard!
+
+passlane> add card
+Enter card name: ...
+
+passlane> gen
+kX9#mP2$vL5@nQ8w
+Password copied to clipboard.
+
+passlane> quit
+```
+
+### Available REPL commands
+
+| Command | Description |
+|---------|-------------|
+| `show [type] [pattern]` | Show entries (default: all credentials) |
+| `add [type]` | Add a new entry (default: credential) |
+| `edit [type] [pattern]` | Edit an existing entry |
+| `delete [type] [pattern]` | Delete an entry |
+| `gen` | Generate a random password |
+| `import <file>` | Import credentials from a CSV file |
+| `export [type] <file>` | Export entries to a CSV file |
+| `unlock [otp]` | Store master password in keychain |
+| `lock` | Remove master passwords from keychain |
+| `status` | Show vault status |
+| `help [command]` | Show help for a command |
+| `quit` / `exit` | Exit the session |
+
+**Types:** `creds` (default), `cards`, `notes`, `otp` — with aliases like `cred`, `card`, `note`, `totp`, `payments`, `credentials`.
+
+The REPL supports **tab completion** for commands and types, and **command history** (up/down arrows) that persists across sessions.
+
+> **Note:** All existing CLI subcommands (`passlane show`, `passlane add`, etc.) continue to work as before. To generate a password from the command line without entering the REPL, use `passlane gen`.
 
 ## Installation
 
@@ -55,10 +116,16 @@ Passlane is written in Rust.
 
 ### Nix
 
-Run with nix - following creates a new password:
+Run with nix - following launches the interactive REPL:
 
 ```bash
 nix run github:anssip/passlane
+```
+
+To generate a password directly:
+
+```bash
+nix run github:anssip/passlane -- gen
 ```
 
 See below for more information on how to use the CLI.
@@ -122,9 +189,12 @@ Commands:
   csv     Imports credentials from a CSV file.
   delete  Deletes one or more entries.
   show    Shows one or more entries.
+  list    Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.
   lock    Lock the vaults to prevent all access
   unlock  Opens the vaults and grants access to the entries
   export  Exports the vault contents to a CSV file.
+  gen     Generate a random password and copy it to the clipboard.
+  repl    Launch the interactive REPL session.
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -136,7 +206,7 @@ Options:
 To generate a new password without saving it. The generated password value is also copied to the clipboard.
 
 ```bash
-passlane
+passlane gen
 ```
 
 To save new credentials by copying the password from clipboard:
