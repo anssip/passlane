@@ -56,7 +56,6 @@ impl Display for Error {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
-    #[serde(skip_serializing, skip_deserializing)]
     uuid: Uuid,
     password: String,
     service: String,
@@ -107,7 +106,7 @@ impl Credential {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct PaymentCard {
     id: Uuid,
     name: String,
@@ -182,9 +181,10 @@ impl PaymentCard {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Totp {
     id: Uuid,
+    #[serde(skip_serializing)]
     url: String,
     label: String,
     issuer: String,
@@ -299,7 +299,7 @@ impl PaymentCard {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Expiry {
     pub month: u32,
     pub year: u32,
@@ -352,7 +352,7 @@ impl FromStr for Expiry {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Address {
     id: Uuid,
     street: String,
@@ -406,7 +406,7 @@ impl Address {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Note {
     id: Uuid,
     title: String,

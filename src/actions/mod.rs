@@ -6,6 +6,7 @@ pub mod generate;
 pub mod help;
 pub mod import;
 pub mod init;
+pub mod list;
 pub mod lock;
 pub mod show;
 pub mod unlock;

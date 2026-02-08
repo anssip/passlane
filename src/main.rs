@@ -15,6 +15,7 @@ use crate::actions::export::ExportAction;
 use crate::actions::generate::GeneratePasswordAction;
 use crate::actions::help::PrintHelpAction;
 use crate::actions::import::ImportCsvAction;
+use crate::actions::list::ListAction;
 use crate::actions::lock::LockAction;
 use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
@@ -107,6 +108,29 @@ fn cli() -> Command {
                 .arg_required_else_help(true)
         )
         .subcommand(
+            Command::new("list")
+                .about("Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.")
+                .arg(arg!(
+                    --json "Output as JSON"
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -v --verbose "Show full details in plain text output."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -p --payments "List payment cards."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -n --notes "List secure notes."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -o --otp "List TOTP entries."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    -c --credentials "List credentials (default)."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(<REGEXP> "Regular expression to filter entries.").required(false))
+        )
+        .subcommand(
             Command::new("lock")
                 .about("Lock the vaults to prevent all access")
         )
@@ -147,6 +171,9 @@ fn main() {
         Some(("add", sub_matches)) => VaultAction::Action(Box::new(AddAction::new(sub_matches))),
         Some(("show", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches)))
+        }
+        Some(("list", sub_matches)) => {
+            VaultAction::UnlockingAction(Box::new(ListAction::new(sub_matches)))
         }
         Some(("delete", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches)))

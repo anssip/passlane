@@ -35,6 +35,7 @@ Passlane is written in Rust.
   - [Migrating from 1Password, LastPass, Dashlane etc.](#migrating-from-1password-lastpass-dashlane-etc)
   - [Import from CSV](#import-from-csv)
   - [Export to CSV](#export-to-csv)
+  - [Scripting and Automation](#scripting-and-automation)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
 
@@ -333,6 +334,60 @@ To export secure notes to a file called notes.csv
 
 ```bash
 passlane export -n notes.csv
+```
+
+### Scripting and Automation
+
+The `list` command provides machine-readable output for scripting and automation. Unlike `show`, it prints all matches to stdout without clipboard interaction or interactive prompts.
+
+> **⚠️ Security Warning:** The `list` command outputs passwords and secrets to stdout. Be careful when redirecting output to files or using in scripts that log output.
+
+```bash
+# List all credentials
+passlane list
+
+# List credentials matching a regex
+passlane list google
+
+# List all credentials as JSON
+passlane list --json
+
+# List specific entry types
+passlane list -p              # payment cards
+passlane list -n              # secure notes
+passlane list -o              # TOTP entries
+passlane list -p --json       # payment cards as JSON
+
+# Verbose plain text (includes passwords)
+passlane list -v
+```
+
+#### Scripting Examples
+
+Find duplicate passwords using `jq`:
+
+```bash
+passlane list --json | jq -r '
+  .entries | group_by(.password) |
+  map(select(length > 1) | {
+    password: .[0].password,
+    services: [.[].service]
+  })
+'
+```
+
+Extract credentials for a specific service:
+
+```bash
+CREDS=$(passlane list github --json)
+USERNAME=$(echo "$CREDS" | jq -r '.entries[0].username')
+PASSWORD=$(echo "$CREDS" | jq -r '.entries[0].password')
+```
+
+Export to another format:
+
+```bash
+passlane list --json | jq '.entries[] | {title: .service, username, password}' > export.json
 ```
 
 ## Syncing data to your devices
