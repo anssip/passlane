@@ -24,7 +24,7 @@
 
 - [x] 5.1 Verify `cargo build --release` compiles without errors.
 - [x] 5.2 Verify `cargo test` passes.
-- [ ] 5.3 Manual test: run `passlane show <service>` — confirm password is copied, message shows timeout notice, and clipboard is cleared after 10 seconds. *(requires manual verification)*
-- [ ] 5.4 Manual test: run `passlane gen` — confirm password is printed, clipboard is set, and cleared after 10 seconds. *(requires manual verification)*
-- [ ] 5.5 Manual test: run `passlane show <service> --out` — confirm password is printed to STDOUT, no clipboard copy, process exits immediately. *(requires manual verification)*
-- [ ] 5.6 Manual test: run `passlane gen --out` — confirm password is printed to STDOUT, no clipboard copy, process exits immediately. *(requires manual verification)*
+- [x] 5.3 Manual test: run `passlane show <service>` — confirm password is copied, message shows timeout notice, and clipboard is cleared after 10 seconds.
+- [x] 5.4 Manual test: run `passlane gen` — confirm password is printed, clipboard is set, and cleared after 10 seconds.
+- [x] 5.5 Manual test: run `passlane show <service> --out` — confirm password is printed to STDOUT, no clipboard copy, process exits immediately.
+- [x] 5.6 Manual test: run `passlane gen --out` — confirm password is printed to STDOUT, no clipboard copy, process exits immediately.
