@@ -15,13 +15,13 @@
 - [ ] Password Audit Command - Identify weak, reused, or old passwords
 - [ ] Check against pwned passwords API integration
 - [ ] **Password History/Versioning** - Track password changes over time
-- [ ] **Clipboard Timeout** - Auto-clear clipboard after X seconds
+- [x] **Clipboard Timeout** - Auto-clear clipboard after X seconds
 - [ ] **Auto-lock on Timeout** - Remove from keychain after period of inactivity
 - [ ] Master password strength enforcement on init
 
 #### UX Improvements
 - [x] Show first 4 digits of payment card numbers in list
-- [ ] **Interactive mode / REPL** (`passlane shell`)
+- [x] **Interactive mode / REPL** (`passlane shell`)
 - [ ] **Shell Completion** - Generate completion scripts for bash/zsh/fish
 - [ ] **Duplicate Detection** - Warn when adding similar credentials
 - [ ] Better table formatting with color coding for password age/strength (`passlane shell`)
