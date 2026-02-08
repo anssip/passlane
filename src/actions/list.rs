@@ -97,6 +97,9 @@ impl ListAction {
             lines.push(String::new());
             lines.push(format!("Service: {}", entry.service()));
             lines.push(format!("Username: {}", entry.username()));
+            if let Some(note) = entry.note() {
+                lines.push(format!("Note: {}", note));
+            }
             if verbose {
                 lines.push(format!("Password: {}", entry.password()));
                 lines.push(format!("Last Modified: {}", entry.last_modified()));
@@ -190,6 +193,7 @@ mod tests {
             "secret123",
             "google.com",
             "user@example.com",
+            None,
             Some(Utc::now()),
         );
         let json = serde_json::to_string(&cred).unwrap();
@@ -278,6 +282,7 @@ mod tests {
             "pass",
             "example.com",
             "user",
+            None,
             Some(Utc::now()),
         );
         let output = ListOutput::new("credentials", vec![cred]);
@@ -307,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_format_credentials_plain_non_verbose() {
-        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None);
+        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None);
         let result = ListAction::format_credentials_plain(&[cred], false);
         assert!(result.contains("Found 1 credentials:"));
         assert!(result.contains("Service: google.com"));
@@ -317,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_format_credentials_plain_verbose() {
-        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None);
+        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None);
         let result = ListAction::format_credentials_plain(&[cred], true);
         assert!(result.contains("Found 1 credentials:"));
         assert!(result.contains("Service: google.com"));

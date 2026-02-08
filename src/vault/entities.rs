@@ -60,6 +60,8 @@ pub struct Credential {
     password: String,
     service: String,
     username: String,
+    #[serde(default)]
+    note: Option<String>,
     #[serde(default = "default_last_modified")]
     last_modified: DateTime<Utc>,
 }
@@ -74,6 +76,7 @@ impl Credential {
         password: &str,
         service: &str,
         username: &str,
+        note: Option<&str>,
         last_modified: Option<DateTime<Utc>>,
     ) -> Self {
         Credential {
@@ -81,6 +84,7 @@ impl Credential {
             password: password.to_string(),
             service: sanitize(service),
             username: sanitize(username),
+            note: note.map(|n| sanitize(n)).filter(|n| !n.is_empty()),
             last_modified: last_modified.unwrap_or(Utc::now()),
         }
     }
@@ -99,6 +103,10 @@ impl Credential {
 
     pub fn username(&self) -> &str {
         &self.username
+    }
+
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
     }
 
     pub fn last_modified(&self) -> &DateTime<Utc> {
@@ -550,5 +558,44 @@ mod tests {
     fn test_last4_exactly_4_digits() {
         let card = make_card("5678");
         assert_eq!(card.last4(), "•••• 5678");
+    }
+
+    #[test]
+    fn test_credential_with_note() {
+        let cred = Credential::new(None, "pass", "google.com", "user", Some("work account"), None);
+        assert_eq!(cred.note(), Some("work account"));
+    }
+
+    #[test]
+    fn test_credential_without_note() {
+        let cred = Credential::new(None, "pass", "google.com", "user", None, None);
+        assert_eq!(cred.note(), None);
+    }
+
+    #[test]
+    fn test_credential_with_empty_note_becomes_none() {
+        let cred = Credential::new(None, "pass", "google.com", "user", Some(""), None);
+        assert_eq!(cred.note(), None);
+    }
+
+    #[test]
+    fn test_credential_json_serialization_with_note() {
+        let cred = Credential::new(None, "pass", "google.com", "user", Some("admin access"), None);
+        let json = serde_json::to_string(&cred).unwrap();
+        assert!(json.contains("\"note\":\"admin access\""));
+    }
+
+    #[test]
+    fn test_credential_json_serialization_without_note() {
+        let cred = Credential::new(None, "pass", "google.com", "user", None, None);
+        let json = serde_json::to_string(&cred).unwrap();
+        assert!(json.contains("\"note\":null"));
+    }
+
+    #[test]
+    fn test_credential_deserialization_without_note_field() {
+        let json = r#"{"uuid":"00000000-0000-0000-0000-000000000000","password":"pass","service":"google.com","username":"user","last_modified":"2024-01-01T00:00:00Z"}"#;
+        let cred: Credential = serde_json::from_str(json).unwrap();
+        assert_eq!(cred.note(), None);
     }
 }

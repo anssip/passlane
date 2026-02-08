@@ -7,9 +7,9 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
     let mut table = Table::new();
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
-        vec!["", "Service", "Username/email", "Password", "Modified"]
+        vec!["", "Service", "Username/email", "Password"]
     } else {
-        vec!["", "Service", "Username/email", "Modified"]
+        vec!["", "Service", "Username/email"]
     };
     table.set_header(
         headers
@@ -19,20 +19,28 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
     );
     for (index, creds) in (0_i16..).zip(credentials.iter()) {
         let service = creds.service().to_string();
+        let modified = creds.last_modified().format("%d.%m.%Y %H:%M").to_string();
+        let second_line = match creds.note() {
+            Some(note) => format!("📝 {}  Modified: {}", note, modified),
+            None => format!("Modified: {}", modified),
+        };
+        let service_cell = format!(
+            "{}\n{}",
+            &service[..min(service.len(), 30)],
+            second_line
+        );
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service[..min(service.len(), 30)].to_string()),
+                Cell::new(service_cell),
                 Cell::new(String::from(creds.username())),
                 Cell::new(String::from(creds.password())),
-                Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service[..min(service.len(), 30)].to_string()),
+                Cell::new(service_cell),
                 Cell::new(String::from(creds.username())),
-                Cell::new(creds.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         };
         table.add_row(columns);

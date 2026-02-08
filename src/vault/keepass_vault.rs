@@ -231,12 +231,13 @@ impl KeepassVault {
     }
 
     fn node_to_credential(node: NodePtr) -> Credential {
-        let (username, service, password, uuid, modified_date_time) = Self::get_node_values(node);
+        let (username, service, password, note, uuid, modified_date_time) = Self::get_node_values(node);
         Credential::new(
             Some(&uuid),
             &password,
             &service,
             &username,
+            note.as_deref(),
             modified_date_time.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
         )
     }
@@ -265,18 +266,22 @@ impl KeepassVault {
         }
     }
 
-    fn get_node_values(node: NodePtr) -> (String, String, String, Uuid, Option<NaiveDateTime>) {
+    fn get_node_values(node: NodePtr) -> (String, String, String, Option<String>, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let username = e.get_username().unwrap_or("(no username)");
         let service = e.get_url().unwrap_or("(no service)");
         let password = e.get_password().unwrap_or("(no password)");
+        let note = e.get_notes()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
         let uuid = e.get_uuid();
         let last_modified = e.get_times().get_last_modification();
         (
             username.to_string(),
             service.to_string(),
             password.to_string(),
+            note,
             uuid,
             last_modified,
         )
@@ -460,6 +465,7 @@ impl KeepassVault {
                         entry.set_username(Some(credentials.username()));
                         entry.set_password(Some(credentials.password()));
                         entry.set_url(Some(&credentials.service()));
+                        entry.set_notes(credentials.note());
                         entry.get_uuid()
                     })
             })
@@ -594,6 +600,7 @@ impl PasswordVault for KeepassVault {
             entry.set_username(Some(credential.username()));
             entry.set_password(Some(credential.password()));
             entry.set_url(Some(credential.service()));
+            entry.set_notes(credential.note());
         })
     }
 

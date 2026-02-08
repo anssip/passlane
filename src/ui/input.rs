@@ -174,7 +174,8 @@ pub fn ask_number(question: &str) -> u64 {
 pub fn ask_credentials(password: &str) -> Credential {
     let service = ask("Enter URL or service");
     let username = ask("Enter username");
-    Credential::new(None, password, &service, &username, None)
+    let note = ask_with_initial_optional("Enter note (optional)", None, Some("Press enter to skip"), true);
+    Credential::new(None, password, &service, &username, note.as_deref(), None)
 }
 
 pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
@@ -189,12 +190,19 @@ pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credenti
         Some("Press enter and leave empty to keep the current value shown in parantheses"),
     );
     let password = ask_new_password("Enter new password");
+    let note = ask_with_initial_optional(
+        "Enter note (optional)",
+        the_match.note(),
+        Some("Press enter to keep current value, or clear to remove"),
+        true,
+    );
 
     Credential::new(
         Some(the_match.uuid()),
         password.as_deref().unwrap_or(the_match.password()),
         &service,
         &username,
+        note.as_deref(),
         None,
     )
 }

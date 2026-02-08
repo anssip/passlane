@@ -16,6 +16,7 @@ Passlane is written in Rust.
   - Supports KDB, KDBX3 and KDBX4 file formats
   - The keepass storage file can be optionally secured using a [key file](https://keepassxc.org/docs/) to provide additional protection
 - Generate and save passwords
+- Add optional notes to credentials (useful when you have several accounts on the same service)
 - Save and view payment card information
 - Save and view secure notes
 - Authenticator functionality with TOTP
@@ -150,6 +151,8 @@ To generate a new password and save credentials with one command:
 passlane add -g
 ```
 
+When adding credentials, you will be prompted for an optional note. This is useful for annotating entries, e.g., "work account" or "admin access".
+
 ### Using saved credentials
 
 You can search and show saved credentials with regular expressions
@@ -165,23 +168,30 @@ If the search finds more than one matches:
 ```bash
 ➜  bin passlane show google
 Unlocking vault...
-Found 6 credentials:
-+---+--------------------------------+--------------------------------+------------------+
-|   | Service                        | Username/email                 | Modified         |
-+========================================================================================+
-| 0 | google.com                     | anssi@emmy.fi                  | 23.10.2024 07:22 |
-|---+--------------------------------+--------------------------------+------------------|
-| 1 | https://accounts.google.com/si | anssi@amm.co.jp                | 23.04.2024 14:15 |
-|---+--------------------------------+--------------------------------+------------------|
-| 2 | google.com                     | anssi.piirainen@flowplayer.com | 23.04.2024 14:15 |
-|---+--------------------------------+--------------------------------+------------------|
-| 3 | google.com                     | anssip                         | 23.04.2024 14:15 |
-|---+--------------------------------+--------------------------------+------------------|
-| 4 | google.com                     | anssi@carbon.video             | 23.04.2024 14:15 |
-+---+--------------------------------+--------------------------------+------------------+
+Found 5 credentials:
++---+------------------------------------------+--------------------------------+
+|   | Service                                  | Username/email                 |
++==============================================================================+
+| 0 | google.com                               | anssi@emmy.fi                  |
+|   | 📝 personal account  Modified: 23.10.2024 |                                |
+|---+------------------------------------------+--------------------------------|
+| 1 | https://accounts.google.com/si           | anssi@amm.co.jp                |
+|   | Modified: 23.04.2024 14:15               |                                |
+|---+------------------------------------------+--------------------------------|
+| 2 | google.com                               | anssi.piirainen@flowplayer.com |
+|   | 📝 work account  Modified: 23.04.2024     |                                |
+|---+------------------------------------------+--------------------------------|
+| 3 | google.com                               | anssip                         |
+|   | Modified: 23.04.2024 14:15               |                                |
+|---+------------------------------------------+--------------------------------|
+| 4 | google.com                               | anssi@carbon.video             |
+|   | 📝 Carbon Video  Modified: 23.04.2024     |                                |
++---+------------------------------------------+--------------------------------+
 ? To copy one of these passwords to clipboard, please enter a row number from the table above  
 [Press q to exit without copying the password]
 ```
+
+Each credential row shows the service and username on the first line, and an optional note (prefixed with 📝) along with the last modified date on the second line. Notes are useful for distinguishing between multiple accounts on the same service.
 
 ### Payment cards
 
@@ -191,15 +201,15 @@ To list all your saved payment cards.
 ➜  bin passlane show -p
 Unlocking vault...
 Found 3 payment cards:
-+---+-------------------------+-------+--------+------------------+
-|   | Name                    | Color | Expiry | Modified         |
-+=================================================================+
-| 0 | OP Corporate Gold (NPD) | Gold  | 1/2029 | 23.10.2024 13:15 |
-|---+-------------------------+-------+--------+------------------|
-| 1 | Binance                 | black | 4/2010 | 23.10.2024 13:15 |
-|---+-------------------------+-------+--------+------------------|
-| 2 | Visa Gold (personal)    | Gold  | 6/2025 | 23.10.2024 13:15 |
-+---+-------------------------+-------+--------+------------------+
++---+-------------------------+------------+-------+--------+------------------+
+|   | Name                    | Last 4     | Color | Expiry | Modified         |
++==============================================================================+
+| 0 | OP Corporate Gold (NPD) | •••• 4821  | Gold  | 1/2029 | 23.10.2024 13:15 |
+|---+-------------------------+------------+-------+--------+------------------|
+| 1 | Binance                 | •••• 7703  | black | 4/2010 | 23.10.2024 13:15 |
+|---+-------------------------+------------+-------+--------+------------------|
+| 2 | Visa Gold (personal)    | •••• 9156  | Gold  | 6/2025 | 23.10.2024 13:15 |
++---+-------------------------+------------+-------+--------+------------------+
 ? To see card details, enter a row number from the table above  
 [Press q to exit without showing]
 ```
@@ -299,8 +309,9 @@ First, make sure that the CSV file has a header line (1st line) with the followi
 - username
 - password
 - service
+- note (optional)
 
-The `service` field is the URL or name of the service. When importing from Dashlane, the only necessary preparation is to rename `url` to `service`.
+The `service` field is the URL or name of the service. The `note` column is optional — if omitted, credentials will be imported without notes. When importing from Dashlane, the only necessary preparation is to rename `url` to `service`.
 
 To export the credentials to a CSV file and import the file into Passlane:
 
@@ -382,6 +393,7 @@ Extract credentials for a specific service:
 CREDS=$(passlane list github --json)
 USERNAME=$(echo "$CREDS" | jq -r '.entries[0].username')
 PASSWORD=$(echo "$CREDS" | jq -r '.entries[0].password')
+NOTE=$(echo "$CREDS" | jq -r '.entries[0].note // empty')
 ```
 
 Export to another format:

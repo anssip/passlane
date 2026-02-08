@@ -5,14 +5,14 @@
 ### High Priority / Next Up
 
 #### Core Features
-- [ ] **JSON Output for Scripting** ⭐ - Add `--json` flag to show, export, and new list command for automation
+- [x] **JSON Output for Scripting** ⭐ - Add `--json` flag to show, export, and new list command for automation
 - [ ] Add note field to credentials (useful when you have several accounts on the same service)
 - [ ] **Configurable Password Generation** - Support options like `--length`, `--no-special`, `--passphrase`
-- [ ] **Fuzzy Search** - Support fuzzy matching instead of just regex (e.g., `passlane show goog` finds "google.com")
-- [ ] **Password Strength Analysis** - Built-in password strength checker and audit command
+- [ ] Fuzzy Search - Support fuzzy matching instead of just regex (e.g., `passlane show goog` finds "google.com")
+- [ ] Password Strength Analysis - Built-in password strength checker and audit command
 
 #### Security Enhancements
-- [ ] **Password Audit Command** - Identify weak, reused, or old passwords
+- [ ] Password Audit Command - Identify weak, reused, or old passwords
 - [ ] Check against pwned passwords API integration
 - [ ] **Password History/Versioning** - Track password changes over time
 - [ ] **Clipboard Timeout** - Auto-clear clipboard after X seconds
@@ -20,11 +20,11 @@
 - [ ] Master password strength enforcement on init
 
 #### UX Improvements
-- [ ] Show first 4 digits of payment card numbers in list
+- [x] Show first 4 digits of payment card numbers in list
+- [ ] **Interactive mode / REPL** (`passlane shell`)
 - [ ] **Shell Completion** - Generate completion scripts for bash/zsh/fish
 - [ ] **Duplicate Detection** - Warn when adding similar credentials
-- [ ] Better table formatting with color coding for password age/strength
-- [ ] Interactive mode / REPL (`passlane shell`)
+- [ ] Better table formatting with color coding for password age/strength (`passlane shell`)
 
 #### Advanced Features
 - [ ] **Tags/Categories** - Tag credentials and filter by tags

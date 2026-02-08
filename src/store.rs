@@ -208,3 +208,44 @@ pub fn has_totp_vault_path() -> bool {
 pub fn has_keyfile_path() -> bool {
     config_file_exists(".keyfile_path")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::entities::Credential;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_csv_export_includes_note() {
+        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", Some("work account"), None);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("work account"), "CSV should contain the note value");
+        assert!(content.contains("note"), "CSV header should contain 'note'");
+    }
+
+    #[test]
+    fn test_csv_roundtrip_without_note() {
+        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", None, None);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].note(), None);
+        assert_eq!(imported[0].service(), "google.com");
+    }
+
+    #[test]
+    fn test_csv_roundtrip_with_note() {
+        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", Some("shared login"), None);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].note(), Some("shared login"));
+    }
+}
