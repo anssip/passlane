@@ -149,7 +149,7 @@ pub fn ask_with_initial_optional(
 }
 
 pub fn ask_password(question: &str, help_message: Option<&str>) -> String {
-    let mut prompt = Password::new(question);
+    let mut prompt = Password::new(question).without_confirmation();
     if let Some(message) = help_message {
         prompt = prompt.with_help_message(message);
     }
@@ -313,23 +313,28 @@ pub(crate) fn ask_modified_totp<'a>(the_match: &'a Totp) -> Totp {
     )
 }
 
+fn ask_master_password_with<F: Fn(&str) -> String>(question: Option<&str>, reader: F) -> String {
+    let q = question.unwrap_or("Please enter master password");
+    reader(q)
+}
+
 pub fn ask_master_password(question: Option<&str>) -> String {
-    if let Some(q) = question {
-        ask_password(q, None)
+    ask_master_password_with(question, |q| ask_password(q, None))
+}
+
+fn ask_new_master_password_with<F: FnMut(&str) -> String>(mut reader: F) -> String {
+    let pwd1 = reader("Please enter new master password");
+    let pwd2 = reader("Retype new master password");
+    if pwd1 != pwd2 {
+        println!("Passwords do not match, please try again");
+        ask_new_master_password_with(reader)
     } else {
-        ask_password("Please enter master password", None)
+        pwd1
     }
 }
 
 pub fn ask_new_master_password() -> String {
-    let pwd1 = ask_password("Please enter new master password", None);
-    let pwd2 = ask_password("Retype new master password", None);
-    if pwd1 != pwd2 {
-        println!("Passwords do not match, please try again");
-        ask_new_master_password()
-    } else {
-        pwd1
-    }
+    ask_new_master_password_with(|q| ask_password(q, None))
 }
 
 pub(crate) fn ask_totp_master_password() -> String {
@@ -624,4 +629,48 @@ pub fn ask_open_existing_totp_vault() -> bool {
 
 pub fn ask_with_options(question: &str, options: Vec<&str>) -> String {
     Select::new(question, options).prompt().unwrap().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn test_ask_master_password_prompts_once() {
+        let count = Cell::new(0u32);
+        let result = ask_master_password_with(None, |_q| {
+            count.set(count.get() + 1);
+            "secret".to_string()
+        });
+        assert_eq!(count.get(), 1);
+        assert_eq!(result, "secret");
+    }
+
+    #[test]
+    fn test_ask_new_master_password_prompts_twice_on_match() {
+        let count = Cell::new(0u32);
+        let result = ask_new_master_password_with(|_q| {
+            count.set(count.get() + 1);
+            "matching".to_string()
+        });
+        assert_eq!(count.get(), 2);
+        assert_eq!(result, "matching");
+    }
+
+    #[test]
+    fn test_ask_new_master_password_retries_on_mismatch() {
+        let count = Cell::new(0u32);
+        let result = ask_new_master_password_with(|_q| {
+            let n = count.get();
+            count.set(n + 1);
+            match n {
+                0 => "first".to_string(),
+                1 => "second".to_string(),
+                _ => "correct".to_string(),
+            }
+        });
+        assert_eq!(count.get(), 4);
+        assert_eq!(result, "correct");
+    }
 }
