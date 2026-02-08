@@ -105,6 +105,9 @@ fn cli() -> Command {
                 .arg(arg!(
                     -c --credentials "Shows credentials by searching with the specified regular expression."
                 ).action(ArgAction::SetTrue).requires("search"))
+                .arg(arg!(
+                    --out "Print password to stdout instead of copying to clipboard."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))
                 .arg_required_else_help(true)
         )
@@ -159,6 +162,9 @@ fn cli() -> Command {
         .subcommand(
             Command::new("gen")
                 .about("Generate a random password and copy it to the clipboard.")
+                .arg(arg!(
+                    --out "Print password to stdout instead of copying to clipboard."
+                ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("repl")
@@ -200,7 +206,9 @@ fn main() {
         Some(("edit", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(EditAction::new(sub_matches)))
         }
-        Some(("gen", _)) => VaultAction::Action(Box::new(GeneratePasswordAction {})),
+        Some(("gen", sub_matches)) => {
+            VaultAction::Action(Box::new(GeneratePasswordAction::new(sub_matches)))
+        }
         Some(("repl", _)) => {
             repl::start_repl();
             return;

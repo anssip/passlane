@@ -101,6 +101,53 @@ pub fn copy_to_clipboard(value: &str) {
     ctx.set_contents(String::from(value)).unwrap();
 }
 
+/// Copies `value` to the clipboard, then waits `timeout_secs` seconds (or until
+/// Ctrl+C) and clears the clipboard if its content still matches.
+/// This function **blocks** for the timeout duration.
+pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+    ctx.set_contents(String::from(value)).unwrap();
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupted_clone = interrupted.clone();
+    let original = String::from(value);
+
+    // Register Ctrl+C handler — sets the flag so the wait loop exits early.
+    ctrlc::set_handler(move || {
+        interrupted_clone.store(true, Ordering::SeqCst);
+    })
+    .ok(); // ignore error if handler already set
+
+    // Wait in 100ms increments so we notice the interrupt quickly.
+    let total_ms = timeout_secs * 1000;
+    let mut elapsed = 0u64;
+    while elapsed < total_ms && !interrupted.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        elapsed += 100;
+    }
+
+    // Clear clipboard if it still holds the password we put there.
+    let result: Result<(), ()> = (|| {
+        let mut ctx: ClipboardContext = ClipboardProvider::new().map_err(|_| ())?;
+        let current = ctx.get_contents().map_err(|_| ())?;
+        if current == original {
+            ctx.set_contents(String::new()).map_err(|_| ())?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        log::debug!("Failed to clear clipboard after timeout");
+    }
+
+    // If we were interrupted, exit after cleanup.
+    if interrupted.load(Ordering::SeqCst) {
+        std::process::exit(0);
+    }
+}
+
 pub trait UnlockingAction {
     fn execute(&self) -> Result<Option<String>, Error> {
         if self.is_totp_vault() {

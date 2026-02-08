@@ -6,7 +6,7 @@
 
 #### Core Features
 - [x] **JSON Output for Scripting** ⭐ - Add `--json` flag to show, export, and new list command for automation
-- [ ] Add note field to credentials (useful when you have several accounts on the same service)
+- [x] Add note field to credentials (useful when you have several accounts on the same service)
 - [ ] **Configurable Password Generation** - Support options like `--length`, `--no-special`, `--passphrase`
 - [ ] Fuzzy Search - Support fuzzy matching instead of just regex (e.g., `passlane show goog` finds "google.com")
 - [ ] Password Strength Analysis - Built-in password strength checker and audit command

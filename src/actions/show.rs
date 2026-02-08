@@ -1,5 +1,6 @@
 use crate::actions::{
-    copy_to_clipboard, handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction,
+    copy_to_clipboard, copy_to_clipboard_timed, handle_matches, ItemType, MatchHandlerTemplate,
+    UnlockingAction,
 };
 
 use crate::ui::input::{ask_index, ask_with_options};
@@ -18,6 +19,7 @@ use std::time::Duration;
 
 struct ShowCredentialsTemplate {
     verbose: bool,
+    stdout_only: bool,
 }
 
 impl MatchHandlerTemplate for ShowCredentialsTemplate {
@@ -29,8 +31,14 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_credentials_table(&vec![the_match.clone()], self.verbose);
-        copy_to_clipboard(the_match.password());
-        Ok(Some("Password copied to clipboard!".to_string()))
+        if self.stdout_only {
+            println!("{}", the_match.password());
+            Ok(None)
+        } else {
+            println!("Password copied to clipboard! Clipboard will be cleared in 10 seconds.");
+            copy_to_clipboard_timed(the_match.password(), 10);
+            Ok(None)
+        }
     }
 
     fn handle_many_matches(
@@ -39,14 +47,26 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
     ) -> Result<Option<String>, Error> {
         show_credentials_table(&matches, self.verbose);
 
+        let prompt = if self.stdout_only {
+            "To print one of these passwords, please enter a row number from the table above"
+        } else {
+            "To copy one of these passwords to clipboard, please enter a row number from the table above"
+        };
+
         match ask_index(
-            "To copy one of these passwords to clipboard, please enter a row number from the table above",
+            prompt,
             matches.len() as i16 - 1,
             Some("Press q to exit without copying the password"),
         ) {
             Ok(index) => {
-                copy_to_clipboard(matches[index].password());
-                Ok(Some("Password copied to clipboard!".to_string()))
+                if self.stdout_only {
+                    println!("{}", matches[index].password());
+                    Ok(None)
+                } else {
+                    println!("Password copied to clipboard! Clipboard will be cleared in 10 seconds.");
+                    copy_to_clipboard_timed(matches[index].password(), 10);
+                    Ok(None)
+                }
             }
             Err(message) => {
                 Err(Error { message })
@@ -255,6 +275,7 @@ pub struct ShowAction {
     pub verbose: bool,
     pub item_type: ItemType,
     pub is_totp: bool,
+    pub stdout_only: bool,
 }
 
 impl ShowAction {
@@ -264,6 +285,7 @@ impl ShowAction {
             verbose: matches.get_one::<bool>("verbose").map_or(false, |v| *v),
             item_type: ItemType::new_from_args(matches),
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
+            stdout_only: matches.get_one::<bool>("out").map_or(false, |v| *v),
         }
     }
 }
@@ -288,6 +310,7 @@ impl UnlockingAction for ShowAction {
                     vault.grep(Some(grep)),
                     &mut Box::new(ShowCredentialsTemplate {
                         verbose: self.verbose,
+                        stdout_only: self.stdout_only,
                     }),
                 )
             }

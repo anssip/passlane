@@ -22,6 +22,8 @@ Passlane is written in Rust.
 - Authenticator functionality with TOTP
 - Import passwords from CSV files
 - Export vault contents to CSV files
+- Clipboard auto-clear: passwords are automatically cleared from the clipboard after 10 seconds
+- `--out` flag for scripting: output passwords to stdout instead of the clipboard
 
 ## Table of contents
 
@@ -206,10 +208,16 @@ Options:
 
 ### Generating and saving passwords
 
-To generate a new password without saving it. The generated password value is also copied to the clipboard.
+To generate a new password without saving it. The generated password value is copied to the clipboard and **automatically cleared after 10 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
 
 ```bash
 passlane gen
+```
+
+To generate a password and print it to stdout without copying to the clipboard (useful for scripting):
+
+```bash
+passlane gen --out
 ```
 
 To save new credentials by copying the password from clipboard:
@@ -234,7 +242,13 @@ You can search and show saved credentials with regular expressions
 passlane show <regexp>
 ```
 
-Run `passlane show foobard.com` --> shows foobar.com's password and also copies the value to the clipboard.
+Run `passlane show foobar.com` → shows foobar.com's password and copies it to the clipboard. The clipboard is **automatically cleared after 10 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
+
+To print the password to stdout instead of copying to the clipboard (useful for scripting):
+
+```bash
+passlane show <regexp> --out
+```
 
 If the search finds more than one matches:
 
@@ -424,7 +438,17 @@ passlane export -n notes.csv
 
 The `list` command provides machine-readable output for scripting and automation. Unlike `show`, it prints all matches to stdout without clipboard interaction or interactive prompts.
 
-> **⚠️ Security Warning:** The `list` command outputs passwords and secrets to stdout. Be careful when redirecting output to files or using in scripts that log output.
+For quick single-password lookups in scripts, you can also use `show --out` or `gen --out` to print a password to stdout without clipboard interaction:
+
+```bash
+# Get a single password to stdout
+passlane show github --out
+
+# Generate a password to stdout
+passlane gen --out
+```
+
+> **⚠️ Security Warning:** The `list` command and `--out` flag output passwords and secrets to stdout. Be careful when redirecting output to files or using in scripts that log output.
 
 ```bash
 # List all credentials
