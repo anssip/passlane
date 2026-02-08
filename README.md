@@ -24,6 +24,7 @@ Passlane is written in Rust.
 - Export vault contents to CSV files
 - Clipboard auto-clear: passwords are automatically cleared from the clipboard after 10 seconds
 - `--out` flag for scripting: output passwords to stdout instead of the clipboard
+- Shell tab completion for bash, zsh, and fish with dynamic service/username suggestions
 
 ## Table of contents
 
@@ -40,6 +41,7 @@ Passlane is written in Rust.
   - [Import from CSV](#import-from-csv)
   - [Export to CSV](#export-to-csv)
   - [Scripting and Automation](#scripting-and-automation)
+  - [Shell Completion](#shell-completion)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
 
@@ -498,6 +500,84 @@ Export to another format:
 ```bash
 passlane list --json | jq '.entries[] | {title: .service, username, password}' > export.json
 ```
+
+### Shell Completion
+
+Passlane supports tab completion for bash, zsh, and fish. In addition to completing subcommands and flags, it provides **dynamic completions** that suggest service names and usernames from your vault.
+
+#### Enabling shell completion
+
+Run the `completions` command to generate and install the completion script for your shell:
+
+```bash
+# Auto-detect your shell
+passlane completions
+
+# Or specify the shell explicitly
+passlane completions zsh
+passlane completions bash
+passlane completions fish
+```
+
+This saves the completion script to `~/.passlane/completions.<shell>` and prints the `source` command to add to your shell rc file. For example, for zsh:
+
+```
+Completions saved to /Users/you/.passlane/completions.zsh
+
+Add this line to ~/.zshrc:
+
+  source "/Users/you/.passlane/completions.zsh"
+
+Then restart your shell or run the command above.
+```
+
+Add the printed `source` line to your rc file (`~/.zshrc`, `~/.bashrc`, or `~/.config/fish/config.fish`), then restart your shell.
+
+> **Tip:** After upgrading Passlane, re-run `passlane completions` to regenerate the script with any new commands.
+
+#### Dynamic completions
+
+When your vault is unlocked, Passlane maintains a lightweight completion cache at `~/.passlane/.completion_cache` containing service names and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands.
+
+The cache is automatically:
+- **Created** when you run `passlane unlock` or any command that opens the vault
+- **Updated** when you add, edit, delete, or import entries
+- **Refreshed** when older than 7 days (if the vault is unlocked via keychain)
+- **Deleted** when you run `passlane lock`
+
+#### Examples
+
+Complete subcommands:
+
+```bash
+$ passlane sh<TAB>
+show
+```
+
+Complete flags:
+
+```bash
+$ passlane show -<TAB>
+-p  -n  -o  -v  -c  --out
+```
+
+Complete service names and usernames from your vault:
+
+```bash
+$ passlane show gi<TAB>
+github.com:alice@example.com    gitlab.com:bob@company.com
+
+$ passlane show goo<TAB>
+google.com:user@gmail.com    google.com:user@work.com
+
+$ passlane edit git<TAB>
+github.com:alice@example.com    gitlab.com:bob@company.com
+
+$ passlane delete drop<TAB>
+dropbox.com:user@example.com
+```
+
+When the vault is locked (cache file doesn't exist), completions fall back to subcommands and flags only — no service names are suggested.
 
 ## Syncing data to your devices
 
