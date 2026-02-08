@@ -171,21 +171,21 @@ Unlocking vault...
 Found 5 credentials:
 +---+------------------------------------------+--------------------------------+
 |   | Service                                  | Username/email                 |
-+==============================================================================+
++===+==========================================+================================+
 | 0 | google.com                               | anssi@emmy.fi                  |
-|   | 📝 personal account  Modified: 23.10.2024 |                                |
+|   | 📝 personal         Modified: 23.10.2024 |                                |
 |---+------------------------------------------+--------------------------------|
 | 1 | https://accounts.google.com/si           | anssi@amm.co.jp                |
 |   | Modified: 23.04.2024 14:15               |                                |
 |---+------------------------------------------+--------------------------------|
 | 2 | google.com                               | anssi.piirainen@flowplayer.com |
-|   | 📝 work account  Modified: 23.04.2024     |                                |
+|   | 📝 work account  Modified: 23.04.2024    |                                |
 |---+------------------------------------------+--------------------------------|
 | 3 | google.com                               | anssip                         |
 |   | Modified: 23.04.2024 14:15               |                                |
 |---+------------------------------------------+--------------------------------|
 | 4 | google.com                               | anssi@carbon.video             |
-|   | 📝 Carbon Video  Modified: 23.04.2024     |                                |
+|   | 📝 Carbon Video  Modified: 23.04.2024    |                                |
 +---+------------------------------------------+--------------------------------+
 ? To copy one of these passwords to clipboard, please enter a row number from the table above  
 [Press q to exit without copying the password]
