@@ -64,6 +64,9 @@ Found 3 credentials:
 | 1 | google.com       | user@gmail.com      |
 | 2 | aws.amazon.com   | user@company.com   |
 +---+------------------+---------------------+
+> To copy one of these passwords to clipboard, please enter a row number from the table above: 0
+Unlocking vault...
+Password copied to clipboard!
 
 passlane> show github
 Password copied to clipboard!
