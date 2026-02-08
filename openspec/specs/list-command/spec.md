@@ -104,7 +104,8 @@ The `type` field SHALL be one of: `"credentials"`, `"payment_cards"`, `"notes"`,
 #### Scenario: JSON output for credentials
 
 - **WHEN** the user runs `passlane list --json` and the vault contains credentials
-- **THEN** the output SHALL be valid JSON with `"type": "credentials"` and each entry SHALL contain the fields: `uuid`, `service`, `username`, `password`, `last_modified`
+- **THEN** the output SHALL be valid JSON with `"type": "credentials"` and each entry SHALL contain the fields: `uuid`, `service`, `username`, `password`, `note`, `last_modified`
+- **THEN** the `note` field SHALL be `null` for credentials without a note and a string value for credentials with a note
 
 #### Scenario: JSON output for payment cards
 
@@ -134,12 +135,14 @@ When the `--json` flag is NOT provided, the system SHALL output entries in a hum
 #### Scenario: Plain text credentials without verbose
 
 - **WHEN** the user runs `passlane list` without `--json` or `-v` and the vault contains credentials
-- **THEN** each credential SHALL be printed with `Service:` and `Username:` fields, and the password SHALL NOT be shown
+- **THEN** each credential SHALL be printed as a multi-line table row with `Service` and `Username/email` columns
+- **THEN** the Service cell SHALL contain the service name on the first line, and the note (prefixed with 📝, if present) followed by the modified date on the second line
 
 #### Scenario: Plain text credentials with verbose
 
 - **WHEN** the user runs `passlane list -v` without `--json` and the vault contains credentials
-- **THEN** each credential SHALL be printed with `Service:`, `Username:`, `Password:`, and `Last Modified:` fields
+- **THEN** each credential SHALL be printed as a multi-line table row with `Service`, `Username/email`, and `Password` columns
+- **THEN** the Service cell SHALL contain the service name on the first line, and the note (prefixed with 📝, if present) followed by the modified date on the second line
 
 #### Scenario: Plain text payment cards without verbose
 
@@ -193,12 +196,22 @@ When vault unlock fails or an invalid regex is provided, the system SHALL print 
 
 ### Requirement: Entity serialization support
 
-All vault entity types (`Credential`, `PaymentCard`, `Note`, `Totp`, `Address`, `Expiry`) SHALL be serializable to JSON via serde. The `Credential` type SHALL serialize its `uuid` field (not skip it). Field names in JSON output SHALL use snake_case.
+All vault entity types (`Credential`, `PaymentCard`, `Note`, `Totp`, `Address`, `Expiry`) SHALL be serializable to JSON via serde. The `Credential` type SHALL serialize its `uuid` field (not skip it). The `Credential` type SHALL serialize its `note` field (as `null` when absent or as a string when present). Field names in JSON output SHALL use snake_case.
 
 #### Scenario: Credential UUID is included in JSON
 
 - **WHEN** a credential is serialized to JSON
 - **THEN** the output SHALL contain a `uuid` field with the credential's UUID value
+
+#### Scenario: Credential note is included in JSON
+
+- **WHEN** a credential with note "work account" is serialized to JSON
+- **THEN** the output SHALL contain `"note": "work account"`
+
+#### Scenario: Credential without note is serialized to JSON
+
+- **WHEN** a credential without a note is serialized to JSON
+- **THEN** the output SHALL contain `"note": null`
 
 #### Scenario: All entity types are serializable
 
