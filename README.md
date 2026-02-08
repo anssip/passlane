@@ -55,14 +55,14 @@ This launches an interactive session where you can use all of Passlane's feature
 🔐 Passlane — interactive mode
 Type 'help' for commands, 'quit' to exit.
 
-passlane> show
+passlane> show user@
 Found 3 credentials:
 +---+------------------+---------------------+
 |   | Service          | Username/email      |
 +===+==================+=====================+
 | 0 | github.com       | user@example.com    |
 | 1 | google.com       | user@gmail.com      |
-| 2 | aws.amazon.com   | admin@company.com   |
+| 2 | aws.amazon.com   | user@company.com   |
 +---+------------------+---------------------+
 
 passlane> show github
@@ -99,7 +99,7 @@ passlane> quit
 
 The REPL supports **tab completion** for commands and types, and **command history** (up/down arrows) that persists across sessions.
 
-> **Note:** All existing CLI subcommands (`passlane show`, `passlane add`, etc.) continue to work as before. To generate a password from the command line without entering the REPL, use `passlane gen`.
+> **Note:** All REPL functionality is available as CLI subcommands (`passlane show`, `passlane add`, etc.). For example, to generate a password from the command line without entering the REPL, use `passlane gen`.
 
 ## Installation
 
