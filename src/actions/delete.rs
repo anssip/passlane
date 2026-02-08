@@ -1,4 +1,5 @@
 use crate::actions::{handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
+use crate::completion_cache;
 use crate::ui;
 use crate::ui::output::{
     show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
@@ -213,7 +214,7 @@ impl UnlockingAction for DeleteAction {
     }
 
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
-        match self.item_type {
+        let result = match self.item_type {
             ItemType::Credential => {
                 let grep = match &self.grep {
                     Some(grep) => grep.as_str(),
@@ -240,6 +241,10 @@ impl UnlockingAction for DeleteAction {
                 vault.find_totp(self.grep.as_deref()),
                 &mut Box::new(DeleteTotpTemplate { vault }),
             ),
+        };
+        if result.is_ok() {
+            completion_cache::update_cache(vault);
         }
+        result
     }
 }

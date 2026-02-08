@@ -1,4 +1,5 @@
 pub mod add;
+pub mod completions;
 pub mod delete;
 pub mod edit;
 pub mod export;
@@ -153,7 +154,10 @@ pub trait UnlockingAction {
         if self.is_totp_vault() {
             self.run_with_vault(&mut unlock_totp_vault()?)
         } else {
-            self.run_with_vault(&mut unlock()?)
+            let mut vault = unlock()?;
+            // Ensure completion cache exists when vault is open
+            crate::completion_cache::ensure_cache_from_vault(&vault);
+            self.run_with_vault(&mut vault)
         }
     }
 

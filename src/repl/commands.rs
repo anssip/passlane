@@ -12,6 +12,7 @@ pub enum ReplCommand {
     Lock,
     Unlock { totp: bool },
     Status,
+    Completions,
     Help { command: Option<String> },
     Quit,
     Empty,
@@ -21,7 +22,7 @@ pub enum ReplCommand {
 /// Known command names for completion
 pub const COMMAND_NAMES: &[&str] = &[
     "show", "add", "edit", "delete", "gen", "import", "export",
-    "unlock", "lock", "status", "help", "quit", "exit",
+    "unlock", "lock", "status", "completions", "help", "quit", "exit",
 ];
 
 /// Known type names for completion (second token)
@@ -113,6 +114,7 @@ pub fn parse_input(line: &str) -> ReplCommand {
             ReplCommand::Unlock { totp }
         }
         "status" => ReplCommand::Status,
+        "completions" => ReplCommand::Completions,
         "help" => {
             let command = rest.first().map(|s| s.to_lowercase());
             ReplCommand::Help { command }
@@ -397,6 +399,16 @@ mod tests {
             ReplCommand::Unknown(cmd) => assert_eq!(cmd, "foobar"),
             _ => panic!("Expected Unknown command"),
         }
+    }
+
+    #[test]
+    fn test_completions() {
+        assert_eq!(parse_input("completions"), ReplCommand::Completions);
+    }
+
+    #[test]
+    fn test_completions_case_insensitive() {
+        assert_eq!(parse_input("COMPLETIONS"), ReplCommand::Completions);
     }
 
     #[test]

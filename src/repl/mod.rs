@@ -2,6 +2,8 @@ pub mod commands;
 pub mod completer;
 pub mod help;
 
+use std::sync::{Arc, Mutex};
+
 use rustyline::error::ReadlineError;
 use rustyline::{Config, Editor};
 
@@ -16,6 +18,7 @@ use crate::actions::lock::LockAction;
 use crate::actions::unlock::UnlockAction;
 use crate::actions::show::ShowAction;
 use crate::actions::{Action, ItemType, UnlockingAction};
+use crate::completion_cache;
 use crate::{keychain, store};
 
 use commands::{parse_input, ReplCommand};
@@ -48,13 +51,16 @@ pub fn start_repl() {
 
     print_banner();
 
+    // Initialize shared entry names for tab completion
+    let entry_names = Arc::new(Mutex::new(load_entry_names()));
+
     let config = Config::builder()
         .edit_mode(rustyline::EditMode::Emacs)
         .auto_add_history(true)
         .build();
 
     let mut rl = Editor::with_config(config).unwrap();
-    rl.set_helper(Some(ReplHelper));
+    rl.set_helper(Some(ReplHelper::new(entry_names.clone())));
 
     // Load history (ignore error if file doesn't exist)
     let hist_path = history_path();
@@ -71,8 +77,11 @@ pub fn start_repl() {
                     }
                     ReplCommand::Empty => continue,
                     _ => {
+                        let should_refresh = is_vault_modifying(&command);
                         if let Err(e) = dispatch(command) {
                             eprintln!("{}", e);
+                        } else if should_refresh {
+                            refresh_entry_names(&entry_names);
                         }
                     }
                 }
@@ -92,6 +101,31 @@ pub fn start_repl() {
             }
         }
     }
+}
+
+/// Load entry names from the completion cache (populated by unlock/modify actions)
+fn load_entry_names() -> Vec<String> {
+    completion_cache::read_cache()
+}
+
+/// Refresh the shared entry name list from the cache
+fn refresh_entry_names(entry_names: &Arc<Mutex<Vec<String>>>) {
+    let names = load_entry_names();
+    if let Ok(mut locked) = entry_names.lock() {
+        *locked = names;
+    }
+}
+
+/// Check if a command modifies the vault (and should trigger entry name refresh)
+fn is_vault_modifying(command: &ReplCommand) -> bool {
+    matches!(
+        command,
+        ReplCommand::Add { .. }
+            | ReplCommand::Edit { .. }
+            | ReplCommand::Delete { .. }
+            | ReplCommand::Import { .. }
+            | ReplCommand::Unlock { .. }
+    )
 }
 
 fn dispatch(command: ReplCommand) -> Result<(), String> {
@@ -203,6 +237,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         ReplCommand::Status => {
             print_status();
         }
+        ReplCommand::Completions => {
+            print_completions_instructions();
+        }
         ReplCommand::Help { command } => {
             help::print_help(command.as_deref());
         }
@@ -214,6 +251,28 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn print_completions_instructions() {
+    let instructions = r#"
+Shell completions let you press Tab to auto-complete passlane commands and flags.
+
+To set up completions, run this from your terminal (not the REPL):
+
+  passlane completions
+
+This auto-detects your shell, saves the completion script to ~/.passlane/,
+and tells you which line to add to your shell rc file.
+
+You can also specify a shell explicitly:
+
+  passlane completions bash
+  passlane completions zsh
+  passlane completions fish
+
+When the vault is unlocked, completions also suggest service names and usernames.
+Note: the REPL already has built-in tab completion for commands and types."#;
+    println!("{}", instructions);
 }
 
 fn print_status() {

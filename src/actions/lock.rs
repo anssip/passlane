@@ -1,4 +1,5 @@
 use crate::actions::Action;
+use crate::completion_cache;
 use crate::keychain;
 use crate::vault::entities::Error;
 
@@ -22,6 +23,7 @@ impl Action for LockAction {
                 "TOTP vault was already locked"
             }
         };
+        completion_cache::clear_cache();
         Ok(format!("{}\n{}", credential_vault_response, totp_vault_response))
     }
 }

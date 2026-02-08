@@ -20,6 +20,7 @@ Available commands:
   unlock [otp]            Store master password in keychain
   lock                    Remove master passwords from keychain
   status                  Show vault status
+  completions             Show how to install shell completions
   help [command]          Show help (or help for a specific command)
   quit / exit             Exit the REPL
 
@@ -114,6 +115,16 @@ status — Show vault status
 
   Displays whether each vault is unlocked (password stored in keychain)
   or locked, and shows the configured vault file paths."#
+        ),
+        "completions" => println!(
+            r#"
+completions — Show shell completion installation instructions
+
+  Displays how to set up tab-completion for bash, zsh, and fish.
+  Run 'passlane completions' from your terminal (not the REPL) to
+  generate the script and get the line to add to your shell rc file.
+
+  The REPL already has built-in tab completion for commands and types."#
         ),
         _ => {
             eprintln!("Unknown command: '{}'. Type 'help' for available commands.", cmd);

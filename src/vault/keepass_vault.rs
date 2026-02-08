@@ -179,11 +179,14 @@ impl KeepassVault {
             .map(Self::node_to_credential)
             .filter(|cred| {
                 if let Some(grep) = &grep {
-                    if !cred
-                        .username()
-                        .to_lowercase()
-                        .contains(&grep.to_lowercase())
-                        && !cred.service().to_lowercase().contains(&grep.to_lowercase())
+                    let grep_lower = grep.to_lowercase();
+                    let service_lower = cred.service().to_lowercase();
+                    let username_lower = cred.username().to_lowercase();
+                    // Match against service, username, or combined "service:username"
+                    let combined = format!("{}:{}", service_lower, username_lower);
+                    if !service_lower.contains(&grep_lower)
+                        && !username_lower.contains(&grep_lower)
+                        && !combined.contains(&grep_lower)
                     {
                         return false;
                     }

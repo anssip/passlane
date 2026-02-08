@@ -1,4 +1,5 @@
 use crate::actions::UnlockingAction;
+use crate::completion_cache;
 use crate::store;
 use crate::vault::entities::Error;
 use crate::vault::vault_trait::Vault;
@@ -28,8 +29,12 @@ fn push_from_csv(vault: &mut Box<dyn Vault>, file_path: &str) -> Result<i64, Err
 
 impl UnlockingAction for ImportCsvAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
-        push_from_csv(vault, &self.file_path)
+        let result = push_from_csv(vault, &self.file_path)
             .map(|count| format!("Imported {} entries", count))
-            .map(Some)
+            .map(Some);
+        if result.is_ok() {
+            completion_cache::update_cache(vault);
+        }
+        result
     }
 }

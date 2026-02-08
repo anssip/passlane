@@ -2,6 +2,7 @@ extern crate clipboard;
 extern crate magic_crypt;
 
 mod actions;
+mod completion_cache;
 mod crypto;
 mod keychain;
 mod repl;
@@ -10,6 +11,7 @@ mod ui;
 mod vault;
 
 use crate::actions::add::AddAction;
+use crate::actions::completions::CompletionsAction;
 use crate::actions::delete::DeleteAction;
 use crate::actions::edit::EditAction;
 use crate::actions::export::ExportAction;
@@ -25,7 +27,7 @@ use clap::{arg, ArgAction, Command};
 use init::InitAction;
 use std::env;
 
-fn cli() -> Command {
+pub fn cli() -> Command {
     Command::new("passlane")
         .about("A password manager using Keepass as the storage backend.")
         .subcommand_required(false)
@@ -170,10 +172,17 @@ fn cli() -> Command {
             Command::new("repl")
                 .about("Launch the interactive REPL session.")
         )
+        .subcommand(
+            Command::new("completions")
+                .about("Generate shell completions and save to ~/.passlane/. Shows the line to add to your shell rc file.")
+                .arg(arg!([SHELL] "Target shell (bash, zsh, fish). Auto-detected from $SHELL if omitted."))
+        )
+
 }
 
 fn main() {
     env_logger::init();
+    completion_cache::refresh_if_stale();
     let matches = cli().get_matches();
 
     enum VaultAction {
@@ -208,6 +217,10 @@ fn main() {
         }
         Some(("gen", sub_matches)) => {
             VaultAction::Action(Box::new(GeneratePasswordAction::new(sub_matches)))
+        }
+        Some(("completions", sub_matches)) => {
+            let shell = sub_matches.get_one::<String>("SHELL").cloned();
+            VaultAction::Action(Box::new(CompletionsAction::new(shell, cli())))
         }
         Some(("repl", _)) => {
             repl::start_repl();

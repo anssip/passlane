@@ -1,4 +1,5 @@
 use crate::actions::{copy_to_clipboard, unlock, unlock_totp_vault, Action, ItemType};
+use crate::completion_cache;
 use crate::vault::entities::Error;
 use crate::vault::vault_trait::Vault;
 use crate::{crypto, ui};
@@ -53,6 +54,7 @@ impl AddAction {
         let creds = ui::input::ask_credentials(&password);
         let mut vault = self.get_vault()?;
         vault.save_one_credential(creds.clone())?;
+        completion_cache::update_cache(&vault);
         copy_to_clipboard(&password);
         Ok("Password copied to clipboard".to_string())
     }

@@ -1,5 +1,6 @@
 use clap::ArgMatches;
 use crate::actions::{Action, unlock, unlock_totp_vault};
+use crate::completion_cache;
 use crate::keychain;
 use crate::vault::entities::Error;
 
@@ -23,6 +24,7 @@ impl Action for UnlockAction {
         } else {
             let vault = unlock()?;
             keychain::save_master_password(&vault.get_master_password())?;
+            completion_cache::update_cache(&vault);
         }
         Ok("Vault unlocked".to_string())
     }
