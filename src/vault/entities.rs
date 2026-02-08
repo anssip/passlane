@@ -179,6 +179,15 @@ impl PaymentCard {
     pub fn last_modified(&self) -> &DateTime<Utc> {
         &self.last_modified
     }
+
+    pub fn last4(&self) -> String {
+        let num = &self.number;
+        if num.len() >= 4 {
+            format!("•••• {}", &num[num.len() - 4..])
+        } else {
+            format!("•••• {}", num)
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -504,5 +513,42 @@ impl FromStr for Address {
             state: None,
             zip,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_card(number: &str) -> PaymentCard {
+        PaymentCard::new(
+            None,
+            "Test Card",
+            "John Doe",
+            number,
+            "123",
+            Expiry { month: 12, year: 2025 },
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_last4_normal_16_digit() {
+        let card = make_card("4111111111111234");
+        assert_eq!(card.last4(), "•••• 1234");
+    }
+
+    #[test]
+    fn test_last4_short_number() {
+        let card = make_card("12");
+        assert_eq!(card.last4(), "•••• 12");
+    }
+
+    #[test]
+    fn test_last4_exactly_4_digits() {
+        let card = make_card("5678");
+        assert_eq!(card.last4(), "•••• 5678");
     }
 }

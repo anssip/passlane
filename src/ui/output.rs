@@ -58,7 +58,7 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
             "Modified",
         ]
     } else {
-        vec!["", "Name", "Color", "Expiry", "Modified"]
+        vec!["", "Name", "Last 4", "Color", "Expiry", "Modified"]
     };
     table.set_header(
         headers
@@ -86,6 +86,7 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) 
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(String::from(card.name())),
+                Cell::new(card.last4()),
                 Cell::new(card.color_str()),
                 Cell::new(card.expiry_str()),
                 Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
