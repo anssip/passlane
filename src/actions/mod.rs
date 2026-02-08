@@ -119,7 +119,7 @@ pub trait UnlockingAction {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ItemType {
     Credential,
     Payment,

@@ -4,6 +4,7 @@ extern crate magic_crypt;
 mod actions;
 mod crypto;
 mod keychain;
+mod repl;
 mod store;
 mod ui;
 mod vault;
@@ -155,6 +156,14 @@ fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(<file_path> "The the CSV file to export to."))
         )
+        .subcommand(
+            Command::new("gen")
+                .about("Generate a random password and copy it to the clipboard.")
+        )
+        .subcommand(
+            Command::new("repl")
+                .about("Launch the interactive REPL session.")
+        )
 }
 
 fn main() {
@@ -191,9 +200,15 @@ fn main() {
         Some(("edit", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(EditAction::new(sub_matches)))
         }
+        Some(("gen", _)) => VaultAction::Action(Box::new(GeneratePasswordAction {})),
+        Some(("repl", _)) => {
+            repl::start_repl();
+            return;
+        }
         _ => {
             if env::args().len() == 1 {
-                VaultAction::Action(Box::new(GeneratePasswordAction {}))
+                repl::start_repl();
+                return;
             } else {
                 VaultAction::Action(Box::new(PrintHelpAction::new(cli())))
             }
