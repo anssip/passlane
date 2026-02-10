@@ -228,16 +228,18 @@ _passlane_cache_entries() {{
         local -a entries
         local cur="${{words[CURRENT]}}"
         if [[ -n "$cur" ]]; then
-            # Substring match: filter entries containing the typed text
+            # Substring match: filter entries containing the typed text (case-insensitive)
             entries=(${{(f)"$(grep -i "$cur" "$cache_file" 2>/dev/null)"}})
         else
             entries=(${{(f)"$(< "$cache_file")"}})
         fi
         if (( $#entries )); then
-            compadd -U -a entries
-            return 0
+            # Use _wanted for proper zsh completion integration
+            # -V disables sorting, entries maintains list of completions
+            _wanted entries expl 'vault entry' compadd -V unsorted -a entries && return 0
         fi
     fi
+    return 1
 }}
 "#,
         ),
