@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.1]
+
+- Fix completions from the cached completions file (dynamic completion of credentials)
+
 ## [3.0.0]
 
 - Add interactive REPL mode
