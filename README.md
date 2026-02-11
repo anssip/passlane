@@ -25,6 +25,7 @@ Passlane is written in Rust.
 - Clipboard auto-clear: passwords are automatically cleared from the clipboard after 10 seconds
 - `--out` flag for scripting: output passwords to stdout instead of the clipboard
 - Shell tab completion for bash, zsh, and fish with dynamic service/username suggestions
+- REPL mode (interactive mode)
 
 ## Table of contents
 
@@ -87,20 +88,21 @@ passlane> quit
 
 ### Available REPL commands
 
-| Command | Description |
-|---------|-------------|
-| `show [type] [pattern]` | Show entries (default: all credentials) |
-| `add [type]` | Add a new entry (default: credential) |
-| `edit [type] [pattern]` | Edit an existing entry |
-| `delete [type] [pattern]` | Delete an entry |
-| `gen` | Generate a random password |
-| `import <file>` | Import credentials from a CSV file |
-| `export [type] <file>` | Export entries to a CSV file |
-| `unlock [otp]` | Store master password in keychain |
-| `lock` | Remove master passwords from keychain |
-| `status` | Show vault status |
-| `help [command]` | Show help for a command |
-| `quit` / `exit` | Exit the session |
+| Command                   | Description                             |
+| ------------------------- | --------------------------------------- |
+| `show [type] [pattern]`   | Show entries (default: all credentials) |
+| `add [type]`              | Add a new entry (default: credential)   |
+| `edit [type] [pattern]`   | Edit an existing entry                  |
+| `delete [type] [pattern]` | Delete an entry                         |
+| `gen`                     | Generate a random password              |
+| `import <file>`           | Import credentials from a CSV file      |
+| `export [type] <file>`    | Export entries to a CSV file            |
+| `unlock [otp]`            | Store master password in keychain       |
+| `lock`                    | Remove master passwords from keychain   |
+| `status`                  | Show vault status                       |
+| `completions`             | Show how to install shell completions   |
+| `help [command]`          | Show help for a command                 |
+| `quit` / `exit`           | Exit the session                        |
 
 **Types:** `creds` (default), `cards`, `notes`, `otp` — with aliases like `cred`, `card`, `note`, `totp`, `payments`, `credentials`.
 
@@ -202,6 +204,7 @@ Commands:
   export  Exports the vault contents to a CSV file.
   gen     Generate a random password and copy it to the clipboard.
   repl    Launch the interactive REPL session.
+  completions  Generate shell completions and save to ~/.passlane/. Shows the line to add to your shell rc file.
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -276,7 +279,7 @@ Found 5 credentials:
 | 4 | google.com                               | anssi@carbon.video             |
 |   | 📝 Carbon Video  Modified: 23.04.2024    |                                |
 +---+------------------------------------------+--------------------------------+
-? To copy one of these passwords to clipboard, please enter a row number from the table above  
+? To copy one of these passwords to clipboard, please enter a row number from the table above
 [Press q to exit without copying the password]
 ```
 
@@ -299,7 +302,7 @@ Found 3 payment cards:
 |---+-------------------------+------------+-------+--------+------------------|
 | 2 | Visa Gold (personal)    | •••• 9156  | Gold  | 6/2025 | 23.10.2024 13:15 |
 +---+-------------------------+------------+-------+--------+------------------+
-? To see card details, enter a row number from the table above  
+? To see card details, enter a row number from the table above
 [Press q to exit without showing]
 ```
 
@@ -540,6 +543,7 @@ Add the printed `source` line to your rc file (`~/.zshrc`, `~/.bashrc`, or `~/.c
 When your vault is unlocked, Passlane maintains a lightweight completion cache at `~/.passlane/.completion_cache` containing service names and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands.
 
 The cache is automatically:
+
 - **Created** when you run `passlane unlock` or any command that opens the vault
 - **Updated** when you add, edit, delete, or import entries
 - **Refreshed** when older than 7 days (if the vault is unlocked via keychain)

@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.0]
+
+- Add interactive REPL mode
+- Add `list` command for JSON output and scripting
+- Add optional note field to credentials
+- Add shell completion support for bash/zsh/fish, with dynamic completions for commands and saved service/username completions
+- Show last 4 digits of card number in non-verbose payment cards table
+- Clipboard auto-clear after 10 seconds and `--out` flag for show/gen commands
+- Fix to ask master password only once when unlocking vault
+- Fix zsh completion clearing input when no exact match
+- Fix table layout
+
 ## [2.5.1]
 
 - Fix to not clear the password prompt when editing a credential and skipping the password change
