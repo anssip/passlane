@@ -228,18 +228,17 @@ _passlane_cache_entries() {{
         local -a entries
         local cur="${{words[CURRENT]}}"
         if [[ -n "$cur" ]]; then
-            # Substring match: filter entries containing the typed text (case-insensitive)
+            # Filter entries containing the typed text (case-insensitive)
             entries=(${{(f)"$(grep -i "$cur" "$cache_file" 2>/dev/null)"}})
         else
             entries=(${{(f)"$(< "$cache_file")"}})
         fi
         if (( $#entries )); then
-            # Use _wanted for proper zsh completion integration
-            # -V disables sorting, entries maintains list of completions
-            _wanted entries expl 'vault entry' compadd -V unsorted -a entries && return 0
+            # Don't use -U flag: let zsh match entries against typed prefix
+            compadd -V unsorted -a entries
         fi
     fi
-    return 1
+    return 0
 }}
 "#,
         ),
@@ -426,7 +425,7 @@ complete -c passlane -n "__fish_seen_subcommand_from add" -F"#;
     fn test_dynamic_completion_script_zsh_has_function() {
         let script = dynamic_completion_script(Shell::Zsh);
         assert!(script.contains("_passlane_cache_entries"));
-        assert!(script.contains("compadd -U"));
+        assert!(script.contains("compadd -V unsorted"));
         assert!(script.contains("grep -i"));
     }
 
