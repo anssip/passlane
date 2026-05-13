@@ -3,7 +3,7 @@ use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVaul
 use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::db::{
     group_get_children, node_is_entry, node_is_group, search_node_by_uuid, Database, Entry, Group,
-    Node, NodeIterator, NodePtr, SerializableNodePtr,
+    Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
 };
 use keepass_ng::error::DatabaseSaveError;
 use keepass_ng::{error::DatabaseOpenError, DatabaseConfig, DatabaseKey};
@@ -45,15 +45,48 @@ impl From<keepass_ng::error::Error> for Error {
     }
 }
 
+/// Normalize an `otpauth://` URL so its `secret=` value passes strict RFC 4648
+/// base32 decoding: uppercase letters, strip whitespace, and pad with `=` to the
+/// next multiple of 8 characters. Other parts of the URL are left untouched.
+fn normalize_otp_url(url: &str) -> String {
+    let secret_start = if let Some(pos) = url.find("?secret=") {
+        pos + "?secret=".len()
+    } else if let Some(pos) = url.find("&secret=") {
+        pos + "&secret=".len()
+    } else {
+        return url.to_string();
+    };
+    let after = &url[secret_start..];
+    let end_offset = after.find('&').unwrap_or(after.len());
+    let raw_secret = &after[..end_offset];
+
+    let cleaned: String = raw_secret
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_uppercase();
+    let unpadded = cleaned.trim_end_matches('=');
+    let pad_len = (8 - (unpadded.len() % 8)) % 8;
+    let normalized = format!("{}{}", unpadded, "=".repeat(pad_len));
+
+    let secret_end = secret_start + end_offset;
+    format!(
+        "{}{}{}",
+        &url[..secret_start],
+        normalized,
+        &url[secret_end..]
+    )
+}
+
 fn node_has_totp(node: &NodePtr) -> bool {
     let node = node.borrow();
     let e = node.as_any().downcast_ref::<Entry>().unwrap();
-    debug!(
-        "Checking node for TOTP: {:?} {:?}",
-        e.get_title(),
-        e.get_otp()
-    );
-    e.get_otp().is_ok()
+    let raw = e.get_raw_otp_value();
+    debug!("Checking node for TOTP: {:?} raw={:?}", e.get_title(), raw);
+    match raw {
+        Some(url) => TOTP::from_str(&normalize_otp_url(url)).is_ok(),
+        None => false,
+    }
 }
 
 impl KeepassVault {
@@ -402,15 +435,16 @@ impl KeepassVault {
             .as_any()
             .downcast_ref::<Entry>()
             .ok_or(Error::new("Failed to downcast keepass node"))?;
-        let otp = e
-            .get_otp()
-            .map_err(|e| Error::new(&format!("Failed to get OTP from keepass node: {:?}", e)))?;
-        let url = e
+        let raw_url = e
             .get_raw_otp_value()
             .ok_or(Error::new("Failed to get URL from keepass node"))?;
+        let normalized_url = normalize_otp_url(raw_url);
+        let otp: TOTP = normalized_url.parse().map_err(|e| {
+            Error::new(&format!("Failed to parse OTP URL: {:?}", e))
+        })?;
         let last_modified = e.get_times().get_last_modification();
         Ok((
-            String::from(url),
+            normalized_url,
             otp.label.to_string(),
             String::from(&otp.issuer),
             otp.get_secret(),
@@ -727,3 +761,56 @@ impl TotpVault for KeepassVault {
 }
 
 impl Vault for KeepassVault {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_lowercase_secret() {
+        let input = "otpauth://totp/braintree:api@iki.fi?secret=ue5u4t4fzitipzo2&issuer=braintree&period=30&digits=6";
+        let expected = "otpauth://totp/braintree:api@iki.fi?secret=UE5U4T4FZITIPZO2&issuer=braintree&period=30&digits=6";
+        assert_eq!(normalize_otp_url(input), expected);
+    }
+
+    #[test]
+    fn normalize_already_canonical() {
+        let input = "otpauth://totp/x:y?secret=JBSWY3DPEHPK3PXP&issuer=x&period=30&digits=6";
+        assert_eq!(normalize_otp_url(input), input);
+    }
+
+    #[test]
+    fn normalize_strips_whitespace_in_secret() {
+        let input = "otpauth://totp/x?secret=jbsw y3dp ehpk 3pxp&issuer=x";
+        let expected = "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&issuer=x";
+        assert_eq!(normalize_otp_url(input), expected);
+    }
+
+    #[test]
+    fn normalize_adds_padding() {
+        // 10 chars unpadded -> needs 6 '=' to reach 16
+        let input = "otpauth://totp/x?secret=JBSWY3DPEH&issuer=x";
+        let expected = "otpauth://totp/x?secret=JBSWY3DPEH======&issuer=x";
+        assert_eq!(normalize_otp_url(input), expected);
+    }
+
+    #[test]
+    fn normalize_secret_at_end_of_url() {
+        let input = "otpauth://totp/x?issuer=x&secret=ue5u4t4fzitipzo2";
+        let expected = "otpauth://totp/x?issuer=x&secret=UE5U4T4FZITIPZO2";
+        assert_eq!(normalize_otp_url(input), expected);
+    }
+
+    #[test]
+    fn normalize_no_secret_param_is_noop() {
+        let input = "otpauth://totp/x?issuer=x";
+        assert_eq!(normalize_otp_url(input), input);
+    }
+
+    #[test]
+    fn normalized_braintree_url_parses_as_totp() {
+        let url = "otpauth://totp/braintree:api@iki.fi?secret=ue5u4t4fzitipzo2&issuer=braintree&period=30&alorithm=SHA1&digits=6";
+        let parsed: Result<TOTP, _> = normalize_otp_url(url).parse();
+        assert!(parsed.is_ok(), "expected parse to succeed, got {:?}", parsed.err());
+    }
+}
