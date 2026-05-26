@@ -20,6 +20,7 @@ use std::time::Duration;
 struct ShowCredentialsTemplate {
     verbose: bool,
     stdout_only: bool,
+    plain: bool,
 }
 
 impl MatchHandlerTemplate for ShowCredentialsTemplate {
@@ -30,7 +31,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_credentials_table(&vec![the_match.clone()], self.verbose);
+        show_credentials_table(&vec![the_match.clone()], self.verbose, self.plain);
         if self.stdout_only {
             println!("{}", the_match.password());
             Ok(None)
@@ -45,7 +46,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, self.verbose);
+        show_credentials_table(&matches, self.verbose, self.plain);
 
         let prompt = if self.stdout_only {
             "To print one of these passwords, please enter a row number from the table above"
@@ -77,6 +78,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
 
 struct ShowPaymentsTemplate {
     show_cleartext: bool,
+    plain: bool,
 }
 
 impl MatchHandlerTemplate for ShowPaymentsTemplate {
@@ -87,7 +89,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext);
+        show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext, self.plain);
         copy_to_clipboard(the_match.number());
         match ask_with_options(
             "Do you want to see the full card details? (yes/no)",
@@ -107,7 +109,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_payment_cards_table(&matches, self.show_cleartext);
+        show_payment_cards_table(&matches, self.show_cleartext, self.plain);
 
         match ask_index(
             "To see card details, enter a row number from the table above",
@@ -126,6 +128,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
 
 struct ShowNotesTemplate {
     verbose: bool,
+    plain: bool,
 }
 
 impl MatchHandlerTemplate for ShowNotesTemplate {
@@ -136,7 +139,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_notes_table(&vec![the_match.clone()], self.verbose);
+        show_notes_table(&vec![the_match.clone()], self.verbose, self.plain);
         let response = ask_with_options(
             "Do you want to see the full note? (yes/no)",
             vec!["yes", "no"],
@@ -151,7 +154,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_notes_table(&matches, self.verbose);
+        show_notes_table(&matches, self.verbose, self.plain);
 
         match ask_index(
             "To see the full note, please enter a row number from the table above",
@@ -167,14 +170,16 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     }
 }
 
-struct ShowTotpTemplate;
+struct ShowTotpTemplate {
+    plain: bool,
+}
 
 impl MatchHandlerTemplate for ShowTotpTemplate {
     type ItemType = Totp;
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} matching OTP authorizers:", matches.len());
-        show_totp_table(matches);
+        show_totp_table(matches, self.plain);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -276,6 +281,7 @@ pub struct ShowAction {
     pub item_type: ItemType,
     pub is_totp: bool,
     pub stdout_only: bool,
+    pub plain: bool,
 }
 
 impl ShowAction {
@@ -286,6 +292,7 @@ impl ShowAction {
             item_type: ItemType::new_from_args(matches),
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
             stdout_only: matches.get_one::<bool>("out").map_or(false, |v| *v),
+            plain: matches.get_one::<bool>("plain").map_or(false, |v| *v),
         }
     }
 }
@@ -311,6 +318,7 @@ impl UnlockingAction for ShowAction {
                     &mut Box::new(ShowCredentialsTemplate {
                         verbose: self.verbose,
                         stdout_only: self.stdout_only,
+                        plain: self.plain,
                     }),
                 )
             }
@@ -318,17 +326,19 @@ impl UnlockingAction for ShowAction {
                 vault.find_payments(),
                 &mut Box::new(ShowPaymentsTemplate {
                     show_cleartext: self.verbose,
+                    plain: self.plain,
                 }),
             ),
             ItemType::Note => handle_matches(
                 vault.find_notes(),
                 &mut Box::new(ShowNotesTemplate {
                     verbose: self.verbose,
+                    plain: self.plain,
                 }),
             ),
             ItemType::Totp => handle_matches(
                 vault.find_totp(self.grep.as_deref()),
-                &mut Box::new(ShowTotpTemplate),
+                &mut Box::new(ShowTotpTemplate { plain: self.plain }),
             ),
         }
     }

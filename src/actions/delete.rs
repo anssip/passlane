@@ -29,7 +29,7 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, false);
+        show_credentials_table(&matches, false, false);
         match ui::input::ask_index(
             "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
@@ -62,7 +62,7 @@ impl<'a> MatchHandlerTemplate for DeletePaymentTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} payment cards...", matches.len());
-        show_payment_cards_table(matches, false);
+        show_payment_cards_table(matches, false, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -107,7 +107,7 @@ impl<'a> MatchHandlerTemplate for DeleteNoteTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} notes", matches.len());
-        show_notes_table(matches, false);
+        show_notes_table(matches, false, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
@@ -153,7 +153,7 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
 
     fn pre_handle_matches(&self, matches: &Vec<Self::ItemType>) {
         println!("Found {} TOTP entries", matches.len());
-        show_totp_table(matches);
+        show_totp_table(matches, false);
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {

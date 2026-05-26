@@ -3,8 +3,9 @@ use std::cmp::min;
 
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 
-pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
+pub fn show_credentials_table(credentials: &[Credential], show_password: bool, plain: bool) {
     let mut table = Table::new();
+    apply_plain(&mut table, plain);
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
         vec!["", "Service", "Username/email", "Password"]
@@ -19,16 +20,14 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool) {
     );
     for (index, creds) in (0_i16..).zip(credentials.iter()) {
         let service = creds.service().to_string();
-        let modified = creds.last_modified().format("%d.%m.%Y %H:%M").to_string();
-        let second_line = match creds.note() {
-            Some(note) => format!("📝 {}  Modified: {}", note, modified),
-            None => format!("Modified: {}", modified),
-        };
-        let service_cell = format!(
-            "{}\n{}",
-            &service[..min(service.len(), 30)],
-            second_line
-        );
+        let truncated = &service[..min(service.len(), 30)];
+        let modified = creds.last_modified().format("%d.%m.%Y").to_string();
+        let mut lines: Vec<String> = vec![truncated.to_string()];
+        if let Some(note) = creds.note() {
+            lines.push(format!("📝 {}", note));
+        }
+        lines.push(format!("🕐 {}", modified));
+        let service_cell = lines.join("\n");
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
@@ -52,8 +51,16 @@ fn header_cell(label: String) -> Cell {
     Cell::new(label).fg(Color::Green)
 }
 
-pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool) {
+fn apply_plain(table: &mut Table, plain: bool) {
+    if plain {
+        table.load_preset(comfy_table::presets::NOTHING);
+        table.set_content_arrangement(comfy_table::ContentArrangement::Disabled);
+    }
+}
+
+pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool, plain: bool) {
     let mut table = Table::new();
+    apply_plain(&mut table, plain);
     let headers = if show_cleartext {
         vec![
             "",
@@ -136,8 +143,9 @@ pub fn show_card(card: &PaymentCard) {
     println!("{table}");
 }
 
-pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool) {
+pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool, plain: bool) {
     let mut table = Table::new();
+    apply_plain(&mut table, plain);
     let headers = if show_cleartext {
         vec!["", "Title", "Note", "Modified"]
     } else {
@@ -176,8 +184,9 @@ pub(crate) fn show_note(note: &Note) {
     println!("---------------------------");
 }
 
-pub(crate) fn show_totp_table(totps: &[Totp]) {
+pub(crate) fn show_totp_table(totps: &[Totp], plain: bool) {
     let mut table = Table::new();
+    apply_plain(&mut table, plain);
     table.set_header(
         vec![
             header_cell("".to_string()),

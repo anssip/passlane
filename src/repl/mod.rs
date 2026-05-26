@@ -138,6 +138,7 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
                 item_type,
                 is_totp,
                 stdout_only: false,
+                plain: false,
             };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),

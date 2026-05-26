@@ -110,6 +110,9 @@ pub fn cli() -> Command {
                 .arg(arg!(
                     --out "Print password to stdout instead of copying to clipboard."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    --plain "Render tables without borders for narrower output."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))
                 .arg_required_else_help(true)
         )
