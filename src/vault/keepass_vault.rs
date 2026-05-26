@@ -153,6 +153,18 @@ impl KeepassVault {
         self.db.save(&mut file, key)
     }
 
+    pub fn change_master_password(&mut self, new_password: String) -> Result<(), Error> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.filepath)?;
+        let (_, key) = Self::get_database_key(&self.filepath, &new_password, &self.keyfile)?;
+        debug!("Re-encrypting database '{}' with new master password", &self.filepath);
+        self.db.save(&mut file, key)?;
+        self.password = new_password;
+        Ok(())
+    }
+
     fn open_database(
         filepath: &str,
         password: &str,

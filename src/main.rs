@@ -11,6 +11,7 @@ mod ui;
 mod vault;
 
 use crate::actions::add::AddAction;
+use crate::actions::change_password::ChangePasswordAction;
 use crate::actions::completions::CompletionsAction;
 use crate::actions::delete::DeleteAction;
 use crate::actions::edit::EditAction;
@@ -151,6 +152,13 @@ pub fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
+            Command::new("passwd")
+                .about("Change the master password of the vault.")
+                .arg(arg!(
+                    -o --otp "Change the master password of the one time passwords vault."
+                ).action(ArgAction::SetTrue))
+        )
+        .subcommand(
             Command::new("export")
                 .about("Exports the vault contents to a CSV file.")
                 .arg(arg!(
@@ -211,6 +219,9 @@ fn main() {
         Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
         Some(("unlock", sub_matches)) => {
             VaultAction::Action(Box::new(UnlockAction::new(sub_matches)))
+        }
+        Some(("passwd", sub_matches)) => {
+            VaultAction::Action(Box::new(ChangePasswordAction::new(sub_matches)))
         }
         Some(("export", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches)))

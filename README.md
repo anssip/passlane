@@ -184,6 +184,20 @@ passlane lock
 
 To get help on the available commands:
 
+#### Changing the master password
+
+Rotate the master password of the vault with the `passwd` command. You'll be prompted for the current master password (always — the keychain-stored value is not used here), and then twice for the new one. The vault file is re-encrypted in place with a key derived from the new password. If the current master password was stored in the system keychain, the entry is updated automatically so that subsequent unlocks keep working seamlessly.
+
+```bash
+passlane passwd
+```
+
+To change the master password of the separate OTP vault, pass `-o`:
+
+```bash
+passlane passwd -o
+```
+
 ```bash
 ➜ passlane -h
 
@@ -201,6 +215,7 @@ Commands:
   list    Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.
   lock    Lock the vaults to prevent all access
   unlock  Opens the vaults and grants access to the entries
+  passwd  Change the master password of the vault.
   export  Exports the vault contents to a CSV file.
   gen     Generate a random password and copy it to the clipboard.
   repl    Launch the interactive REPL session.
