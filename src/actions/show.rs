@@ -36,8 +36,8 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
             println!("{}", the_match.password());
             Ok(None)
         } else {
-            println!("Password copied to clipboard! Clipboard will be cleared in 10 seconds.");
-            copy_to_clipboard_timed(the_match.password(), 10);
+            println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
+            copy_to_clipboard_timed(the_match.password(), 20);
             Ok(None)
         }
     }
@@ -64,8 +64,8 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
                     println!("{}", matches[index].password());
                     Ok(None)
                 } else {
-                    println!("Password copied to clipboard! Clipboard will be cleared in 10 seconds.");
-                    copy_to_clipboard_timed(matches[index].password(), 10);
+                    println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
+                    copy_to_clipboard_timed(matches[index].password(), 20);
                     Ok(None)
                 }
             }

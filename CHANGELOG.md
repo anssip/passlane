@@ -1,8 +1,16 @@
 # Changelog
 
+## [3.0.2]
+
+- Accept Firefox-exported CSV in `passlane csv` import
+- Make `show` output narrower. Add `--plain` option for plain non-table output.
+- Fix: Accept lenient TOTP secrets when reading from Keepass files
+- Fix: `show` now finds entries stored anywhere in the Keepass file, including at the root and in groups created by other Keepass clients. Search also matches against the entry title, not just the URL.
+- Added `passwd` command to change the master password of the vault file.
+
 ## [3.0.1]
 
-- Fix completions from the cached completions file (dynamic completion of credentials)
+- Fix completions from the cached completions file (dynamic completion of credentialsgit)
 
 ## [3.0.0]
 

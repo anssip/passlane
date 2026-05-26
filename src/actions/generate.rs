@@ -22,8 +22,8 @@ impl Action for GeneratePasswordAction {
             Ok(password)
         } else {
             println!("{}", password);
-            println!("Password copied to clipboard! Clipboard will be cleared in 10 seconds.");
-            copy_to_clipboard_timed(&password, 10);
+            println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
+            copy_to_clipboard_timed(&password, 20);
             Ok(String::new())
         }
     }

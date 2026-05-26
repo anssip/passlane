@@ -22,7 +22,7 @@ Passlane is written in Rust.
 - Authenticator functionality with TOTP
 - Import passwords from CSV files
 - Export vault contents to CSV files
-- Clipboard auto-clear: passwords are automatically cleared from the clipboard after 10 seconds
+- Clipboard auto-clear: passwords are automatically cleared from the clipboard after 20 seconds
 - `--out` flag for scripting: output passwords to stdout instead of the clipboard
 - Shell tab completion for bash, zsh, and fish with dynamic service/username suggestions
 - REPL mode (interactive mode)
@@ -228,7 +228,7 @@ Options:
 
 ### Generating and saving passwords
 
-To generate a new password without saving it. The generated password value is copied to the clipboard and **automatically cleared after 10 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
+To generate a new password without saving it. The generated password value is copied to the clipboard and **automatically cleared after 20 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
 
 ```bash
 passlane gen
@@ -262,7 +262,7 @@ You can search and show saved credentials with regular expressions
 passlane show <regexp>
 ```
 
-Run `passlane show foobar.com` → shows foobar.com's password and copies it to the clipboard. The clipboard is **automatically cleared after 10 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
+Run `passlane show foobar.com` → shows foobar.com's password and copies it to the clipboard. The clipboard is **automatically cleared after 20 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
 
 To print the password to stdout instead of copying to the clipboard (useful for scripting):
 
@@ -415,10 +415,10 @@ First, make sure that the CSV file has a header line (1st line) with the followi
 
 - username
 - password
-- service
+- service (or `url` — Firefox exports work out of the box)
 - note (optional)
 
-The `service` field is the URL or name of the service. The `note` column is optional — if omitted, credentials will be imported without notes. When importing from Dashlane, the only necessary preparation is to rename `url` to `service`.
+The `service` field is the URL or name of the service. A `url` column is accepted as an alias, so [Firefox-exported CSVs](https://support.mozilla.org/en-US/kb/export-login-data-firefox) can be imported with no preparation. The `note` column is optional — if omitted, credentials will be imported without notes.
 
 To export the credentials to a CSV file and import the file into Passlane:
 
@@ -428,6 +428,7 @@ passlane csv <path_to_csv_file>
 
 Here are links to instructions for doing the CSV export:
 
+- [Firefox](https://support.mozilla.org/en-US/kb/export-login-data-firefox)
 - [LastPass](https://support.lastpass.com/help/how-do-i-nbsp-export-stored-data-from-lastpass-using-a-generic-csv-file)
 - [1Password](https://support.1password.com/export/)
 - [Dashlane](https://support.dashlane.com/hc/en-us/articles/202625092-Export-your-passwords-from-Dashlane)

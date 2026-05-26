@@ -2,7 +2,7 @@ use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCa
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::db::{
-    group_get_children, node_is_entry, node_is_group, search_node_by_uuid, Database, Entry, Group,
+    group_get_children, node_is_entry, node_is_group, Database, Entry, Group,
     Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
 };
 use keepass_ng::error::DatabaseSaveError;
@@ -87,6 +87,61 @@ fn node_has_totp(node: &NodePtr) -> bool {
         Some(url) => TOTP::from_str(&normalize_otp_url(url)).is_ok(),
         None => false,
     }
+}
+
+fn node_looks_like_payment(node: &NodePtr) -> bool {
+    let node = node.borrow();
+    let e = match node.as_any().downcast_ref::<Entry>() {
+        Some(e) => e,
+        None => return false,
+    };
+    let notes = match e.get_notes() {
+        Some(n) if !n.is_empty() => n,
+        _ => return false,
+    };
+    let has_number = notes.lines().any(|l| l.starts_with("Number: "));
+    let has_expiry = notes.lines().any(|l| l.starts_with("Expiry: "));
+    has_number && has_expiry
+}
+
+fn node_looks_like_note(node: &NodePtr) -> bool {
+    if node_has_totp(node) {
+        return false;
+    }
+    if node_looks_like_payment(node) {
+        return false;
+    }
+    let node = node.borrow();
+    let e = match node.as_any().downcast_ref::<Entry>() {
+        Some(e) => e,
+        None => return false,
+    };
+    let has_notes = e.get_notes().map(|n| !n.is_empty()).unwrap_or(false);
+    if !has_notes {
+        return false;
+    }
+    let has_username = e.get_username().map(|u| !u.is_empty()).unwrap_or(false);
+    let has_password = e.get_password().map(|p| !p.is_empty()).unwrap_or(false);
+    let has_url = e.get_url().map(|u| !u.is_empty()).unwrap_or(false);
+    !has_username && !has_password && !has_url
+}
+
+fn node_looks_like_credential(node: &NodePtr) -> bool {
+    if node_looks_like_payment(node) {
+        return false;
+    }
+    if node_looks_like_note(node) {
+        return false;
+    }
+    let node_ref = node.borrow();
+    let e = match node_ref.as_any().downcast_ref::<Entry>() {
+        Some(e) => e,
+        None => return false,
+    };
+    let has_username = e.get_username().map(|u| !u.is_empty()).unwrap_or(false);
+    let has_password = e.get_password().map(|p| !p.is_empty()).unwrap_or(false);
+    let has_url = e.get_url().map(|u| !u.is_empty()).unwrap_or(false);
+    has_username || has_password || has_url
 }
 
 impl KeepassVault {
@@ -219,25 +274,26 @@ impl KeepassVault {
     }
 
     fn load_credentials(&self, grep: Option<&str>) -> Vec<Credential> {
+        let grep_lower = grep.map(|g| g.to_lowercase());
         NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
-            .map(Self::node_to_credential)
-            .filter(|cred| {
-                if let Some(grep) = &grep {
-                    let grep_lower = grep.to_lowercase();
-                    let service_lower = cred.service().to_lowercase();
-                    let username_lower = cred.username().to_lowercase();
-                    // Match against service, username, or combined "service:username"
-                    let combined = format!("{}:{}", service_lower, username_lower);
-                    if !service_lower.contains(&grep_lower)
-                        && !username_lower.contains(&grep_lower)
-                        && !combined.contains(&grep_lower)
-                    {
-                        return false;
-                    }
-                }
-                true
+            .filter(node_looks_like_credential)
+            .filter(|node| {
+                let Some(grep_lower) = &grep_lower else {
+                    return true;
+                };
+                let node = node.borrow();
+                let e = node.as_any().downcast_ref::<Entry>().unwrap();
+                let title = e.get_title().unwrap_or("").to_lowercase();
+                let url = e.get_url().unwrap_or("").to_lowercase();
+                let username = e.get_username().unwrap_or("").to_lowercase();
+                let combined = format!("{}:{}", url, username);
+                title.contains(grep_lower)
+                    || url.contains(grep_lower)
+                    || username.contains(grep_lower)
+                    || combined.contains(grep_lower)
             })
+            .map(Self::node_to_credential)
             .collect()
     }
 
@@ -261,19 +317,17 @@ impl KeepassVault {
     }
 
     fn load_payments(&self) -> Vec<PaymentCard> {
-        let payments_group_uuid = self.find_group("Payments").unwrap();
-        let payments_group = search_node_by_uuid(&self.get_root(), payments_group_uuid).unwrap();
-        NodeIterator::new(&payments_group)
+        NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
+            .filter(node_looks_like_payment)
             .map(Self::node_to_payment)
             .collect()
     }
 
     fn load_notes(&self) -> Vec<Note> {
-        let payments_group_uuid = self.find_group("Notes").unwrap();
-        let payments_group = search_node_by_uuid(&self.get_root(), payments_group_uuid).unwrap();
-        NodeIterator::new(&payments_group)
+        NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
+            .filter(node_looks_like_note)
             .map(Self::node_to_note)
             .collect()
     }
@@ -318,7 +372,10 @@ impl KeepassVault {
         let node = node.borrow();
         let e = node.as_any().downcast_ref::<Entry>().unwrap();
         let username = e.get_username().unwrap_or("(no username)");
-        let service = e.get_url().unwrap_or("(no service)");
+        let service = match e.get_url() {
+            Some(url) if !url.is_empty() => url,
+            _ => e.get_title().unwrap_or("(no service)"),
+        };
         let password = e.get_password().unwrap_or("(no password)");
         let note = e.get_notes()
             .map(|s| s.to_string())
