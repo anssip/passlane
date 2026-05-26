@@ -1,11 +1,13 @@
 use crate::vault::entities::{Credential, Error, Note, PaymentCard};
+use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::create_dir;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 impl From<csv::Error> for Error {
     fn from(e: csv::Error) -> Self {
@@ -53,15 +55,45 @@ fn dir_path() -> PathBuf {
     dir_path
 }
 
+#[derive(Debug, Deserialize)]
+struct CsvImportRow {
+    #[serde(alias = "url")]
+    service: String,
+    username: String,
+    password: String,
+    #[serde(default, alias = "guid")]
+    uuid: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    last_modified: Option<DateTime<Utc>>,
+}
+
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
-    let credentials = &mut Vec::new();
-    for result in reader.deserialize() {
-        credentials.push(result?);
+    let mut credentials = Vec::new();
+    for result in reader.deserialize::<CsvImportRow>() {
+        let row = result?;
+        if row.service.is_empty() && row.username.is_empty() && row.password.is_empty() {
+            continue;
+        }
+        let parsed_uuid = row
+            .uuid
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| Uuid::parse_str(s).ok());
+        credentials.push(Credential::new(
+            parsed_uuid.as_ref(),
+            &row.password,
+            &row.service,
+            &row.username,
+            row.note.as_deref(),
+            row.last_modified,
+        ));
     }
-    Ok(credentials.clone())
+    Ok(credentials)
 }
 
 fn read_from_file(path: &PathBuf) -> Option<String> {
@@ -247,5 +279,40 @@ mod tests {
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].note(), Some("shared login"));
+    }
+
+    #[test]
+    fn test_csv_import_firefox_format() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(
+            &path,
+            "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\",\"timeLastUsed\",\"timePasswordChanged\"\n\
+             \"https://example.com\",\"alice\",\"hunter2\",\"\",\"https://example.com\",\"d3f3c5b2-1234-4abc-9def-0123456789ab\",\"1700000000000\",\"1700000000000\",\"1700000000000\"\n",
+        )
+        .unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].service(), "https://example.com");
+        assert_eq!(imported[0].username(), "alice");
+        assert_eq!(imported[0].password(), "hunter2");
+    }
+
+    #[test]
+    fn test_csv_import_firefox_non_uuid_guid() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(
+            &path,
+            "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\",\"timeLastUsed\",\"timePasswordChanged\"\n\
+             \"https://example.com\",\"bob\",\"s3cret\",\"\",\"https://example.com\",\"{not-a-real-uuid}\",\"1700000000000\",\"1700000000000\",\"1700000000000\"\n",
+        )
+        .unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].service(), "https://example.com");
+        assert_eq!(imported[0].username(), "bob");
+        // A fresh uuid should have been generated since the guid was unparseable.
+        assert_eq!(imported[0].uuid().get_version_num(), 4);
     }
 }
