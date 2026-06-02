@@ -407,6 +407,19 @@ Next code in 30 seconds
 ...
 ```
 
+#### Getting a single code for scripts
+
+The interactive `show -o` above never exits on its own. For scripting, use `show -o --once <regexp>` to print the current code for the single matching authorizer to stdout and exit immediately — no clipboard, no countdown, no keypress:
+
+```bash
+passlane show -o --once braintree
+# 447091
+```
+
+It exits non-zero if no authorizer matches, or if more than one matches (it lists the matched labels instead of prompting). Codes are short-lived, so fetch them right before use.
+
+To get codes for one or more authorizers non-interactively, use `list -o --code` (see [Scripting and Automation](#scripting-and-automation) below).
+
 ### Import from CSV
 
 You can import credentials from a CSV file. With this approach, you can easily migrate from less elegant and often expensive commercial services.
@@ -484,12 +497,19 @@ passlane list --json
 # List specific entry types
 passlane list -p              # payment cards
 passlane list -n              # secure notes
-passlane list -o              # TOTP entries
+passlane list -o              # TOTP entries (stored secrets/config)
 passlane list -p --json       # payment cards as JSON
+
+# Generate the currently valid TOTP codes (not the stored secrets)
+passlane list -o --code              # plain text: label + current code
+passlane list -o --code braintree    # only authorizers matching the regex
+passlane list -o --code --json       # JSON envelope: type "totp_codes"
 
 # Verbose plain text (includes passwords)
 passlane list -v
 ```
+
+`list -o --code` outputs the *generated* code for each matching authorizer instead of the stored secret. The JSON form uses the envelope `{ "type": "totp_codes", "count": <n>, "entries": [{ "label", "issuer", "code", "valid_for_seconds" }] }`. The stored secret is never included in code output, and codes are valid only for `valid_for_seconds`, so fetch them right before use.
 
 #### Scripting Examples
 
@@ -518,6 +538,16 @@ Export to another format:
 
 ```bash
 passlane list --json | jq '.entries[] | {title: .service, username, password}' > export.json
+```
+
+Fetch a TOTP code to log in non-interactively:
+
+```bash
+# Single authorizer: print just the code and exit
+CODE=$(passlane show -o --once braintree)
+
+# Or pick a code out of the JSON envelope
+CODE=$(passlane list -o --code braintree --json | jq -r '.entries[0].code')
 ```
 
 ### Shell Completion

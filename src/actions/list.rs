@@ -28,12 +28,22 @@ impl<T: Serialize> ListOutput<T> {
     }
 }
 
+/// A generated TOTP code entry. Deliberately excludes the stored secret.
+#[derive(Serialize)]
+pub struct TotpCodeEntry {
+    pub label: String,
+    pub issuer: String,
+    pub code: String,
+    pub valid_for_seconds: u64,
+}
+
 pub struct ListAction {
     pub item_type: ItemType,
     pub search_pattern: Option<String>,
     pub json_output: bool,
     pub verbose: bool,
     pub is_totp: bool,
+    pub code: bool,
 }
 
 impl ListAction {
@@ -44,6 +54,7 @@ impl ListAction {
             json_output: matches.get_one::<bool>("json").map_or(false, |v| *v),
             verbose: matches.get_one::<bool>("verbose").map_or(false, |v| *v),
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
+            code: matches.get_one::<bool>("code").map_or(false, |v| *v),
         }
     }
 
@@ -79,12 +90,50 @@ impl ListAction {
 
     fn list_totp(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.find_totp(self.search_pattern.as_deref());
+        if self.code {
+            return self.list_totp_codes(&entries);
+        }
         if self.json_output {
             let output = ListOutput::new("totp", entries);
             Ok(Some(output.to_json()?))
         } else {
             Ok(Some(Self::format_totp_plain(&entries)))
         }
+    }
+
+    fn list_totp_codes(&self, entries: &[Totp]) -> Result<Option<String>, Error> {
+        let mut codes = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let code = entry.get_code()?;
+            codes.push(TotpCodeEntry {
+                label: entry.label().to_string(),
+                issuer: entry.issuer().to_string(),
+                code: code.value,
+                valid_for_seconds: code.valid_for_seconds,
+            });
+        }
+        if self.json_output {
+            let output = ListOutput::new("totp_codes", codes);
+            Ok(Some(output.to_json()?))
+        } else {
+            Ok(Some(Self::format_totp_codes_plain(&codes)))
+        }
+    }
+
+    fn format_totp_codes_plain(entries: &[TotpCodeEntry]) -> String {
+        let count = entries.len();
+        if count == 0 {
+            return "Found 0 TOTP entries.".to_string();
+        }
+        let mut lines = vec![format!("Found {} TOTP entries:", count)];
+        for entry in entries {
+            lines.push(String::new());
+            lines.push(format!("Label: {}", entry.label));
+            lines.push(format!("Issuer: {}", entry.issuer));
+            lines.push(format!("Code: {}", entry.code));
+            lines.push(format!("Valid for: {} seconds", entry.valid_for_seconds));
+        }
+        lines.join("\n")
     }
 
     fn format_credentials_plain(entries: &[Credential], verbose: bool) -> String {
@@ -385,5 +434,64 @@ mod tests {
     fn test_format_totp_plain_empty() {
         let result = ListAction::format_totp_plain(&[]);
         assert_eq!(result, "Found 0 TOTP entries.");
+    }
+
+    #[test]
+    fn test_format_totp_codes_plain() {
+        let entries = vec![TotpCodeEntry {
+            label: "user@test.com".to_string(),
+            issuer: "GitHub".to_string(),
+            code: "123456".to_string(),
+            valid_for_seconds: 17,
+        }];
+        let result = ListAction::format_totp_codes_plain(&entries);
+        assert!(result.contains("Found 1 TOTP entries:"));
+        assert!(result.contains("Label: user@test.com"));
+        assert!(result.contains("Issuer: GitHub"));
+        assert!(result.contains("Code: 123456"));
+        assert!(result.contains("Valid for: 17 seconds"));
+        // The stored secret must never appear in code output.
+        assert!(!result.contains("Secret"));
+    }
+
+    #[test]
+    fn test_format_totp_codes_plain_empty() {
+        let result = ListAction::format_totp_codes_plain(&[]);
+        assert_eq!(result, "Found 0 TOTP entries.");
+    }
+
+    #[test]
+    fn test_totp_codes_json_envelope() {
+        let entries = vec![
+            TotpCodeEntry {
+                label: "a@test.com".to_string(),
+                issuer: "GitHub".to_string(),
+                code: "111111".to_string(),
+                valid_for_seconds: 30,
+            },
+            TotpCodeEntry {
+                label: "b@test.com".to_string(),
+                issuer: "GitLab".to_string(),
+                code: "222222".to_string(),
+                valid_for_seconds: 12,
+            },
+        ];
+        let output = ListOutput::new("totp_codes", entries);
+        let json = output.to_json().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "totp_codes");
+        assert_eq!(parsed["count"], 2);
+        let arr = parsed["entries"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        for entry in arr {
+            assert!(entry.get("label").is_some());
+            assert!(entry.get("issuer").is_some());
+            assert!(entry.get("code").is_some());
+            assert!(entry.get("valid_for_seconds").is_some());
+            // The stored secret must never be serialized in code output.
+            assert!(entry.get("secret").is_none());
+        }
+        assert_eq!(arr[0]["code"], "111111");
+        assert_eq!(arr[1]["valid_for_seconds"], 12);
     }
 }

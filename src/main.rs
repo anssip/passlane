@@ -114,6 +114,9 @@ pub fn cli() -> Command {
                 .arg(arg!(
                     --plain "Render tables without borders for narrower output."
                 ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    --once "With -o, print the single matching OTP code to stdout and exit (no clipboard, no countdown). Errors if zero or multiple authorizers match. The code is valid only briefly."
+                ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))
                 .arg_required_else_help(true)
         )
@@ -137,6 +140,9 @@ pub fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     -c --credentials "List credentials (default)."
+                ).action(ArgAction::SetTrue))
+                .arg(arg!(
+                    --code "With -o, output the currently generated TOTP code for each match instead of the stored secret. Codes are valid only briefly (see valid_for_seconds)."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "Regular expression to filter entries.").required(false))
         )

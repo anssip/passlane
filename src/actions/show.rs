@@ -282,6 +282,7 @@ pub struct ShowAction {
     pub is_totp: bool,
     pub stdout_only: bool,
     pub plain: bool,
+    pub once: bool,
 }
 
 impl ShowAction {
@@ -293,6 +294,35 @@ impl ShowAction {
             is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
             stdout_only: matches.get_one::<bool>("out").map_or(false, |v| *v),
             plain: matches.get_one::<bool>("plain").map_or(false, |v| *v),
+            once: matches.get_one::<bool>("once").map_or(false, |v| *v),
+        }
+    }
+
+    /// One-shot TOTP code retrieval: print the single matching code to stdout
+    /// and return. Errors (non-zero exit) on zero or multiple matches. No
+    /// clipboard, no countdown, no keyboard wait.
+    fn show_totp_once(&self, matches: Vec<Totp>) -> Result<Option<String>, Error> {
+        match matches.len() {
+            1 => {
+                let code = matches[0].get_code()?;
+                Ok(Some(code.value))
+            }
+            0 => Err(Error {
+                message: "No matching OTP authorizer found.".to_string(),
+            }),
+            _ => {
+                let labels = matches
+                    .iter()
+                    .map(|t| t.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(Error {
+                    message: format!(
+                        "Multiple OTP authorizers match: {}. Refine the search pattern to match exactly one.",
+                        labels
+                    ),
+                })
+            }
         }
     }
 }
@@ -336,10 +366,70 @@ impl UnlockingAction for ShowAction {
                     plain: self.plain,
                 }),
             ),
-            ItemType::Totp => handle_matches(
-                vault.find_totp(self.grep.as_deref()),
-                &mut Box::new(ShowTotpTemplate { plain: self.plain }),
-            ),
+            ItemType::Totp => {
+                let matches = vault.find_totp(self.grep.as_deref());
+                if self.once {
+                    self.show_totp_once(matches)
+                } else {
+                    handle_matches(matches, &mut Box::new(ShowTotpTemplate { plain: self.plain }))
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn totp(label: &str) -> Totp {
+        Totp::new(
+            Some(&Uuid::nil()),
+            "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+            label,
+            "GitHub",
+            "JBSWY3DPEHPK3PXP",
+            "SHA1",
+            30,
+            6,
+            None,
+        )
+    }
+
+    fn once_action() -> ShowAction {
+        ShowAction {
+            grep: None,
+            verbose: false,
+            item_type: ItemType::Totp,
+            is_totp: true,
+            stdout_only: false,
+            plain: false,
+            once: true,
+        }
+    }
+
+    #[test]
+    fn test_show_totp_once_single_match_prints_code() {
+        let result = once_action().show_totp_once(vec![totp("a@test.com")]);
+        let code = result.expect("expected a code").expect("expected Some(code)");
+        // A current TOTP code is a non-empty numeric string.
+        assert!(!code.is_empty());
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_show_totp_once_no_match_errors() {
+        let result = once_action().show_totp_once(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_show_totp_once_multiple_matches_errors_with_labels() {
+        let result =
+            once_action().show_totp_once(vec![totp("a@test.com"), totp("b@test.com")]);
+        let err = result.expect_err("expected an error on multiple matches");
+        assert!(err.message.contains("a@test.com"));
+        assert!(err.message.contains("b@test.com"));
     }
 }
