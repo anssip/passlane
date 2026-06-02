@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.0]
+
+- Add scriptable, non-interactive TOTP code retrieval: `passlane list -o --code` prints the current codes (with `valid_for_seconds` in `--json`) and `passlane show -o --once` prints a single matching code to stdout for use in scripts
+- Add a Claude agent skill (`.claude/skills/passlane`) that teaches an AI agent how to use passlane in automations, such as programmatically logging into websites and APIs
+
 ## [3.0.2]
 
 - Accept Firefox-exported CSV in `passlane csv` import
