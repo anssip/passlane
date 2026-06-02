@@ -1,2 +1,3 @@
 .cargo/config.toml
 /target
+.claude/settings.local.json

@@ -42,6 +42,7 @@ Passlane is written in Rust.
   - [Import from CSV](#import-from-csv)
   - [Export to CSV](#export-to-csv)
   - [Scripting and Automation](#scripting-and-automation)
+    - [AI Agent Skill](#ai-agent-skill)
   - [Shell Completion](#shell-completion)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
@@ -549,6 +550,27 @@ CODE=$(passlane show -o --once braintree)
 # Or pick a code out of the JSON envelope
 CODE=$(passlane list -o --code braintree --json | jq -r '.entries[0].code')
 ```
+
+#### AI Agent Skill
+
+Passlane ships with a **Claude Agent Skill** that teaches an AI agent how to drive these scripting
+features — fetching credentials, generating TOTP codes, and wiring them into website/API login
+automations. The skill lives in [`.claude/skills/passlane/`](.claude/skills/passlane/) (also
+reachable via the top-level `skills/` symlink).
+
+Install it into your own agent by copying the folder into your skills directory:
+
+```bash
+# User-level (available to all your projects)
+cp -r /path/to/passlane/.claude/skills/passlane ~/.claude/skills/
+
+# Or project-level
+cp -r /path/to/passlane/.claude/skills/passlane <your-project>/.claude/skills/
+```
+
+The agent can only read your vault non-interactively while it is unlocked — run `passlane unlock`
+(and `passlane unlock -o` for TOTP codes) first, since there is no way to supply the master password
+unattended.
 
 ### Shell Completion
 
