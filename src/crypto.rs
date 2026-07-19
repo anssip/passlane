@@ -73,14 +73,16 @@ mod tests {
 
     #[test]
     fn random_char_reaches_last_character() {
-        // (25/26)^2000 ≈ 4e-34 — effectively impossible to miss 'z' by chance.
-        let mut rng = thread_rng();
+        use rand::{rngs::StdRng, SeedableRng};
+        // Seeded so the run is deterministic; 2000 draws cover all 26 chars.
+        let mut rng = StdRng::seed_from_u64(42);
         assert!((0..2000).any(|_| random_char(&mut rng, LOW_CASE) == 'z'));
     }
 
     #[test]
     fn random_char_handles_multibyte_charsets() {
-        let mut rng = thread_rng();
+        use rand::{rngs::StdRng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(42);
         for _ in 0..500 {
             let c = random_char(&mut rng, SPECIAL);
             assert!(SPECIAL.contains(c));
