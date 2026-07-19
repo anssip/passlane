@@ -612,6 +612,15 @@ pub fn ask_store_master_password() -> bool {
     .unwrap()
 }
 
+pub fn ask_store_totp_master_password() -> bool {
+    Confirm::new(
+        "Store the TOTP vault's master password in keychain? You can also save it later using the 'unlock -o' command.",
+    )
+    .with_default(true)
+    .prompt()
+    .unwrap()
+}
+
 pub fn ask_open_existing_vault() -> bool {
     Select::new(
         "Do you want to create a new vault or open an existing one?",

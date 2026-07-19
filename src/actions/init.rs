@@ -4,7 +4,7 @@ use crate::store;
 use crate::ui::input::{
     ask_existing_path, ask_keyfile_path, ask_new_master_password, ask_new_totp_master_password,
     ask_open_existing_totp_vault, ask_open_existing_vault, ask_store_master_password,
-    ask_totp_vault_path, ask_vault_path, newline,
+    ask_store_totp_master_password, ask_totp_vault_path, ask_vault_path, newline,
 };
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
@@ -34,7 +34,7 @@ impl Action for InitAction {
         if is_new_totp_vault {
             println!("Initializing new TOTP vault...");
             let totp_master_pwd = ask_new_totp_master_password();
-            if ask_store_master_password() {
+            if ask_store_totp_master_password() {
                 keychain::save_totp_master_password(&totp_master_pwd)?;
             }
             self.create_keepass_vault(&totp_vault_location, &totp_master_pwd, None)?;
