@@ -34,10 +34,11 @@ impl Action for InitAction {
         if is_new_totp_vault {
             println!("Initializing new TOTP vault...");
             let totp_master_pwd = ask_new_totp_master_password();
-            if ask_store_totp_master_password() {
+            let store_totp_pwd = ask_store_totp_master_password();
+            self.create_keepass_vault(&totp_vault_location, &totp_master_pwd, None)?;
+            if store_totp_pwd {
                 keychain::save_totp_master_password(&totp_master_pwd)?;
             }
-            self.create_keepass_vault(&totp_vault_location, &totp_master_pwd, None)?;
         }
 
         Ok(String::from("Initialized"))
