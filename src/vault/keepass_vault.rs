@@ -209,10 +209,15 @@ impl KeepassVault {
         self.save_atomically(key)
     }
 
-    pub fn change_master_password(&mut self, new_password: String) -> Result<(), Error> {
-        let key = Self::build_key(&new_password, &self.keyfile)?;
-        debug!("Re-encrypting database '{}' with new master password", &self.filepath);
-        self.save_atomically(key)?;
+    pub fn change_master_password(&mut self, mut new_password: String) -> Result<(), Error> {
+        let result = Self::build_key(&new_password, &self.keyfile).and_then(|key| {
+            debug!("Re-encrypting database '{}' with new master password", &self.filepath);
+            self.save_atomically(key)
+        });
+        if let Err(e) = result {
+            new_password.zeroize();
+            return Err(e);
+        }
         let mut old_password = std::mem::replace(&mut self.password, new_password);
         old_password.zeroize();
         Ok(())
