@@ -278,8 +278,8 @@ impl Display for Totp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "label: {}, issuer: {}, secret: {}, algo: {}, digits: {}",
-            self.label, self.issuer, self.secret, self.algorithm, self.digits
+            "label: {}, issuer: {}, algo: {}, digits: {}",
+            self.label, self.issuer, self.algorithm, self.digits
         )
     }
 }
@@ -294,7 +294,7 @@ impl Totp {
         let totp = TOTP::from_str(&self.url)
             .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
 
-        debug!("Getting code for totp: {}", totp);
+        debug!("Getting code for totp: {}", totp.label);
         let code = totp.value_now()?;
         Ok(TotpCode {
             value: code.code,

@@ -83,7 +83,11 @@ fn node_has_totp(node: &NodePtr) -> bool {
     let node = node.borrow();
     let e = node.as_any().downcast_ref::<Entry>().unwrap();
     let raw = e.get_raw_otp_value();
-    debug!("Checking node for TOTP: {:?} raw={:?}", e.get_title(), raw);
+    debug!(
+        "Checking node for TOTP: {:?} has_otp={}",
+        e.get_title(),
+        raw.is_some()
+    );
     match raw {
         Some(url) => TOTP::from_str(&normalize_otp_url(url)).is_ok(),
         None => false,
