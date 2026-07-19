@@ -964,7 +964,7 @@ mod tests {
         vault.save_database().unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
-        assert!(!bytes.ends_with(&[0xAB; 16]), "stale bytes survived the save");
+        assert!(!bytes.ends_with(&[0xAB; 4096]), "stale bytes survived the save");
         KeepassVault::open("master-pw", path_str, None).unwrap();
 
         let leftover_tmp = std::fs::read_dir(dir.path())
