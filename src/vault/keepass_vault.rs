@@ -9,8 +9,9 @@ use keepass_ng::error::DatabaseSaveError;
 use keepass_ng::{error::DatabaseOpenError, DatabaseConfig, DatabaseKey};
 
 use log::debug;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -219,10 +220,9 @@ impl KeepassVault {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("vault.kdbx");
-        let tmp_path = dir.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+        let (mut tmp, tmp_path) = Self::create_temp_file(&dir, file_name)?;
 
         let result = (|| -> Result<(), Error> {
-            let mut tmp = File::create(&tmp_path)?;
             if let Ok(meta) = std::fs::metadata(path) {
                 std::fs::set_permissions(&tmp_path, meta.permissions())?;
             }
@@ -242,6 +242,33 @@ impl KeepassVault {
             let _ = dir_handle.sync_all();
         }
         Ok(())
+    }
+
+    /// Create a temp file for the atomic save with `create_new` (O_EXCL), so an
+    /// existing file or symlink at the path is never followed or clobbered. The
+    /// pid + counter suffix keeps concurrent saves from colliding; owner-only
+    /// permissions apply until the original vault's permissions are copied over.
+    fn create_temp_file(dir: &Path, file_name: &str) -> Result<(File, PathBuf), Error> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        for _ in 0..100 {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = dir.join(format!(".{}.{}.{}.tmp", file_name, std::process::id(), n));
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&tmp_path) {
+                Ok(f) => return Ok((f, tmp_path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(Error {
+            message: format!("could not create temporary file for '{}'", file_name),
+        })
     }
 
     fn build_key(password: &str, keyfile: &Option<String>) -> Result<DatabaseKey, Error> {
