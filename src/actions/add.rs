@@ -56,9 +56,10 @@ impl AddAction {
         let mut vault = self.get_vault()?;
         vault.save_one_credential(creds.clone())?;
         completion_cache::update_cache(&vault);
+        println!("Password saved.");
         println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
         copy_to_clipboard_timed(&password, 20);
-        Ok("Password saved.".to_string())
+        Ok(String::new())
     }
     fn add_payment(&self) -> Result<String, Error> {
         let payment = ui::input::ask_payment_info();
