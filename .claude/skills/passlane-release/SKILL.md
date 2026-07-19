@@ -1,6 +1,6 @@
 ---
 name: passlane-release
-description: Publish a new version of passlane — determine the next semantic version, update CHANGELOG.md and Cargo.toml, commit, and create the git tag (vX.Y.Z) that triggers the GitHub release build. Use when the user wants to release, publish, ship, cut, or tag a new version of passlane, or bump its version.
+description: Publish a new version of passlane — determine the next semantic version, update CHANGELOG.md and Cargo.toml, commit, create the git tag (vX.Y.Z) that triggers the GitHub release build, and publish to crates.io once the build succeeds. Use when the user wants to release, publish, ship, cut, or tag a new version of passlane, or bump its version.
 allowed-tools: Bash(git:*), Bash(cargo:*), Bash(gh:*), Read, Edit
 ---
 
@@ -11,7 +11,7 @@ matching `v[0-9]+.*` triggers `.github/workflows/release.yml`, which creates a G
 notes parsed from `CHANGELOG.md`) and builds + uploads binaries for macOS, Windows, and Linux.
 
 So a release is: pick the next version → update `CHANGELOG.md` and `Cargo.toml` → commit → tag
-`vX.Y.Z` → push the tag. CI does the rest.
+`vX.Y.Z` → push the tag → CI builds the GitHub Release → publish to crates.io.
 
 Work through the steps below in order. **Pushing the tag publishes a public release and starts
 binary builds — confirm with the user before that step.**
@@ -125,6 +125,20 @@ gh release view vX.Y.Z
 If the workflow fails, report what failed — the tag is already public, so fixes go in a follow-up
 patch release rather than by re-tagging.
 
+## 10. Publish to crates.io
+
+**Only after the GitHub release workflow has completed successfully** (step 9) — if the build
+failed, the fix lands in a follow-up patch release, and publishing the broken version to crates.io
+would just spread it (crates.io versions cannot be replaced, only yanked).
+
+```bash
+cargo publish
+```
+
+`cargo publish` re-verifies the package by building it before uploading, so this also serves as a
+final sanity check. If it fails on authentication, the user needs to run `cargo login` themselves —
+don't ask for the token.
+
 ## Quick reference
 
 | Step | Command |
@@ -134,3 +148,4 @@ patch release rather than by re-tagging.
 | Tag | `git tag vX.Y.Z` |
 | Publish | `git push origin master && git push origin vX.Y.Z` |
 | Watch build | `gh run watch` |
+| Publish to crates.io (after CI succeeds) | `cargo publish` |
