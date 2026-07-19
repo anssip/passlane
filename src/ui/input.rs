@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(totp.issuer, "Foo & Bar Inc");
         assert_eq!(totp.algorithm.to_string(), "SHA512");
         assert_eq!(totp.period, 60);
-        assert_eq!(totp.label, "My%20Service:user@example.com");
+        assert!(url.starts_with("otpauth://totp/My%20Service:user@example.com?"));
         // Base32 padding must stay literal so vault-side secret
         // normalization sees real '=' characters, not %3D.
         assert!(url.contains("secret=GEZDGNBVGY======"));
