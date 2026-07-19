@@ -155,11 +155,31 @@ pub(crate) fn get_totp_vault_path() -> String {
     resolve_vault_path("totp.kdbx", ".totp_vault_path")
 }
 
+/// Create (or truncate) a file that will hold sensitive data, restricting it
+/// to owner-only access (0o600). Existing files get their permissions
+/// tightened too, since they are about to receive fresh sensitive content.
+pub(crate) fn create_private_file(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 pub(crate) fn write_credentials_to_csv(
     file_path: &str,
     creds: &Vec<Credential>,
 ) -> Result<i64, Error> {
-    let mut wtr = Writer::from_path(file_path)?;
+    let mut wtr = Writer::from_writer(create_private_file(file_path)?);
     for cred in creds {
         wtr.serialize(cred)?;
     }
@@ -171,7 +191,7 @@ pub(crate) fn write_payment_cards_to_csv(
     file_path: &str,
     cards: &Vec<PaymentCard>,
 ) -> Result<i64, Error> {
-    let mut wtr = Writer::from_path(file_path)?;
+    let mut wtr = Writer::from_writer(create_private_file(file_path)?);
     for card in cards {
         wtr.serialize(CSVPaymentCard {
             name: String::from(card.name()),
@@ -194,7 +214,7 @@ pub(crate) fn write_payment_cards_to_csv(
 }
 
 pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> Result<i64, Error> {
-    let mut wtr = Writer::from_path(file_path)?;
+    let mut wtr = Writer::from_writer(create_private_file(file_path)?);
     for note in notes {
         wtr.serialize(CSVSecureNote {
             title: note.title().to_string(),
@@ -250,6 +270,31 @@ mod tests {
     use super::*;
     use crate::vault::entities::Credential;
     use tempfile::NamedTempFile;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_csv_export_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", None, None);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        // Pre-existing file with loose permissions must be tightened on export
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_create_private_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.csv");
+        create_private_file(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     #[test]
     fn test_csv_export_includes_note() {

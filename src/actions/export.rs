@@ -40,6 +40,13 @@ impl ExportAction {
 
 impl UnlockingAction for ExportAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
-        self.export_csv(vault).map(|count| format!("Exported {} entries", count)).map(Some)
+        let count = self.export_csv(vault)?;
+        if count > 0 {
+            eprintln!(
+                "Warning: '{}' contains your secrets in plaintext. Store it safely and delete it when done.",
+                self.file_path
+            );
+        }
+        Ok(Some(format!("Exported {} entries", count)))
     }
 }
