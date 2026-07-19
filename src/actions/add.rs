@@ -28,7 +28,7 @@ impl AddAction {
             .get_contents()
             .expect("Unable to retrieve value from clipboard");
         if !crypto::validate_password(&value) {
-            Error::new("The text in clipboard is not a valid password");
+            return Err(Error::new("The text in clipboard is not a valid password"));
         }
         Ok(value)
     }
