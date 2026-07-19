@@ -10,6 +10,7 @@ use rustyline_derive::Helper;
 
 use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
 use inquire::{Confirm, CustomType, Password, Select, Text};
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 #[derive(Helper)]
 struct MultilineHelper {
@@ -426,6 +427,30 @@ pub(crate) fn ask_note_info() -> Note {
     Note::new(None, &title, &content, None)
 }
 
+/// Query values are percent-decoded by otpauth parsers; the label is a URL
+/// path segment where ':' and '@' are legal, so those stay readable.
+const TOTP_URL_QUERY: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+/// The secret keeps '=' literal: it is base32 padding, and the vault-side
+/// normalize_otp_url re-pads the raw secret substring, so encoding it as
+/// %3D would make that normalization append bogus padding.
+const TOTP_URL_SECRET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'=');
+const TOTP_URL_LABEL: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b':')
+    .remove(b'@');
+
 fn format_totp_url(
     label: &str,
     secret: &str,
@@ -435,8 +460,13 @@ fn format_totp_url(
     digits: u32,
 ) -> String {
     format!(
-        "otpauth://totp/{}?secret={}&issuer={}&period={}&alorithm={}&digits={}",
-        label, secret, &issuer, period, algo, digits
+        "otpauth://totp/{}?secret={}&issuer={}&period={}&algorithm={}&digits={}",
+        utf8_percent_encode(label, TOTP_URL_LABEL),
+        utf8_percent_encode(secret, TOTP_URL_SECRET),
+        utf8_percent_encode(issuer, TOTP_URL_QUERY),
+        period,
+        algo,
+        digits
     )
 }
 
@@ -649,6 +679,43 @@ pub fn ask_with_options(question: &str, options: Vec<&str>) -> String {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn totp_url_preserves_algorithm() {
+        use keepass_ng::db::TOTP;
+        use std::str::FromStr;
+
+        let url = format_totp_url("GitHub:user", "JBSWY3DPEHPK3PXP", "GitHub", 30, "SHA256", 8);
+        let totp = TOTP::from_str(&url).expect("generated otpauth URL must parse");
+        assert_eq!(totp.algorithm.to_string(), "SHA256");
+        assert_eq!(totp.issuer, "GitHub");
+        assert_eq!(totp.period, 30);
+        assert_eq!(totp.digits, 8);
+    }
+
+    #[test]
+    fn totp_url_percent_encodes_components() {
+        use keepass_ng::db::TOTP;
+        use std::str::FromStr;
+
+        let url = format_totp_url(
+            "My Service:user@example.com",
+            "GEZDGNBVGY======",
+            "Foo & Bar Inc",
+            60,
+            "SHA512",
+            6,
+        );
+        // '&', '=' and spaces must not corrupt the query string.
+        let totp = TOTP::from_str(&url).expect("generated otpauth URL must parse");
+        assert_eq!(totp.issuer, "Foo & Bar Inc");
+        assert_eq!(totp.algorithm.to_string(), "SHA512");
+        assert_eq!(totp.period, 60);
+        assert!(url.starts_with("otpauth://totp/My%20Service:user@example.com?"));
+        // Base32 padding must stay literal so vault-side secret
+        // normalization sees real '=' characters, not %3D.
+        assert!(url.contains("secret=GEZDGNBVGY======"));
+    }
 
     #[test]
     fn test_ask_master_password_prompts_once() {
