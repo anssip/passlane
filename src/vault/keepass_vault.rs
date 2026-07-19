@@ -293,11 +293,21 @@ impl KeepassVault {
         password: &str,
         keyfile: &Option<String>,
     ) -> Result<Database, Error> {
-        if !Path::new(filepath).exists() {
-            return Err(Error::new(&format!(
-                "Vault file '{}' does not exist. If the vault is on a synced or mounted drive, make sure it is available. To create a new vault, run 'passlane init'.",
-                filepath
-            )));
+        match std::fs::metadata(filepath) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::new(&format!(
+                    "Vault file '{}' does not exist. If the vault is on a synced or mounted drive, make sure it is available. To create a new vault, run 'passlane init'.",
+                    filepath
+                )));
+            }
+            Err(e) => return Err(e.into()),
+            Ok(meta) if !meta.is_file() => {
+                return Err(Error::new(&format!(
+                    "Vault path '{}' is not a regular file.",
+                    filepath
+                )));
+            }
+            Ok(_) => {}
         }
         let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
         let mut db = Database::open(&mut db_file, key)?;
