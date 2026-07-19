@@ -45,6 +45,7 @@ Passlane is written in Rust.
     - [AI Agent Skill](#ai-agent-skill)
   - [Shell Completion](#shell-completion)
 - [Syncing data to your devices](#syncing-data-to-your-devices)
+- [Security](#security)
 - [Other Keepass compatible applications](#other-keepass-compatible-applications)
 
 ## Interactive Mode (REPL)
@@ -664,6 +665,16 @@ For example, this shows how John has stored the path `/Users/john/Dropbox/Stuff/
 ➜  ~ cat ~/.passlane/.vault_path
 /Users/john/Dropbox/Stuff/store.kdbx
 ```
+
+## Security
+
+In July 2026 the full codebase went through a security audit, performed with Claude Fable 5,
+covering cryptography, secret handling, vault file I/O, file permissions, logging, and
+dependencies. The audit found 9 issues —
+3 high, 3 medium, and 3 low severity — plus a handful of informational hardening recommendations.
+All of them have been fixed.
+
+The full report is available in [docs/security-audit-2026-07-19.md](docs/security-audit-2026-07-19.md).
 
 ## Other Keepass compatible applications
 

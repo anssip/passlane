@@ -1,4 +1,3 @@
 .cargo/config.toml
 /target
 .claude/settings.local.json
-SECURITY_AUDIT.md
