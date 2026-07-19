@@ -35,12 +35,22 @@ impl Action for InitAction {
             println!("Initializing new TOTP vault...");
             let totp_master_pwd = ask_new_totp_master_password();
             let store_totp_pwd = ask_store_totp_master_password();
-            let totp_keyfile = store::get_totp_keyfile_path();
+            // The keyfile chosen during init protects both vaults: share it with
+            // the TOTP vault unless a TOTP-specific keyfile is already configured.
+            let configured_totp_keyfile = store::get_totp_keyfile_path();
+            let totp_keyfile = configured_totp_keyfile
+                .clone()
+                .or_else(|| keyfile_location.clone());
             self.create_keepass_vault(
                 &totp_vault_location,
                 &totp_master_pwd,
                 totp_keyfile.as_deref(),
             )?;
+            if configured_totp_keyfile.is_none() {
+                if let Some(keyfile) = &totp_keyfile {
+                    store::save_totp_keyfile_path(keyfile)?;
+                }
+            }
             if store_totp_pwd {
                 keychain::save_totp_master_password(&totp_master_pwd)?;
             }
