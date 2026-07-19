@@ -614,7 +614,7 @@ pub fn ask_store_master_password() -> bool {
 
 pub fn ask_store_totp_master_password() -> bool {
     Confirm::new(
-        "Store the TOTP vault's master password in keychain? You can also save it later using the 'unlock -o' command.",
+        "Store the TOTP vault's master password in keychain? You can also save it later by unlocking the TOTP vault ('unlock -o' from the CLI, 'unlock otp' in the REPL).",
     )
     .with_default(true)
     .prompt()
