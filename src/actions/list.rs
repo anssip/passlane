@@ -97,7 +97,7 @@ impl ListAction {
             let output = ListOutput::new("totp", entries);
             Ok(Some(output.to_json()?))
         } else {
-            Ok(Some(Self::format_totp_plain(&entries)))
+            Ok(Some(Self::format_totp_plain(&entries, self.verbose)))
         }
     }
 
@@ -196,7 +196,7 @@ impl ListAction {
         lines.join("\n")
     }
 
-    fn format_totp_plain(entries: &[Totp]) -> String {
+    fn format_totp_plain(entries: &[Totp], verbose: bool) -> String {
         let count = entries.len();
         if count == 0 {
             return "Found 0 TOTP entries.".to_string();
@@ -206,7 +206,9 @@ impl ListAction {
             lines.push(String::new());
             lines.push(format!("Label: {}", entry.label()));
             lines.push(format!("Issuer: {}", entry.issuer()));
-            lines.push(format!("Secret: {}", entry.secret()));
+            if verbose {
+                lines.push(format!("Secret: {}", entry.secret()));
+            }
             lines.push(format!("Last Modified: {}", entry.last_modified()));
         }
         lines.join("\n")
@@ -406,15 +408,26 @@ mod tests {
     }
 
     #[test]
-    fn test_format_totp_plain() {
+    fn test_format_totp_plain_non_verbose() {
         let totp = Totp::new(
             None, "otpauth://totp/test", "user@test.com", "GitHub",
             "JBSWY3DPEHPK3PXP", "SHA1", 30, 6, None,
         );
-        let result = ListAction::format_totp_plain(&[totp]);
+        let result = ListAction::format_totp_plain(&[totp], false);
         assert!(result.contains("Found 1 TOTP entries:"));
         assert!(result.contains("Label: user@test.com"));
         assert!(result.contains("Issuer: GitHub"));
+        assert!(!result.contains("Secret:"));
+        assert!(!result.contains("JBSWY3DPEHPK3PXP"));
+    }
+
+    #[test]
+    fn test_format_totp_plain_verbose() {
+        let totp = Totp::new(
+            None, "otpauth://totp/test", "user@test.com", "GitHub",
+            "JBSWY3DPEHPK3PXP", "SHA1", 30, 6, None,
+        );
+        let result = ListAction::format_totp_plain(&[totp], true);
         assert!(result.contains("Secret: JBSWY3DPEHPK3PXP"));
     }
 
@@ -432,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_format_totp_plain_empty() {
-        let result = ListAction::format_totp_plain(&[]);
+        let result = ListAction::format_totp_plain(&[], false);
         assert_eq!(result, "Found 0 TOTP entries.");
     }
 
