@@ -337,6 +337,11 @@ pub fn ask_new_master_password() -> String {
     ask_new_master_password_with(|q| ask_password(q, None))
 }
 
+pub fn ask_new_totp_master_password() -> String {
+    println!("Choose a master password for the One Time Passwords vault");
+    ask_new_master_password_with(|q| ask_password(q, None))
+}
+
 pub(crate) fn ask_totp_master_password() -> String {
     ask_password(
         "Please enter master password of the One Time Passwords vault",
