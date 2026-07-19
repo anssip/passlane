@@ -293,12 +293,21 @@ impl KeepassVault {
         password: &str,
         keyfile: &Option<String>,
     ) -> Result<Database, Error> {
-        if !Path::new(filepath).exists() {
-            debug!(
-                "Database file '{}' does not exist, creating new database",
-                filepath
-            );
-            return Ok(Database::new(DatabaseConfig::default()));
+        match std::fs::metadata(filepath) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::new(&format!(
+                    "Vault file '{}' does not exist. If the vault is on a synced or mounted drive, make sure it is available. To create a new vault, run 'passlane init'.",
+                    filepath
+                )));
+            }
+            Err(e) => return Err(e.into()),
+            Ok(meta) if !meta.is_file() => {
+                return Err(Error::new(&format!(
+                    "Vault path '{}' is not a regular file.",
+                    filepath
+                )));
+            }
+            Ok(_) => {}
         }
         let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
         let mut db = Database::open(&mut db_file, key)?;
@@ -949,6 +958,21 @@ mod tests {
         let url = "otpauth://totp/braintree:api@iki.fi?secret=ue5u4t4fzitipzo2&issuer=braintree&period=30&alorithm=SHA1&digits=6";
         let parsed: Result<TOTP, _> = normalize_otp_url(url).parse();
         assert!(parsed.is_ok(), "expected parse to succeed, got {:?}", parsed.err());
+    }
+
+    #[test]
+    fn open_missing_vault_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let result = KeepassVault::open("any-password", path_str, None);
+        let err = result.err().expect("opening a missing vault file must fail");
+        assert!(
+            err.message.contains("does not exist"),
+            "unexpected error message: {}",
+            err.message
+        );
     }
 
     #[test]

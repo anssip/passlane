@@ -337,6 +337,11 @@ pub fn ask_new_master_password() -> String {
     ask_new_master_password_with(|q| ask_password(q, None))
 }
 
+pub fn ask_new_totp_master_password() -> String {
+    println!("Choose a master password for the One Time Passwords vault");
+    ask_new_master_password_with(|q| ask_password(&format!("{} (TOTP vault)", q), None))
+}
+
 pub(crate) fn ask_totp_master_password() -> String {
     ask_password(
         "Please enter master password of the One Time Passwords vault",
@@ -601,6 +606,15 @@ pub fn newline() {
 pub fn ask_store_master_password() -> bool {
     Confirm::new(
         "Store master password in keychain? You can also save it later using the 'unlock' command.",
+    )
+    .with_default(true)
+    .prompt()
+    .unwrap()
+}
+
+pub fn ask_store_totp_master_password() -> bool {
+    Confirm::new(
+        "Store the TOTP vault's master password in keychain? You can also save it later by unlocking the TOTP vault ('unlock -o' from the CLI, 'unlock otp' in the REPL).",
     )
     .with_default(true)
     .prompt()

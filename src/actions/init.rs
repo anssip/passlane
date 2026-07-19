@@ -2,9 +2,9 @@ use crate::actions::Action;
 use crate::keychain;
 use crate::store;
 use crate::ui::input::{
-    ask_existing_path, ask_keyfile_path, ask_new_master_password, ask_open_existing_totp_vault,
-    ask_open_existing_vault, ask_store_master_password, ask_totp_vault_path, ask_vault_path,
-    newline,
+    ask_existing_path, ask_keyfile_path, ask_new_master_password, ask_new_totp_master_password,
+    ask_open_existing_totp_vault, ask_open_existing_vault, ask_store_master_password,
+    ask_store_totp_master_password, ask_totp_vault_path, ask_vault_path, newline,
 };
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
@@ -18,7 +18,7 @@ impl Action for InitAction {
         let (vault_location, is_new_vault) = self.initialize_vault()?;
         newline();
 
-        self.initialize_totp_vault()?;
+        let (totp_vault_location, is_new_totp_vault) = self.initialize_totp_vault()?;
         newline();
 
         let keyfile_location = self.init_keyfile()?;
@@ -29,6 +29,31 @@ impl Action for InitAction {
         if is_new_vault {
             println!("Initializing new vault...");
             self.create_keepass_vault(&vault_location, &master_pwd, keyfile_location.as_deref())?;
+        }
+
+        if is_new_totp_vault {
+            println!("Initializing new TOTP vault...");
+            let totp_master_pwd = ask_new_totp_master_password();
+            let store_totp_pwd = ask_store_totp_master_password();
+            // The keyfile chosen during init protects both vaults: share it with
+            // the TOTP vault unless a TOTP-specific keyfile is already configured.
+            let configured_totp_keyfile = store::get_totp_keyfile_path();
+            let totp_keyfile = configured_totp_keyfile
+                .clone()
+                .or_else(|| keyfile_location.clone());
+            self.create_keepass_vault(
+                &totp_vault_location,
+                &totp_master_pwd,
+                totp_keyfile.as_deref(),
+            )?;
+            if configured_totp_keyfile.is_none() {
+                if let Some(keyfile) = &totp_keyfile {
+                    store::save_totp_keyfile_path(keyfile)?;
+                }
+            }
+            if store_totp_pwd {
+                keychain::save_totp_master_password(&totp_master_pwd)?;
+            }
         }
 
         Ok(String::from("Initialized"))
@@ -59,22 +84,27 @@ impl InitAction {
         Ok((location, is_new_vault))
     }
 
-    fn initialize_totp_vault(&self) -> Result<String, Error> {
+    fn initialize_totp_vault(&self) -> Result<(String, bool), Error> {
         if store::has_totp_vault_path() {
             println!("TOTP Vault already configured");
-            return Ok(store::get_totp_vault_path());
+            return Ok((store::get_totp_vault_path(), false));
         }
 
-        let location = if ask_open_existing_totp_vault() {
-            self.get_and_save_vault_location(ask_existing_path, "TOTP Vault")?
+        let (location, is_new_vault) = if ask_open_existing_totp_vault() {
+            (
+                self.get_and_save_vault_location(ask_existing_path, "TOTP Vault")?,
+                false,
+            )
         } else {
-            self.get_and_save_vault_location(
-                || ask_totp_vault_path(&store::get_totp_vault_path()),
-                "TOTP Vault",
-            )?
+            (
+                self.get_and_save_vault_location(
+                    || ask_totp_vault_path(&store::get_totp_vault_path()),
+                    "TOTP Vault",
+                )?,
+                true,
+            )
         };
-
-        Ok(location)
+        Ok((location, is_new_vault))
     }
 
     fn get_and_save_vault_location<F>(

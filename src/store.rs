@@ -229,6 +229,10 @@ pub(crate) fn save_keyfile_path(path: &str) -> Result<(), Error> {
     save_config_path(".keyfile_path", path)
 }
 
+pub(crate) fn save_totp_keyfile_path(path: &str) -> Result<(), Error> {
+    save_config_path(".totp_keyfile_path", path)
+}
+
 pub fn has_vault_path() -> bool {
     config_file_exists(".vault_path")
 }
