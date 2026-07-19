@@ -136,7 +136,8 @@ fn write_cache(entries: &[String]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = fs::File::create(&path)?;
+    // Owner-only: the cache leaks service:username pairs on shared machines.
+    let mut file = crate::store::create_private_file(&path)?;
     for entry in entries {
         writeln!(file, "{}", entry)?;
     }

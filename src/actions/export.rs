@@ -40,6 +40,20 @@ impl ExportAction {
 
 impl UnlockingAction for ExportAction {
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
-        self.export_csv(vault).map(|count| format!("Exported {} entries", count)).map(Some)
+        let count = self.export_csv(vault)?;
+        // Payment and note exports write the file even when empty; credential
+        // exports return early without touching the file when there are none.
+        let file_written = match self.item_type {
+            ItemType::Credential => count > 0,
+            ItemType::Payment | ItemType::Note => true,
+            ItemType::Totp => false,
+        };
+        if file_written {
+            eprintln!(
+                "Warning: '{}' contains your secrets in plaintext. Store it safely and delete it when done.",
+                self.file_path
+            );
+        }
+        Ok(Some(format!("Exported {} entries", count)))
     }
 }
