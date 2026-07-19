@@ -20,7 +20,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 rand = "0.8.5"
-arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.4", default-features = false }
 clap = "4.5.4"
 clap_complete = "4.5.2"
 csv = "1.3.0"
