@@ -10,7 +10,8 @@ use keepass_ng::{error::DatabaseOpenError, DatabaseConfig, DatabaseKey};
 
 use log::debug;
 use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -168,21 +169,19 @@ impl KeepassVault {
         let mut db = Database::new(DatabaseConfig::default());
         db.meta.database_name = Some("Passlane database".to_string());
 
-        let mut key = DatabaseKey::new().with_password(password);
-
         if let Some(keyfile_path) = keyfile {
             println!("Using keyfile '{}'", keyfile_path);
-            let mut file = File::open(keyfile_path)?;
-            key = key.with_keyfile(&mut file)?;
         }
-        db.save(&mut File::create(filepath)?, key)?;
-
-        Ok(KeepassVault {
+        let vault = KeepassVault {
             db,
             password: password.to_string(),
             filepath: filepath.to_string(),
             keyfile: keyfile.map(ToString::to_string),
-        })
+        };
+        let key = Self::build_key(password, &vault.keyfile)?;
+        vault.save_atomically(key)?;
+
+        Ok(vault)
     }
 
     fn get_root(&self) -> SerializableNodePtr {
@@ -193,31 +192,96 @@ impl KeepassVault {
         self.get_root().borrow().get_uuid()
     }
 
-    fn save_database(&self) -> Result<(), DatabaseSaveError> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(!Path::new(&self.filepath).exists())
-            .open(&self.filepath)
-            .unwrap();
-
-        let (_, key) =
-            Self::get_database_key(&self.filepath, &self.password, &self.keyfile).unwrap();
+    fn save_database(&self) -> Result<(), Error> {
+        let key = Self::build_key(&self.password, &self.keyfile)?;
         debug!("Saving database to file '{}'", &self.filepath);
-
-        self.db.save(&mut file, key)
+        self.save_atomically(key)
     }
 
     pub fn change_master_password(&mut self, new_password: String) -> Result<(), Error> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.filepath)?;
-        let (_, key) = Self::get_database_key(&self.filepath, &new_password, &self.keyfile)?;
+        let key = Self::build_key(&new_password, &self.keyfile)?;
         debug!("Re-encrypting database '{}' with new master password", &self.filepath);
-        self.db.save(&mut file, key)?;
+        self.save_atomically(key)?;
         self.password = new_password;
         Ok(())
+    }
+
+    /// Serialize the database to a temporary file in the same directory, fsync
+    /// it, and rename it over the vault file. The rename is atomic on POSIX, so
+    /// a crash mid-save leaves either the old vault or the new one — never a
+    /// truncated or partially written file.
+    fn save_atomically(&self, key: DatabaseKey) -> Result<(), Error> {
+        let path = Path::new(&self.filepath);
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("vault.kdbx");
+        let (mut tmp, tmp_path) = Self::create_temp_file(&dir, file_name)?;
+
+        let result = (|| -> Result<(), Error> {
+            if let Ok(meta) = std::fs::metadata(path) {
+                std::fs::set_permissions(&tmp_path, meta.permissions())?;
+            }
+            self.db.save(&mut tmp, key)?;
+            tmp.sync_all()?;
+            drop(tmp);
+            std::fs::rename(&tmp_path, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return result;
+        }
+
+        // Best effort: persist the rename itself across a power loss.
+        if let Ok(dir_handle) = File::open(&dir) {
+            let _ = dir_handle.sync_all();
+        }
+        Ok(())
+    }
+
+    /// Create a temp file for the atomic save with `create_new` (O_EXCL), so an
+    /// existing file or symlink at the path is never followed or clobbered. The
+    /// pid + counter suffix keeps concurrent saves from colliding; owner-only
+    /// permissions apply until the original vault's permissions are copied over.
+    fn create_temp_file(dir: &Path, file_name: &str) -> Result<(File, PathBuf), Error> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        for _ in 0..100 {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = dir.join(format!(".{}.{}.{}.tmp", file_name, std::process::id(), n));
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&tmp_path) {
+                Ok(f) => return Ok((f, tmp_path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(Error {
+            message: format!("could not create temporary file for '{}'", file_name),
+        })
+    }
+
+    fn build_key(password: &str, keyfile: &Option<String>) -> Result<DatabaseKey, Error> {
+        match keyfile {
+            Some(kf) => {
+                debug!("Using keyfile '{}' and password", kf);
+                let mut file = File::open(kf)?;
+                Ok(DatabaseKey::new()
+                    .with_password(password)
+                    .with_keyfile(&mut file)?)
+            }
+            None => Ok(DatabaseKey::new().with_password(password)),
+        }
     }
 
     fn open_database(
@@ -881,5 +945,45 @@ mod tests {
         let url = "otpauth://totp/braintree:api@iki.fi?secret=ue5u4t4fzitipzo2&issuer=braintree&period=30&alorithm=SHA1&digits=6";
         let parsed: Result<TOTP, _> = normalize_otp_url(url).parse();
         assert!(parsed.is_ok(), "expected parse to succeed, got {:?}", parsed.err());
+    }
+
+    #[test]
+    fn save_replaces_vault_atomically_and_truncates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let vault = KeepassVault::new(path_str, "master-pw", None).unwrap();
+
+        // Simulate stale trailing bytes left by a previously larger version.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0xAB; 4096]).unwrap();
+        drop(f);
+
+        vault.save_database().unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.ends_with(&[0xAB; 4096]), "stale bytes survived the save");
+        KeepassVault::open("master-pw", path_str, None).unwrap();
+
+        let leftover_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!leftover_tmp, "temp file left behind after save");
+    }
+
+    #[test]
+    fn change_master_password_reencrypts_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "old-pw", None).unwrap();
+        vault.change_master_password("new-pw".to_string()).unwrap();
+
+        assert!(KeepassVault::open("new-pw", path_str, None).is_ok());
+        assert!(KeepassVault::open("old-pw", path_str, None).is_err());
     }
 }
