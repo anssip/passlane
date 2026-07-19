@@ -155,9 +155,10 @@ pub(crate) fn get_totp_vault_path() -> String {
     resolve_vault_path("totp.kdbx", ".totp_vault_path")
 }
 
-/// Create (or truncate) a file that will hold sensitive data, restricting it
-/// to owner-only access (0o600). Existing files get their permissions
-/// tightened too, since they are about to receive fresh sensitive content.
+/// Create (or truncate) a file that will hold sensitive data. On Unix the file
+/// is restricted to owner-only access (0o600), and existing files get their
+/// permissions tightened too, since they are about to receive fresh sensitive
+/// content. On other platforms the platform default ACLs apply.
 pub(crate) fn create_private_file(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);

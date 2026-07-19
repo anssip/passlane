@@ -32,15 +32,16 @@ fn history_path() -> String {
 }
 
 /// History reveals which services the user has accounts with — keep it 0o600.
+#[cfg(unix)]
 fn restrict_history_permissions(path: &str) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!("Warning: could not restrict permissions on '{}': {}", path, e);
     }
-    #[cfg(not(unix))]
-    let _ = path;
 }
+
+#[cfg(not(unix))]
+fn restrict_history_permissions(_path: &str) {}
 
 fn print_banner() {
     println!("🔐 Passlane — interactive mode");
