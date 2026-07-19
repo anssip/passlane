@@ -103,8 +103,9 @@ fn get_vault(
 }
 
 pub fn copy_to_clipboard(value: &str) {
-    let mut ctx = Clipboard::new().unwrap();
-    ctx.set_text(value).unwrap();
+    if let Err(e) = Clipboard::new().and_then(|mut ctx| ctx.set_text(value)) {
+        eprintln!("Failed to copy to clipboard: {}", e);
+    }
 }
 
 /// Copies `value` to the clipboard, then waits `timeout_secs` seconds (or until
@@ -117,8 +118,17 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
     static INTERRUPTED: AtomicBool = AtomicBool::new(false);
     static HANDLER: Once = Once::new();
 
-    let mut ctx = Clipboard::new().unwrap();
-    ctx.set_text(value).unwrap();
+    let mut ctx = match Clipboard::new() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("Failed to access clipboard: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = ctx.set_text(value) {
+        eprintln!("Failed to copy to clipboard: {}", e);
+        return;
+    }
 
     let original = String::from(value);
 
