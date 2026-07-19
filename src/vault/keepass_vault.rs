@@ -14,12 +14,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 pub struct KeepassVault {
     password: String,
     db: Database,
     filepath: String,
     keyfile: Option<String>,
+}
+
+impl Drop for KeepassVault {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
 }
 
 impl From<DatabaseOpenError> for Error {
@@ -202,11 +209,17 @@ impl KeepassVault {
         self.save_atomically(key)
     }
 
-    pub fn change_master_password(&mut self, new_password: String) -> Result<(), Error> {
-        let key = Self::build_key(&new_password, &self.keyfile)?;
-        debug!("Re-encrypting database '{}' with new master password", &self.filepath);
-        self.save_atomically(key)?;
-        self.password = new_password;
+    pub fn change_master_password(&mut self, mut new_password: String) -> Result<(), Error> {
+        let result = Self::build_key(&new_password, &self.keyfile).and_then(|key| {
+            debug!("Re-encrypting database '{}' with new master password", &self.filepath);
+            self.save_atomically(key)
+        });
+        if let Err(e) = result {
+            new_password.zeroize();
+            return Err(e);
+        }
+        let mut old_password = std::mem::replace(&mut self.password, new_password);
+        old_password.zeroize();
         Ok(())
     }
 
@@ -911,6 +924,17 @@ impl Vault for KeepassVault {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_database_config_is_kdbx4_with_argon2_kdf() {
+        use keepass_ng::config::{DatabaseVersion, KdfConfig};
+
+        // KeepassVault::new relies on DatabaseConfig::default(); pin that it
+        // stays KDBX4 + Argon2 rather than legacy AES-KDF.
+        let config = DatabaseConfig::default();
+        assert!(matches!(config.version, DatabaseVersion::KDB4(_)));
+        assert!(matches!(config.kdf_config, KdfConfig::Argon2 { .. }));
+    }
 
     #[test]
     fn normalize_lowercase_secret() {
