@@ -108,25 +108,30 @@ pub fn copy_to_clipboard(value: &str) {
 /// This function **blocks** for the timeout duration.
 pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::Once;
+
+    static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+    static HANDLER: Once = Once::new();
 
     let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
     ctx.set_contents(String::from(value)).unwrap();
 
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let interrupted_clone = interrupted.clone();
     let original = String::from(value);
 
-    // Register Ctrl+C handler — sets the flag so the wait loop exits early.
-    ctrlc::set_handler(move || {
-        interrupted_clone.store(true, Ordering::SeqCst);
-    })
-    .ok(); // ignore error if handler already set
+    // Register the Ctrl+C handler once per process (ctrlc allows only one);
+    // it just flags the wait loop below to exit early.
+    HANDLER.call_once(|| {
+        ctrlc::set_handler(|| {
+            INTERRUPTED.store(true, Ordering::SeqCst);
+        })
+        .ok();
+    });
+    INTERRUPTED.store(false, Ordering::SeqCst);
 
     // Wait in 100ms increments so we notice the interrupt quickly.
     let total_ms = timeout_secs * 1000;
     let mut elapsed = 0u64;
-    while elapsed < total_ms && !interrupted.load(Ordering::SeqCst) {
+    while elapsed < total_ms && !INTERRUPTED.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         elapsed += 100;
     }
@@ -142,11 +147,6 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
     })();
     if result.is_err() {
         log::debug!("Failed to clear clipboard after timeout");
-    }
-
-    // If we were interrupted, exit after cleanup.
-    if interrupted.load(Ordering::SeqCst) {
-        std::process::exit(0);
     }
 }
 

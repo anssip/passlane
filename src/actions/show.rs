@@ -90,19 +90,16 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext, self.plain);
-        copy_to_clipboard(the_match.number());
-        match ask_with_options(
+        if ask_with_options(
             "Do you want to see the full card details? (yes/no)",
             vec!["yes", "no"],
-        )
-        .as_str()
+        ) == "yes"
         {
-            "yes" => {
-                show_card(&the_match);
-                Ok(Some("Card number copied to clipboard!".to_string()))
-            }
-            _ => Ok(Some("Card number copied to clipboard!".to_string())),
+            show_card(&the_match);
         }
+        println!("Card number copied to clipboard! Clipboard will be cleared in 20 seconds.");
+        copy_to_clipboard_timed(the_match.number(), 20);
+        Ok(None)
     }
 
     fn handle_many_matches(
@@ -118,8 +115,9 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         ) {
             Ok(index) => {
                 show_card(&matches[index]);
-                copy_to_clipboard(matches[index].number());
-                Ok(Some("Card number copied to clipboard!".to_string()))
+                println!("Card number copied to clipboard! Clipboard will be cleared in 20 seconds.");
+                copy_to_clipboard_timed(matches[index].number(), 20);
+                Ok(None)
             }
             Err(message) => Err(Error { message }),
         }
