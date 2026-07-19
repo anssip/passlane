@@ -23,10 +23,11 @@ impl AddAction {
         }
     }
     fn password_from_clipboard(&self) -> Result<String, Error> {
-        let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+        let mut ctx: ClipboardContext = ClipboardProvider::new()
+            .map_err(|e| Error::new(&format!("Unable to access clipboard: {}", e)))?;
         let value = ctx
             .get_contents()
-            .expect("Unable to retrieve value from clipboard");
+            .map_err(|e| Error::new(&format!("Unable to retrieve value from clipboard: {}", e)))?;
         if !crypto::validate_password(&value) {
             return Err(Error::new("The text in clipboard is not a valid password"));
         }
