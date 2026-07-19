@@ -25,7 +25,7 @@ pub fn generate() -> String {
     chars.into_iter().collect()
 }
 
-pub fn validate_password(value: &String) -> bool {
+pub fn validate_password(value: &str) -> bool {
     value.chars().count() >= PASSWORD_LENGTH
         && value.chars().any(|c| LOW_CASE.contains(c))
         && value.chars().any(|c| UP_CASE.contains(c))
@@ -35,8 +35,11 @@ pub fn validate_password(value: &String) -> bool {
 
 fn random_char(rng: &mut impl Rng, charset: &str) -> char {
     // Index over chars, not bytes — SPECIAL contains multi-byte characters.
-    let chars: Vec<char> = charset.chars().collect();
-    chars[rng.gen_range(0..chars.len())]
+    let count = charset.chars().count();
+    charset
+        .chars()
+        .nth(rng.gen_range(0..count))
+        .expect("index is within the charset's character count")
 }
 
 #[cfg(test)]
