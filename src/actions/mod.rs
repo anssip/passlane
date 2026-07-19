@@ -130,8 +130,6 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
         return;
     }
 
-    let original = String::from(value);
-
     // Register the Ctrl+C handler once per process (ctrlc allows only one);
     // it just flags the wait loop below to exit early.
     HANDLER.call_once(|| {
@@ -153,7 +151,7 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
     // Clear clipboard if it still holds the password we put there.
     let result: Result<(), ()> = (|| {
         let current = ctx.get_text().map_err(|_| ())?;
-        if current == original {
+        if current == value {
             ctx.clear().map_err(|_| ())?;
         }
         Ok(())
