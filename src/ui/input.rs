@@ -434,6 +434,15 @@ const TOTP_URL_QUERY: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'_')
     .remove(b'~');
+/// The secret keeps '=' literal: it is base32 padding, and the vault-side
+/// normalize_otp_url re-pads the raw secret substring, so encoding it as
+/// %3D would make that normalization append bogus padding.
+const TOTP_URL_SECRET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'=');
 const TOTP_URL_LABEL: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
@@ -453,7 +462,7 @@ fn format_totp_url(
     format!(
         "otpauth://totp/{}?secret={}&issuer={}&period={}&algorithm={}&digits={}",
         utf8_percent_encode(label, TOTP_URL_LABEL),
-        utf8_percent_encode(secret, TOTP_URL_QUERY),
+        utf8_percent_encode(secret, TOTP_URL_SECRET),
         utf8_percent_encode(issuer, TOTP_URL_QUERY),
         period,
         algo,
@@ -703,6 +712,9 @@ mod tests {
         assert_eq!(totp.algorithm.to_string(), "SHA512");
         assert_eq!(totp.period, 60);
         assert_eq!(totp.label, "My%20Service:user@example.com");
+        // Base32 padding must stay literal so vault-side secret
+        // normalization sees real '=' characters, not %3D.
+        assert!(url.contains("secret=GEZDGNBVGY======"));
     }
 
     #[test]
