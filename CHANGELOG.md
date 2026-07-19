@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.2.0]
+
+Security release: fixes all findings from a full-codebase security audit (see `docs/security-audit-2026-07-19.md`).
+
+- Save the vault atomically (temp file + rename) so a crash mid-save can no longer corrupt the vault file
+- Fail with a clear error when the vault file is missing (e.g. unmounted sync folder) instead of silently opening an empty vault
+- Stop logging TOTP secrets in debug output
+- **Breaking:** `list -o` no longer prints stored TOTP secrets unless `--verbose` is passed; use `list -o --code` for codes
+- Create sensitive files (CSV exports, completion cache, REPL history, vault files) with owner-only permissions, and warn that exports are plaintext
+- Fix password generator: restore missing `w`/`W` in alphabets, fix an off-by-one that excluded the last character of each character set, and guarantee every generated password contains all four character classes
+- Fix: `add --clipboard` now actually rejects clipboard content that fails password validation
+- Use the timed 20-second clipboard clear in `add` and payment-card `show`
+- Fix `otpauth://` URL construction: correct the misspelled `algorithm` parameter (SHA256/SHA512 authorizers no longer silently fall back to SHA1) and percent-encode label, secret, and issuer
+- Zeroize master passwords in memory during password changes; replace the unmaintained clipboard dependency with `arboard`; remove unused `magic-crypt`; run `cargo audit` in CI
+
 ## [3.1.0]
 
 - Add scriptable, non-interactive TOTP code retrieval: `passlane list -o --code` prints the current codes (with `valid_for_seconds` in `--json`) and `passlane show -o --once` prints a single matching code to stdout for use in scripts
