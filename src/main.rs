@@ -1,6 +1,3 @@
-extern crate clipboard;
-extern crate magic_crypt;
-
 mod actions;
 mod completion_cache;
 mod crypto;

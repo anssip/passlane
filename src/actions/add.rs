@@ -4,7 +4,7 @@ use crate::vault::entities::Error;
 use crate::vault::vault_trait::Vault;
 use crate::{crypto, ui};
 use clap::ArgMatches;
-use clipboard::{ClipboardContext, ClipboardProvider};
+use arboard::Clipboard;
 
 pub struct AddAction {
     pub generate: bool,
@@ -23,10 +23,10 @@ impl AddAction {
         }
     }
     fn password_from_clipboard(&self) -> Result<String, Error> {
-        let mut ctx: ClipboardContext = ClipboardProvider::new()
+        let mut ctx = Clipboard::new()
             .map_err(|e| Error::new(&format!("Unable to access clipboard: {}", e)))?;
         let value = ctx
-            .get_contents()
+            .get_text()
             .map_err(|e| Error::new(&format!("Unable to retrieve value from clipboard: {}", e)))?;
         if !crypto::validate_password(&value) {
             return Err(Error::new("The text in clipboard is not a valid password"));

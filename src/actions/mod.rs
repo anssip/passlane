@@ -21,8 +21,8 @@ use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use clap::ArgMatches;
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
+use arboard::Clipboard;
+use zeroize::Zeroize;
 
 pub(crate) trait MatchHandlerTemplate
 where
@@ -74,18 +74,22 @@ fn get_vault_properties() -> (String, String, Option<String>) {
 }
 
 fn unlock() -> Result<Box<dyn Vault>, Error> {
-    let (master_pwd, filepath, keyfile_path) = get_vault_properties();
+    let (mut master_pwd, filepath, keyfile_path) = get_vault_properties();
     println!("Unlocking vault...");
-    get_vault(&master_pwd, &filepath, keyfile_path)
+    let vault = get_vault(&master_pwd, &filepath, keyfile_path);
+    master_pwd.zeroize();
+    vault
 }
 
 fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     let stored_password = keychain::get_totp_master_password();
-    let master_pwd = stored_password.unwrap_or_else(|_| ask_totp_master_password());
+    let mut master_pwd = stored_password.unwrap_or_else(|_| ask_totp_master_password());
     let filepath = store::get_totp_vault_path();
     let keyfile_path = store::get_totp_keyfile_path();
     println!("Unlocking TOTP vault...");
-    get_vault(&master_pwd, &filepath, keyfile_path)
+    let vault = get_vault(&master_pwd, &filepath, keyfile_path);
+    master_pwd.zeroize();
+    vault
 }
 
 fn get_vault(
@@ -99,8 +103,8 @@ fn get_vault(
 }
 
 pub fn copy_to_clipboard(value: &str) {
-    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-    ctx.set_contents(String::from(value)).unwrap();
+    let mut ctx = Clipboard::new().unwrap();
+    ctx.set_text(value).unwrap();
 }
 
 /// Copies `value` to the clipboard, then waits `timeout_secs` seconds (or until
@@ -113,8 +117,8 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
     static INTERRUPTED: AtomicBool = AtomicBool::new(false);
     static HANDLER: Once = Once::new();
 
-    let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-    ctx.set_contents(String::from(value)).unwrap();
+    let mut ctx = Clipboard::new().unwrap();
+    ctx.set_text(value).unwrap();
 
     let original = String::from(value);
 
@@ -138,10 +142,9 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
 
     // Clear clipboard if it still holds the password we put there.
     let result: Result<(), ()> = (|| {
-        let mut ctx: ClipboardContext = ClipboardProvider::new().map_err(|_| ())?;
-        let current = ctx.get_contents().map_err(|_| ())?;
+        let current = ctx.get_text().map_err(|_| ())?;
         if current == original {
-            ctx.set_contents(String::new()).map_err(|_| ())?;
+            ctx.clear().map_err(|_| ())?;
         }
         Ok(())
     })();
