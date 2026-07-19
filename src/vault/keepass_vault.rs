@@ -921,7 +921,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_vaults_use_kdbx4_with_argon2_kdf() {
+    fn default_database_config_is_kdbx4_with_argon2_kdf() {
         use keepass_ng::config::{DatabaseVersion, KdfConfig};
 
         // KeepassVault::new relies on DatabaseConfig::default(); pin that it
