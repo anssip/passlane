@@ -126,12 +126,15 @@ fn ask_slot() -> Result<u8, Error> {
 
 /// Prompt for the backed-up HMAC-SHA1 secret (hex) of an enrolled slot, for
 /// recovering a vault whose hardware key has been lost. The secret is what
-/// `ykman otp chalresp` was programmed with (or exported from).
+/// `ykman otp chalresp` was programmed with (or exported from). Whitespace is
+/// stripped: pasted secrets often carry trailing newlines or spaces, which
+/// would otherwise fail hex decoding.
 pub fn recovery_key_from_prompt() -> ChallengeResponseKey {
     let secret = ask_password(
         "Enter the backed-up HMAC-SHA1 secret (hex) of the enrolled slot",
         Some("The 40-character hex secret saved when the key's slot was programmed, e.g. with 'ykman otp chalresp'"),
     );
+    let secret = secret.chars().filter(|c| !c.is_whitespace()).collect();
     ChallengeResponseKey::LocalChallenge(secret)
 }
 
@@ -152,11 +155,13 @@ fn friendly_device_error(e: DatabaseKeyError) -> Error {
             "No hardware key detected. Insert the key and try again.".to_string()
         }
         DatabaseKeyError::ChallengeResponse(ChallengeResponseKeyError::AmbiguousKeys) => {
-            "Multiple hardware keys detected. Re-enroll with 'passlane hwkey add --serial <serial>' to pick one.".to_string()
+            // Wording must fit both enrollment ('hwkey add') and unlocking:
+            // either way the fix is naming the key via --serial.
+            "Multiple hardware keys detected. Specify which one to use with '--serial <serial>' (see 'passlane hwkey status' for connected serials).".to_string()
         }
         DatabaseKeyError::ChallengeResponse(ChallengeResponseKeyError::KeyNotFound(serial)) => {
             format!(
-                "The enrolled hardware key (serial {}) is not connected. Insert the key and try again.",
+                "Hardware key (serial {}) is not connected. Insert the key and try again.",
                 serial
             )
         }

@@ -178,7 +178,7 @@ impl KeepassVault {
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
         if requires_touch(challenge_response) {
-            println!("Touch your hardware key to open the vault...");
+            eprintln!("Touch your hardware key to open the vault...");
         }
         let db = Self::open_database(filepath, password, &keyfile_path, challenge_response)?;
         Ok(Self {
@@ -210,7 +210,7 @@ impl KeepassVault {
             challenge_response: challenge_response.cloned(),
         };
         if requires_touch(challenge_response) {
-            println!("Touch your hardware key to encrypt the vault...");
+            eprintln!("Touch your hardware key to encrypt the vault...");
         }
         let key = Self::build_key(password, &vault.keyfile, challenge_response)?;
         vault.save_atomically(key)?;
@@ -228,9 +228,10 @@ impl KeepassVault {
 
     fn save_database(&self) -> Result<(), Error> {
         // Every save issues a fresh challenge to the hardware key, so tell the
-        // user why passlane is waiting.
+        // user why passlane is waiting. Stderr keeps stdout parseable for
+        // commands with JSON output.
         if requires_touch(self.challenge_response.as_ref()) {
-            println!("Touch your hardware key to authorize saving...");
+            eprintln!("Touch your hardware key to authorize saving...");
         }
         let key = Self::build_key(&self.password, &self.keyfile, self.challenge_response.as_ref())?;
         debug!("Saving database to file '{}'", &self.filepath);
@@ -258,13 +259,19 @@ impl KeepassVault {
     /// the vault. The save itself challenges the *new* key, so a successful
     /// return proves the enrollment works before any config is persisted.
     /// Removing the factor (`None`) needs the current key only to open the
-    /// vault, which the caller has already done.
+    /// vault, which the caller has already done. If the save fails, the
+    /// previous factor is restored so the in-memory state keeps matching the
+    /// file on disk.
     pub fn update_challenge_response(
         &mut self,
         challenge_response: Option<ChallengeResponseKey>,
     ) -> Result<(), Error> {
-        self.challenge_response = challenge_response;
-        self.save_database()
+        let previous = std::mem::replace(&mut self.challenge_response, challenge_response);
+        if let Err(e) = self.save_database() {
+            self.challenge_response = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Serialize the database to a temporary file in the same directory, fsync
