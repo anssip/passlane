@@ -123,7 +123,7 @@ The REPL supports **tab completion** for commands and types, and **command histo
 ### To compile from sources
 
 1. Install rust development environment: [rustup](https://rustup.rs)
-2. On Linux, install the USB development packages needed by the hardware key support: `libusb-1.0-0-dev` and `libudev-dev` on Debian/Ubuntu (`libusb-devel systemd-devel` on Fedora, `libusb` and `systemd` from Homebrew on Linux). macOS and Windows need no extra prerequisites.
+2. On Linux, install the USB development packages needed by the hardware key support: `libusb-1.0-0-dev` and `libudev-dev` on Debian/Ubuntu, or `libusb-devel` and `systemd-devel` on Fedora. macOS and Windows need no extra prerequisites.
 3. Clone this repo
 4. Run build: `cargo build --release`
 5. Add the built `passlane` binary to your `$PATH`

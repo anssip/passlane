@@ -111,13 +111,24 @@ fn read_from_file(path: &PathBuf) -> Option<String> {
 }
 
 /// Read the trimmed content of a config file in ~/.passlane/, or None if it
-/// does not exist.
+/// does not exist or cannot be read. An unreadable config (bad permissions,
+/// partial write) must not panic the CLI — treat it as not configured and
+/// warn, so the user can fix the file.
 fn read_config_file(path_config_file: &str) -> Option<String> {
     let path = dir_path().join(path_config_file);
     if !path.exists() {
-        None
-    } else {
-        read_from_file(&path)
+        return None;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Some(content.trim().to_string()),
+        Err(e) => {
+            eprintln!(
+                "Warning: could not read config file {}: {}",
+                path.display(),
+                e
+            );
+            None
+        }
     }
 }
 
