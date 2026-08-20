@@ -100,9 +100,8 @@ impl HwKeyAction {
     }
 
     fn run_remove(&self, secret: bool) -> Result<String, Error> {
-        if hwkey::load_config()?.is_none() {
-            return Err(Error::new("No hardware key is enrolled."));
-        }
+        let enrolled = hwkey::load_config()?
+            .ok_or_else(|| Error::new("No hardware key is enrolled."))?;
         let challenge_response = if secret {
             hwkey::recovery_key_from_prompt()
         } else {
@@ -119,8 +118,28 @@ impl HwKeyAction {
                 store::get_keyfile_path(),
                 Some(&challenge_response),
             )?;
-            vault.update_challenge_response(None)?;
+            // Delete the config before touching the vault: if deletion
+            // fails, abort with the vault still protected by the key,
+            // rather than stripping the factor first and leaving passlane
+            // demanding a key the vault no longer requires.
             hwkey::clear_config()?;
+            if let Err(e) = vault.update_challenge_response(None) {
+                // The vault on disk still requires the key; put the config
+                // back so passlane keeps using it.
+                if let Err(restore_err) = hwkey::save_config(&enrolled) {
+                    let serial_hint = enrolled
+                        .serial
+                        .map(|s| format!(" and 'serial={}'", s))
+                        .unwrap_or_default();
+                    return Err(Error::new(&format!(
+                        "Removing the hardware key from the vault failed: {}. Restoring the \
+                         config also failed: {}. The vault still requires the hardware key — \
+                         recreate ~/.passlane/.hwkey with 'slot={}'{} and retry.",
+                        e, restore_err, enrolled.slot, serial_hint
+                    )));
+                }
+                return Err(e);
+            }
             Ok::<(), Error>(())
         })();
         password.zeroize();
