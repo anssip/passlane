@@ -206,10 +206,12 @@ impl KeepassVault {
             keyfile: keyfile.map(ToString::to_string),
             challenge_response: challenge_response.cloned(),
         };
+        let key = Self::build_key(password, &vault.keyfile, challenge_response)?;
+        // The challenge happens during the save below; print only once the
+        // keyfile opened fine, mirroring the open path.
         if requires_touch(challenge_response) {
             eprintln!("Touch your hardware key to encrypt the vault...");
         }
-        let key = Self::build_key(password, &vault.keyfile, challenge_response)?;
         vault.save_atomically(key)?;
 
         Ok(vault)
