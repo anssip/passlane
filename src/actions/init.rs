@@ -36,7 +36,7 @@ impl Action for InitAction {
 
         if is_new_vault {
             println!("Initializing new vault...");
-            self.create_keepass_vault(
+            let mut vault = self.create_keepass_vault(
                 &vault_location,
                 &master_pwd,
                 keyfile_location.as_deref(),
@@ -45,7 +45,18 @@ impl Action for InitAction {
             if let Some(config) = &hwkey_config {
                 // Persisted only after the vault file exists and was saved
                 // with the enrolled factor.
-                crate::hwkey::save_config(config)?;
+                if let Err(e) = crate::hwkey::save_config(config) {
+                    // Without the persisted config passlane would not include
+                    // the factor on open: roll it back so the just-created
+                    // vault stays reachable via passlane.
+                    if let Err(rollback) = vault.update_challenge_response(None) {
+                        eprintln!(
+                            "Warning: failed to roll back the hardware key enrollment: {}",
+                            rollback
+                        );
+                    }
+                    return Err(e);
+                }
                 crate::hwkey::print_backup_reminder();
             }
         }
@@ -203,8 +214,7 @@ impl InitAction {
         master_pwd: &str,
         keyfile: Option<&str>,
         challenge_response: Option<&ChallengeResponseKey>,
-    ) -> Result<(), Error> {
-        KeepassVault::new(vault_location, master_pwd, keyfile, challenge_response)?;
-        Ok(())
+    ) -> Result<KeepassVault, Error> {
+        KeepassVault::new(vault_location, master_pwd, keyfile, challenge_response)
     }
 }

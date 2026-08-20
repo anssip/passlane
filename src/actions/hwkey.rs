@@ -78,7 +78,18 @@ impl HwKeyAction {
             // The re-save challenges the new key, proving the enrollment
             // before the config is persisted.
             vault.update_challenge_response(Some(challenge_response))?;
-            hwkey::save_config(&config)?;
+            if let Err(e) = hwkey::save_config(&config) {
+                // The vault now requires the key but passlane would not know
+                // to use it (no persisted config): roll the factor back or
+                // the vault can no longer be opened via passlane.
+                if let Err(rollback) = vault.update_challenge_response(None) {
+                    eprintln!(
+                        "Warning: failed to roll back the hardware key enrollment: {}",
+                        rollback
+                    );
+                }
+                return Err(e);
+            }
             Ok::<(), Error>(())
         })();
         password.zeroize();

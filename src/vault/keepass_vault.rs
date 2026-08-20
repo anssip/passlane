@@ -159,6 +159,16 @@ fn node_looks_like_credential(node: &NodePtr) -> bool {
     has_username || has_password || has_url
 }
 
+/// Only the hardware-key variant blocks on a physical touch; a
+/// `LocalChallenge` key (recovery via backed-up secret, tests) computes the
+/// response locally, so no "touch" prompt should be shown for it.
+fn requires_touch(challenge_response: Option<&ChallengeResponseKey>) -> bool {
+    matches!(
+        challenge_response,
+        Some(ChallengeResponseKey::YubikeyChallenge(..))
+    )
+}
+
 impl KeepassVault {
     pub fn open(
         password: &str,
@@ -167,7 +177,7 @@ impl KeepassVault {
         challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
-        if challenge_response.is_some() {
+        if requires_touch(challenge_response) {
             println!("Touch your hardware key to open the vault...");
         }
         let db = Self::open_database(filepath, password, &keyfile_path, challenge_response)?;
@@ -199,7 +209,7 @@ impl KeepassVault {
             keyfile: keyfile.map(ToString::to_string),
             challenge_response: challenge_response.cloned(),
         };
-        if challenge_response.is_some() {
+        if requires_touch(challenge_response) {
             println!("Touch your hardware key to encrypt the vault...");
         }
         let key = Self::build_key(password, &vault.keyfile, challenge_response)?;
@@ -219,7 +229,7 @@ impl KeepassVault {
     fn save_database(&self) -> Result<(), Error> {
         // Every save issues a fresh challenge to the hardware key, so tell the
         // user why passlane is waiting.
-        if self.challenge_response.is_some() {
+        if requires_touch(self.challenge_response.as_ref()) {
             println!("Touch your hardware key to authorize saving...");
         }
         let key = Self::build_key(&self.password, &self.keyfile, self.challenge_response.as_ref())?;
