@@ -178,7 +178,10 @@ impl InitAction {
     /// created: an already-enrolled key, a newly prompted enrollment (whose
     /// config the caller persists after the vault is saved), or none.
     fn init_hwkey(&self) -> Result<(Option<ChallengeResponseKey>, Option<crate::hwkey::HwKeyConfig>), Error> {
-        if store::has_hwkey_config() {
+        // Load (not just check existence): an unreadable or corrupt config
+        // must error or fall through to enrollment — not print "already
+        // configured" and then silently skip the factor.
+        if crate::hwkey::load_config()?.is_some() {
             println!("Hardware key already configured");
             return Ok((crate::hwkey::configured_challenge_response_key()?, None));
         }

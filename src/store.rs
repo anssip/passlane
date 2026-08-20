@@ -274,8 +274,13 @@ pub(crate) fn read_hwkey_config() -> Option<String> {
     read_config_file(".hwkey")
 }
 
+/// Owner-only permissions like other sensitive outputs: a tampered config
+/// breaks vault access (wrong slot/serial), so other users must not write it.
 pub(crate) fn save_hwkey_config(content: &str) -> Result<(), Error> {
-    save_config_path(".hwkey", content)
+    let path = dir_path().join(".hwkey");
+    let mut file = create_private_file(&path)?;
+    file.write_all(content.as_bytes())?;
+    Ok(())
 }
 
 pub fn has_hwkey_config() -> bool {
