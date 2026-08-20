@@ -14,7 +14,7 @@
 #### Security Enhancements
 - [ ] Password Audit Command - Identify weak, reused, or old passwords
 - [ ] Check against pwned passwords API integration
-- [ ] **Password History/Versioning** - Track password changes over time
+- [ ] **Password History/Versioning** - Track password changes over time (keepass-ng 0.11: `Entry::get_history()` / `update_history()` are now written and read back on save)
 - [x] **Clipboard Timeout** - Auto-clear clipboard after X seconds
 - [ ] **Auto-lock on Timeout** - Remove from keychain after period of inactivity
 - [ ] Master password strength enforcement on init
@@ -27,11 +27,27 @@
 - [ ] Better table formatting with color coding for password age/strength (`passlane shell`)
 
 #### Advanced Features
-- [ ] **Tags/Categories** - Tag credentials and filter by tags
+- [ ] **Tags/Categories** - Tag credentials and filter by tags (keepass-ng 0.11: `Entry::get_tags()` / `get_tags_mut()`, tags are now persisted on save)
 - [ ] **Favorites/Pinning** - Quick access to frequently used credentials
 - [ ] **Multi-Vault Support** - Manage multiple vaults (personal, work, family)
-- [ ] **Custom Fields** - Support arbitrary fields (API keys, security questions, etc.)
-- [ ] **Attachment Support** - Store files in vault (Keepass supports this)
+- [ ] **Custom Fields** - Support arbitrary fields (API keys, security questions, etc.) (keepass-ng 0.11: `Entry::set_additional_attribute()` / `get()`, read + write)
+- [ ] **Attachment Support** - Store files in vault (keepass-ng 0.11: `Entry::attachments` is first-class and written to the inner-header binary pool on save)
+
+### Unlocked by the keepass-ng 0.11 upgrade
+
+The dependency upgrade to keepass-ng 0.11 (from 0.9) exposed these new capabilities. Each would need its feature flag enabled in `Cargo.toml` where noted.
+
+| Capability | keepass-ng 0.11 API | Passlane opportunity |
+|---|---|---|
+| Database merge (`merge` feature) | `Database::merge(&mut self, &other) -> MergeLog` — matches entries/groups by UUID, last-writer-wins via modification times, handles deletions, custom icons, and entry history | **Vault Sync/Merge** — `passlane sync` to merge a synced/remote copy of the vault with local changes; natural fit for vaults kept in Dropbox/iCloud/Syncthing folders |
+| Attachments, read + write | `Entry::attachments: HashMap<String, Attachment>`; binaries written to the inner-header pool on save | Attachment Support (see Advanced Features) |
+| Custom string fields, read + write | `Entry::get(key)`, `Entry::set_additional_attribute(key, value)` | Custom Fields (see Advanced Features). Chosen direction: also migrate payment cards from "Key: value" lines in the notes field to proper protected custom fields, with transparent read-migration for existing vaults |
+| Recycle bin / trash | `Database::create_recycle_bin()`, `node_is_in_recycle_bin()`, `recycle_bin_enabled()`; `merge` honors deletions | Trash/restore workflow — today passlane disables the recycle bin and deletes are permanent |
+| Entry history round-trip | `Entry::get_history()`, `update_history()`, `purge_history()`; history is merged by `Database::merge` | Password History/Versioning (see Security Enhancements) |
+| YubiKey challenge-response (`challenge_response` feature) | `DatabaseKey::with_challenge_response_key(ChallengeResponseKey)` with `LocalChallenge(secret)` / `YubikeyChallenge(slot)` variants | Hardware-key vault unlock — `passlane init` / `unlock` with a YubiKey HMAC-SHA1 slot |
+| JSON serialization (`serialization` feature) | `Database` implements `Serialize` | JSON export / backup tooling beyond the entry-level `--json` output |
+| KDBX 4.1 + diagnostics | `Database::get_version()` reads the version without decrypting; `DatabaseVersion::KDB4(minor)`; QualityCheck | `passlane info` vault diagnostics; upgrade-on-save for legacy KDBX3 vaults (only KDBX 4.x can be saved today) |
+| Icons | `Icon`/`IconId`/`CustomIcon`, `Database::purge_unused_custom_icons()` | Low priority for a CLI; useful if `list` output ever gets icons or exports target GUI clients |
 
 ### Future Enhancements
 

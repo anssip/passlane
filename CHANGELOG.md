@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Upgrade keepass-ng from 0.9 to 0.11. Existing vaults are upgraded in memory from KDBX 4.0 to KDBX 4.1 on open, so the first save after upgrading works (keepass-ng 0.11 only writes KDBX 4.1; the format is a superset of 4.0 that all current KeePass clients read). Verified round-trip with KeePassXC, including TOTP entries
+- Fix: payment cards saved without a billing address no longer fail to load ("InvalidFormat" panic)
+
 ## [3.2.0]
 
 Security release: fixes all findings from a full-codebase security audit (see `docs/security-audit-2026-07-19.md`).

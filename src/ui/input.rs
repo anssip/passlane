@@ -688,7 +688,7 @@ mod tests {
         let url = format_totp_url("GitHub:user", "JBSWY3DPEHPK3PXP", "GitHub", 30, "SHA256", 8);
         let totp = TOTP::from_str(&url).expect("generated otpauth URL must parse");
         assert_eq!(totp.algorithm.to_string(), "SHA256");
-        assert_eq!(totp.issuer, "GitHub");
+        assert_eq!(totp.issuer.as_deref(), Some("GitHub"));
         assert_eq!(totp.period, 30);
         assert_eq!(totp.digits, 8);
     }
@@ -708,7 +708,7 @@ mod tests {
         );
         // '&', '=' and spaces must not corrupt the query string.
         let totp = TOTP::from_str(&url).expect("generated otpauth URL must parse");
-        assert_eq!(totp.issuer, "Foo & Bar Inc");
+        assert_eq!(totp.issuer.as_deref(), Some("Foo & Bar Inc"));
         assert_eq!(totp.algorithm.to_string(), "SHA512");
         assert_eq!(totp.period, 60);
         assert!(url.starts_with("otpauth://totp/My%20Service:user@example.com?"));

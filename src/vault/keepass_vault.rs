@@ -5,8 +5,8 @@ use keepass_ng::db::{
     group_get_children, node_is_entry, node_is_group, Database, Entry, Group,
     Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
 };
-use keepass_ng::error::DatabaseSaveError;
-use keepass_ng::{error::DatabaseOpenError, DatabaseConfig, DatabaseKey};
+use keepass_ng::db::DatabaseSaveError;
+use keepass_ng::{DatabaseConfig, DatabaseKey, DatabaseOpenError, DatabaseVersion};
 
 use log::debug;
 use std::fs::{File, OpenOptions};
@@ -45,8 +45,8 @@ impl From<DatabaseSaveError> for Error {
     }
 }
 
-impl From<keepass_ng::error::Error> for Error {
-    fn from(e: keepass_ng::error::Error) -> Self {
+impl From<keepass_ng::Error> for Error {
+    fn from(e: keepass_ng::Error) -> Self {
         Error {
             message: e.to_string(),
         }
@@ -88,7 +88,7 @@ fn normalize_otp_url(url: &str) -> String {
 
 fn node_has_totp(node: &NodePtr) -> bool {
     let node = node.borrow();
-    let e = node.as_any().downcast_ref::<Entry>().unwrap();
+    let e = node.downcast_ref::<Entry>().unwrap();
     let raw = e.get_raw_otp_value();
     debug!(
         "Checking node for TOTP: {:?} has_otp={}",
@@ -103,7 +103,7 @@ fn node_has_totp(node: &NodePtr) -> bool {
 
 fn node_looks_like_payment(node: &NodePtr) -> bool {
     let node = node.borrow();
-    let e = match node.as_any().downcast_ref::<Entry>() {
+    let e = match node.downcast_ref::<Entry>() {
         Some(e) => e,
         None => return false,
     };
@@ -124,7 +124,7 @@ fn node_looks_like_note(node: &NodePtr) -> bool {
         return false;
     }
     let node = node.borrow();
-    let e = match node.as_any().downcast_ref::<Entry>() {
+    let e = match node.downcast_ref::<Entry>() {
         Some(e) => e,
         None => return false,
     };
@@ -146,7 +146,7 @@ fn node_looks_like_credential(node: &NodePtr) -> bool {
         return false;
     }
     let node_ref = node.borrow();
-    let e = match node_ref.as_any().downcast_ref::<Entry>() {
+    let e = match node_ref.downcast_ref::<Entry>() {
         Some(e) => e,
         None => return false,
     };
@@ -325,6 +325,13 @@ impl KeepassVault {
         let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
         let mut db = Database::open(&mut db_file, key)?;
         db.set_recycle_bin_enabled(false);
+        // keepass-ng 0.11 only writes KDBX 4.1, while vaults created with
+        // earlier passlane versions (keepass-ng 0.9) are KDBX 4.0. Upgrade
+        // the version in memory so the next save succeeds; KDBX 4.1 is a
+        // superset of 4.0 that all current KeePass clients can read.
+        if db.config.version == DatabaseVersion::KDB4(0) {
+            db.config.version = DatabaseVersion::KDB4(1);
+        }
         Ok(db)
     }
 
@@ -332,13 +339,10 @@ impl KeepassVault {
         self.db
             .create_new_group(parent_uuid, 0)
             .map(|node| {
-                node.borrow_mut()
-                    .as_any_mut()
-                    .downcast_mut::<Group>()
-                    .map(|group| {
-                        group.set_title(Some(group_name));
-                        group.get_uuid()
-                    })
+                node.borrow_mut().downcast_mut::<Group>().map(|group| {
+                    group.set_title(Some(group_name));
+                    group.get_uuid()
+                })
             })
             .unwrap()
     }
@@ -373,7 +377,7 @@ impl KeepassVault {
                     return true;
                 };
                 let node = node.borrow();
-                let e = node.as_any().downcast_ref::<Entry>().unwrap();
+                let e = node.downcast_ref::<Entry>().unwrap();
                 let title = e.get_title().unwrap_or("").to_lowercase();
                 let url = e.get_url().unwrap_or("").to_lowercase();
                 let username = e.get_username().unwrap_or("").to_lowercase();
@@ -460,7 +464,7 @@ impl KeepassVault {
 
     fn get_node_values(node: NodePtr) -> (String, String, String, Option<String>, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
-        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let e = node.downcast_ref::<Entry>().unwrap();
         let username = e.get_username().unwrap_or("(no username)");
         let service = match e.get_url() {
             Some(url) if !url.is_empty() => url,
@@ -485,6 +489,10 @@ impl KeepassVault {
     fn node_to_payment(node: NodePtr) -> PaymentCard {
         let (name, name_on_card, number, cvv, expiry, color, billing_address, id) =
             Self::get_node_payment_values(node).unwrap();
+        // Cards saved without a billing address store an empty line in their
+        // notes; treat an empty or malformed address as "no address" instead
+        // of failing to load the card.
+        let billing_address = Address::from_str(&billing_address).ok();
         PaymentCard::new(
             Some(&id),
             &name,
@@ -493,7 +501,7 @@ impl KeepassVault {
             &cvv,
             Expiry::from_str(&expiry).unwrap(),
             color.as_deref(),
-            Some(&Address::from_str(&billing_address).unwrap()),
+            billing_address.as_ref(),
             None,
         )
     }
@@ -521,7 +529,7 @@ impl KeepassVault {
         Uuid,
     )> {
         let node = node.borrow();
-        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let e = node.downcast_ref::<Entry>().unwrap();
         let note = e.get_notes()?;
         let name = e.get_title().unwrap_or("(no name)");
         let name_on_card = Self::extract_value_from_note(note, 0, "Name on card");
@@ -545,7 +553,7 @@ impl KeepassVault {
 
     fn get_node_note_values(node: NodePtr) -> (String, String, Uuid, Option<NaiveDateTime>) {
         let node = node.borrow();
-        let e = node.as_any().downcast_ref::<Entry>().unwrap();
+        let e = node.downcast_ref::<Entry>().unwrap();
         let content = e.get_notes().unwrap_or("");
         let title = e.get_title().unwrap_or("(no title)");
         let last_modified = e.get_times().get_last_modification();
@@ -591,7 +599,6 @@ impl KeepassVault {
     > {
         let node = node.borrow();
         let e = node
-            .as_any()
             .downcast_ref::<Entry>()
             .ok_or(Error::new("Failed to downcast keepass node"))?;
         let raw_url = e
@@ -605,7 +612,7 @@ impl KeepassVault {
         Ok((
             normalized_url,
             otp.label.to_string(),
-            String::from(&otp.issuer),
+            otp.issuer.clone().unwrap_or_default(),
             otp.get_secret(),
             otp.algorithm.to_string(),
             otp.period,
@@ -631,7 +638,7 @@ impl KeepassVault {
             .iter()
             .filter(|node| node_is_group(node))
             .filter(|node| {
-                if let Some(entry) = node.borrow().as_any().downcast_ref::<Group>() {
+                if let Some(entry) = node.borrow().downcast_ref::<Group>() {
                     entry.get_title().unwrap() == group_name
                 } else {
                     false
@@ -654,7 +661,6 @@ impl KeepassVault {
             .create_new_entry(parent_uuid.clone(), 0)
             .map(|node| {
                 node.borrow_mut()
-                    .as_any_mut()
                     .downcast_mut::<Entry>()
                     .map(|entry| {
                         entry.set_title(Some(credentials.service()));
@@ -674,11 +680,10 @@ impl KeepassVault {
     ) -> Result<Option<Uuid>, Error> {
         Ok(self.db.create_new_entry(*parent_uuid, 0).map(|node| {
             node.borrow_mut()
-                .as_any_mut()
                 .downcast_mut::<Entry>()
                 .map(|entry| {
                     entry.set_title(Some(totp.label()));
-                    entry.set_otp(totp.url());
+                    entry.set_raw_otp_value(Some(totp.url()));
                     entry.get_uuid()
                 })
         })?)
@@ -698,7 +703,7 @@ impl KeepassVault {
                                payment.color_str(),
                                payment.billing_address().as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
             );
-            node.borrow_mut().as_any_mut().downcast_mut::<Entry>().map(|entry| {
+            node.borrow_mut().downcast_mut::<Entry>().map(|entry| {
                 entry.set_title(Some(payment.name()));
                 entry.set_notes(Some(&note));
                 entry.get_uuid()
@@ -715,7 +720,6 @@ impl KeepassVault {
             .create_new_entry(parent_uuid.clone(), 0)
             .map(|node| {
                 node.borrow_mut()
-                    .as_any_mut()
                     .downcast_mut::<Entry>()
                     .map(|entry| {
                         entry.set_title(Some(note.title()));
@@ -747,7 +751,7 @@ impl KeepassVault {
         if let Some(node_ref) = node {
             {
                 let mut node = node_ref.borrow_mut();
-                if let Some(entry) = node.as_any_mut().downcast_mut::<Entry>() {
+                if let Some(entry) = node.downcast_mut::<Entry>() {
                     update_fn(entry);
                     entry.update_history();
                 } else {
@@ -811,7 +815,7 @@ impl PasswordVault for KeepassVault {
             .filter(node_is_entry)
             .filter(|node| {
                 let node = node.borrow();
-                let e = node.as_any().downcast_ref::<Entry>().unwrap();
+                let e = node.downcast_ref::<Entry>().unwrap();
                 let username = e.get_username().unwrap_or("(no username)");
                 let service = e.get_url().unwrap_or("(no service)");
                 username.contains(grep) || service.contains(grep)
@@ -914,7 +918,7 @@ impl TotpVault for KeepassVault {
         let uuid = totp.id();
         self.update_entry(*uuid, |entry| {
             entry.set_title(Some(totp.label()));
-            entry.set_otp(totp.url());
+            entry.set_raw_otp_value(Some(totp.url()));
         })
     }
 }
@@ -927,12 +931,13 @@ mod tests {
 
     #[test]
     fn default_database_config_is_kdbx4_with_argon2_kdf() {
-        use keepass_ng::config::{DatabaseVersion, KdfConfig};
+        use keepass_ng::{DatabaseVersion, KdfConfig};
 
         // KeepassVault::new relies on DatabaseConfig::default(); pin that it
-        // stays KDBX4 + Argon2 rather than legacy AES-KDF.
+        // stays KDBX 4.1 + Argon2 rather than legacy AES-KDF. keepass-ng 0.11
+        // refuses to write anything but KDBX 4.1.
         let config = DatabaseConfig::default();
-        assert!(matches!(config.version, DatabaseVersion::KDB4(_)));
+        assert_eq!(config.version, DatabaseVersion::KDB4(1));
         assert!(matches!(config.kdf_config, KdfConfig::Argon2 { .. }));
     }
 
@@ -1037,5 +1042,41 @@ mod tests {
 
         assert!(KeepassVault::open("new-pw", path_str, None).is_ok());
         assert!(KeepassVault::open("old-pw", path_str, None).is_err());
+    }
+
+    #[test]
+    fn opens_and_resaves_vault_written_by_keepass_ng_0_9() {
+        // Vault written by passlane 3.2.0 (keepass-ng 0.9, KDBX 4.0) with one
+        // credential, one payment card, and one TOTP entry. keepass-ng 0.11
+        // only writes KDBX 4.1, so opening must upgrade the version in memory
+        // or the first save after the upgrade would fail.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/resources/legacy-passlane3.2-kdbx4.0.kdbx");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        std::fs::copy(&fixture, &path).unwrap();
+        let path_str = path.to_str().unwrap().to_string();
+
+        let vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        assert_eq!(vault.grep(None).len(), 1);
+        assert_eq!(vault.find_payments().len(), 1);
+        assert_eq!(vault.find_totp(None).len(), 1);
+        assert_eq!(vault.db.config.version, DatabaseVersion::KDB4(1));
+        drop(vault);
+
+        // The upgraded vault must save and reload with all entries intact.
+        let mut vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        vault.save_database().unwrap();
+        let vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        assert_eq!(vault.grep(None).len(), 1);
+        assert_eq!(vault.find_payments().len(), 1);
+        assert_eq!(vault.find_totp(None).len(), 1);
+
+        let totp = &vault.find_totp(None)[0];
+        assert_eq!(totp.label(), "Fixture:demo");
+        assert_eq!(totp.issuer(), "Fixture");
+        let credential = &vault.grep(None)[0];
+        assert_eq!(credential.username(), "fixture-user");
+        assert_eq!(credential.password(), "fixture-password-1");
     }
 }
