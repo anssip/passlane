@@ -177,9 +177,6 @@ impl KeepassVault {
         challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
-        if requires_touch(challenge_response) {
-            eprintln!("Touch your hardware key to open the vault...");
-        }
         let db = Self::open_database(filepath, password, &keyfile_path, challenge_response)?;
         Ok(Self {
             password: String::from(password),
@@ -382,6 +379,12 @@ impl KeepassVault {
         }
         let (mut db_file, key) =
             Self::get_database_key(filepath, password, keyfile, challenge_response)?;
+        // Printed only once the vault file and keyfile opened fine, so the
+        // user is never told to touch the key for an operation that is about
+        // to fail before any challenge happens.
+        if requires_touch(challenge_response) {
+            eprintln!("Touch your hardware key to open the vault...");
+        }
         let mut db = Database::open(&mut db_file, key)?;
         db.set_recycle_bin_enabled(false);
         // keepass-ng 0.11 only writes KDBX 4.1, while vaults created with

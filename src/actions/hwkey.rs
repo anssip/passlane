@@ -120,7 +120,7 @@ impl HwKeyAction {
                 Some(&challenge_response),
             )?;
             vault.update_challenge_response(None)?;
-            hwkey::clear_config();
+            hwkey::clear_config()?;
             Ok::<(), Error>(())
         })();
         password.zeroize();

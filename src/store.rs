@@ -96,20 +96,6 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     Ok(credentials)
 }
 
-fn read_from_file(path: &PathBuf) -> Option<String> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .create_new(false)
-        .open(&path)
-        .unwrap();
-
-    let mut file_content = String::new();
-    file.read_to_string(&mut file_content)
-        .expect("Unable to read master password file");
-    Some(file_content.trim().parse().unwrap())
-}
-
 /// Read the trimmed content of a config file in ~/.passlane/, or None if it
 /// does not exist or cannot be read. An unreadable config (bad permissions,
 /// partial write) must not panic the CLI — treat it as not configured and
@@ -144,20 +130,19 @@ pub(crate) fn get_totp_keyfile_path() -> Option<String> {
     resolve_keyfile_path(".totp_keyfile_path")
 }
 
+/// Resolve a vault path from its config file, falling back to the default
+/// when the config is missing, unreadable, or empty. Like the other config
+/// readers, an unreadable file must not panic the CLI.
 fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> String {
     let default_path = dir_path()
         .join(default_filename)
         .to_str()
         .unwrap()
         .to_string();
-    let path = dir_path().join(path_config_filename);
-    if path.exists() {
-        return read_from_file(&path)
-            .unwrap_or(default_path)
-            .trim()
-            .to_string();
-    }
-    default_path
+    let configured = read_config_file(path_config_filename)
+        .filter(|content| !content.is_empty())
+        .unwrap_or(default_path);
+    configured.trim().to_string()
 }
 
 fn config_file_exists(path_config_filename: &str) -> bool {
@@ -297,14 +282,20 @@ pub fn has_hwkey_config() -> bool {
     config_file_exists(".hwkey")
 }
 
-pub(crate) fn clear_hwkey_config() {
+/// Remove the hardware key config. Failing to remove it must be a hard
+/// error, not a warning: a leftover config makes passlane demand a key the
+/// vault no longer requires, locking the user out until the file is gone.
+pub(crate) fn clear_hwkey_config() -> Result<(), Error> {
     let path = dir_path().join(".hwkey");
-    if let Err(e) = std::fs::remove_file(&path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            // A leftover config makes passlane require a key that is no
-            // longer enrolled, so warn visibly rather than only logging.
-            eprintln!("Warning: failed to remove the hardware key config: {}", e);
-        }
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::new(&format!(
+            "The vault no longer uses the hardware key, but passlane could not remove the config file {}: {}. \
+             Passlane will keep asking for the key until the file is deleted — remove it manually and re-run 'passlane hwkey remove'.",
+            path.display(),
+            e
+        ))),
     }
 }
 

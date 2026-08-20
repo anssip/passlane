@@ -73,8 +73,8 @@ pub fn save_config(config: &HwKeyConfig) -> Result<(), Error> {
     store::save_hwkey_config(&config.to_file_content())
 }
 
-pub fn clear_config() {
-    store::clear_hwkey_config();
+pub fn clear_config() -> Result<(), Error> {
+    store::clear_hwkey_config()
 }
 
 /// Build the challenge-response key from the stored config, resolving the
