@@ -76,11 +76,22 @@ pub(crate) fn get_vault_password() -> String {
 type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
 
 fn get_vault_properties() -> Result<VaultProperties, Error> {
-    let master_pwd = get_vault_password();
-    let filepath = store::get_vault_path();
-    let keyfile_path = store::get_keyfile_path();
-    let challenge_response = crate::hwkey::configured_challenge_response_key()?;
-    Ok((master_pwd, filepath, keyfile_path, challenge_response))
+    let mut master_pwd = get_vault_password();
+    let challenge_response = match crate::hwkey::configured_challenge_response_key() {
+        Ok(cr) => cr,
+        Err(e) => {
+            // The key not being connected lands here; keep the password
+            // zeroize discipline on this early return too.
+            master_pwd.zeroize();
+            return Err(e);
+        }
+    };
+    Ok((
+        master_pwd,
+        store::get_vault_path(),
+        store::get_keyfile_path(),
+        challenge_response,
+    ))
 }
 
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
