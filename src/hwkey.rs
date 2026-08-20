@@ -62,9 +62,21 @@ impl HwKeyConfig {
 }
 
 /// Load the enrolled config. `Ok(None)` when no hardware key is enrolled.
+/// A config file that exists but cannot be read is a hard error: reporting
+/// "not enrolled" would make unlock skip the factor and fail with a
+/// misleading wrong-key error instead of the real cause.
 pub fn load_config() -> Result<Option<HwKeyConfig>, Error> {
     match store::read_hwkey_config() {
-        None => Ok(None),
+        None => {
+            if store::has_hwkey_config() {
+                Err(Error::new(
+                    "The hardware key config ~/.passlane/.hwkey exists but cannot be read. \
+                     Fix its permissions and try again.",
+                ))
+            } else {
+                Ok(None)
+            }
+        }
         Some(content) => Ok(Some(HwKeyConfig::parse(&content)?)),
     }
 }

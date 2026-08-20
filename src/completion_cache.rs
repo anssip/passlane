@@ -164,9 +164,18 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Acquire the shared lock, ignoring poisoning: a poisoned lock only
+    /// means another test failed while holding it, and cascading poison
+    /// errors would hide this test's own result.
+    fn cache_file_guard() -> std::sync::MutexGuard<'static, ()> {
+        cache_file_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn test_read_cache_missing_file() {
-        let _guard = cache_file_lock().lock().unwrap();
+        let _guard = cache_file_guard();
         // read_cache should return empty vec for missing file
         // We can't easily test with the real path, but we test the logic
         let entries = read_cache();
@@ -184,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_cache() {
-        let _guard = cache_file_lock().lock().unwrap();
+        let _guard = cache_file_guard();
         let entries = vec![
             "github".to_string(),
             "google".to_string(),
@@ -207,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_clear_cache_no_error_when_missing() {
-        let _guard = cache_file_lock().lock().unwrap();
+        let _guard = cache_file_guard();
         // Should not panic even if file doesn't exist
         clear_cache();
     }
@@ -225,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_refresh_if_stale_no_panic_when_no_cache() {
-        let _guard = cache_file_lock().lock().unwrap();
+        let _guard = cache_file_guard();
         // Should silently return when cache file doesn't exist
         refresh_if_stale();
     }
