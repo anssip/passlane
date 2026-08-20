@@ -93,8 +93,15 @@ pub fn refresh_if_stale() {
 }
 
 /// Opens the vault using the keychain password and writes the cache.
-/// Does nothing if the vault is locked (no password in keychain).
+/// Does nothing if the vault is locked (no password in keychain), or if the
+/// vault is protected by a hardware key: opening it needs a physical touch
+/// nobody is around to provide in this silent background path.
 fn create_cache_from_keychain() {
+    if store::has_hwkey_config() {
+        debug!("Hardware key enrolled, skipping silent cache refresh");
+        return;
+    }
+
     let master_pwd = match keychain::get_master_password() {
         Ok(pwd) => pwd,
         Err(_) => {
@@ -106,7 +113,7 @@ fn create_cache_from_keychain() {
     let filepath = store::get_vault_path();
     let keyfile_path = store::get_keyfile_path();
 
-    match KeepassVault::open(&master_pwd, &filepath, keyfile_path) {
+    match KeepassVault::open(&master_pwd, &filepath, keyfile_path, None) {
         Ok(vault) => {
             let boxed: Box<dyn Vault> = Box::new(vault);
             update_cache(&boxed);
@@ -147,9 +154,19 @@ fn write_cache(entries: &[String]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// These tests share the real ~/.passlane/.completion_cache file, so they
+    /// must not run concurrently: e.g. clear_cache() deleting the file between
+    /// another test's write and read makes it fail spuriously.
+    fn cache_file_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_read_cache_missing_file() {
+        let _guard = cache_file_lock().lock().unwrap();
         // read_cache should return empty vec for missing file
         // We can't easily test with the real path, but we test the logic
         let entries = read_cache();
@@ -167,6 +184,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_cache() {
+        let _guard = cache_file_lock().lock().unwrap();
         let entries = vec![
             "github".to_string(),
             "google".to_string(),
@@ -189,6 +207,7 @@ mod tests {
 
     #[test]
     fn test_clear_cache_no_error_when_missing() {
+        let _guard = cache_file_lock().lock().unwrap();
         // Should not panic even if file doesn't exist
         clear_cache();
     }
@@ -206,6 +225,7 @@ mod tests {
 
     #[test]
     fn test_refresh_if_stale_no_panic_when_no_cache() {
+        let _guard = cache_file_lock().lock().unwrap();
         // Should silently return when cache file doesn't exist
         refresh_if_stale();
     }

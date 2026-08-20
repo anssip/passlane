@@ -1,4 +1,5 @@
 use clap::ArgMatches;
+use keepass_ng::ChallengeResponseKey;
 
 use crate::actions::Action;
 use crate::keychain;
@@ -34,6 +35,14 @@ impl ChangePasswordAction {
         }
     }
 
+    fn challenge_response_key(&self) -> Result<Option<ChallengeResponseKey>, Error> {
+        if self.totp {
+            Ok(None)
+        } else {
+            crate::hwkey::configured_challenge_response_key()
+        }
+    }
+
     fn update_keychain_if_stored(&self, new_password: &str) -> Result<(), Error> {
         let stored = if self.totp {
             keychain::get_totp_master_password()
@@ -55,8 +64,14 @@ impl Action for ChangePasswordAction {
     fn run(&self) -> Result<String, Error> {
         let (filepath, keyfile_path) = self.vault_paths();
         let current_pwd = self.ask_current_password();
+        let challenge_response = self.challenge_response_key()?;
 
-        let mut vault = KeepassVault::open(&current_pwd, &filepath, keyfile_path)?;
+        let mut vault = KeepassVault::open(
+            &current_pwd,
+            &filepath,
+            keyfile_path,
+            challenge_response.as_ref(),
+        )?;
 
         let new_pwd = ask_new_master_password();
         if new_pwd == current_pwd {

@@ -92,9 +92,15 @@ fn generate_cache() -> Result<usize, Error> {
 
     let filepath = store::get_vault_path();
     let keyfile_path = store::get_keyfile_path();
+    let challenge_response = crate::hwkey::configured_challenge_response_key()?;
 
     println!("Opening vault to build completion cache...");
-    let vault = KeepassVault::open(&master_pwd, &filepath, keyfile_path)?;
+    let vault = KeepassVault::open(
+        &master_pwd,
+        &filepath,
+        keyfile_path,
+        challenge_response.as_ref(),
+    )?;
     let count = vault.grep(None).len();
     let boxed: Box<dyn Vault> = Box::new(vault);
     completion_cache::update_cache(&boxed);

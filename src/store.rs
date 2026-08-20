@@ -110,13 +110,19 @@ fn read_from_file(path: &PathBuf) -> Option<String> {
     Some(file_content.trim().parse().unwrap())
 }
 
-fn resolve_keyfile_path(path_config_file: &str) -> Option<String> {
+/// Read the trimmed content of a config file in ~/.passlane/, or None if it
+/// does not exist.
+fn read_config_file(path_config_file: &str) -> Option<String> {
     let path = dir_path().join(path_config_file);
     if !path.exists() {
         None
     } else {
         read_from_file(&path)
     }
+}
+
+fn resolve_keyfile_path(path_config_file: &str) -> Option<String> {
+    read_config_file(path_config_file)
 }
 
 pub fn get_keyfile_path() -> Option<String> {
@@ -264,6 +270,31 @@ pub fn has_totp_vault_path() -> bool {
 
 pub fn has_keyfile_path() -> bool {
     config_file_exists(".keyfile_path")
+}
+
+/// Hardware-key (challenge-response) enrollment for the main vault. The file
+/// holds the raw "slot=...\nserial=..." content; parsing lives in hwkey.rs.
+pub(crate) fn read_hwkey_config() -> Option<String> {
+    read_config_file(".hwkey")
+}
+
+pub(crate) fn save_hwkey_config(content: &str) -> Result<(), Error> {
+    save_config_path(".hwkey", content)
+}
+
+pub fn has_hwkey_config() -> bool {
+    config_file_exists(".hwkey")
+}
+
+pub(crate) fn clear_hwkey_config() {
+    let path = dir_path().join(".hwkey");
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            // A leftover config makes passlane require a key that is no
+            // longer enrolled, so warn visibly rather than only logging.
+            eprintln!("Warning: failed to remove the hardware key config: {}", e);
+        }
+    }
 }
 
 #[cfg(test)]
