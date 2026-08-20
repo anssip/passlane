@@ -414,7 +414,7 @@ impl KeepassVault {
         NodeIterator::new(&self.get_root())
             .filter(node_is_entry)
             .filter(node_looks_like_payment)
-            .map(Self::node_to_payment)
+            .filter_map(Self::node_to_payment)
             .collect()
     }
 
@@ -486,24 +486,24 @@ impl KeepassVault {
         )
     }
 
-    fn node_to_payment(node: NodePtr) -> PaymentCard {
+    fn node_to_payment(node: NodePtr) -> Option<PaymentCard> {
         let (name, name_on_card, number, cvv, expiry, color, billing_address, id) =
-            Self::get_node_payment_values(node).unwrap();
+            Self::get_node_payment_values(node)?;
         // Cards saved without a billing address store an empty line in their
         // notes; treat an empty or malformed address as "no address" instead
         // of failing to load the card.
         let billing_address = Address::from_str(&billing_address).ok();
-        PaymentCard::new(
+        Some(PaymentCard::new(
             Some(&id),
             &name,
             &name_on_card,
             &number,
             &cvv,
-            Expiry::from_str(&expiry).unwrap(),
+            expiry,
             color.as_deref(),
             billing_address.as_ref(),
             None,
-        )
+        ))
     }
 
     fn node_to_note(node: NodePtr) -> Note {
@@ -523,7 +523,7 @@ impl KeepassVault {
         String,
         String,
         String,
-        String,
+        Expiry,
         Option<String>,
         String,
         Uuid,
@@ -532,12 +532,17 @@ impl KeepassVault {
         let e = node.downcast_ref::<Entry>().unwrap();
         let note = e.get_notes()?;
         let name = e.get_title().unwrap_or("(no name)");
-        let name_on_card = Self::extract_value_from_note(note, 0, "Name on card");
-        let number = Self::extract_value_from_note(note, 1, "Number");
-        let cvv = Self::extract_value_from_note(note, 2, "CVV");
-        let expiry = Self::extract_value_from_note(note, 3, "Expiry");
-        let color = Self::extract_value_from_note_opt(note, 4, "Color");
-        let billing_address = Self::extract_value_from_note(note, 5, "Billing Address");
+        // Fields are matched by their "Name: " prefix rather than by line
+        // position, so notes edited in another KeePass client (reordered
+        // lines) still load. A missing or unparseable expiry means the entry
+        // is not treated as a payment card.
+        let name_on_card = Self::extract_value_from_note(note, "Name on card");
+        let number = Self::extract_value_from_note(note, "Number");
+        let cvv = Self::extract_value_from_note(note, "CVV");
+        let expiry = Self::extract_value_from_note_opt(note, "Expiry")
+            .and_then(|value| Expiry::from_str(&value).ok())?;
+        let color = Self::extract_value_from_note_opt(note, "Color");
+        let billing_address = Self::extract_value_from_note(note, "Billing Address");
 
         Some((
             name.to_string(),
@@ -566,19 +571,16 @@ impl KeepassVault {
         )
     }
 
-    fn extract_value_from_note_opt(note: &str, line: usize, name: &str) -> Option<String> {
-        let no_value = &format!("(no {name} on card)");
+    fn extract_value_from_note_opt(note: &str, name: &str) -> Option<String> {
+        let prefix = format!("{name}: ");
         note.lines()
-            .nth(line)
-            .unwrap_or(no_value)
-            .split(&format!("{name}: "))
-            .nth(1)
-            .map(|v| String::from(v))
+            .find_map(|line| line.strip_prefix(&prefix))
+            .map(String::from)
     }
 
-    fn extract_value_from_note(note: &str, line: usize, name: &str) -> String {
+    fn extract_value_from_note(note: &str, name: &str) -> String {
         let no_value = String::from(&format!("(no {name} on card)"));
-        Self::extract_value_from_note_opt(note, line, name).unwrap_or(no_value)
+        Self::extract_value_from_note_opt(note, name).unwrap_or(no_value)
     }
 
     fn get_node_totp_values(
@@ -1078,5 +1080,44 @@ mod tests {
         let credential = &vault.grep(None)[0];
         assert_eq!(credential.username(), "fixture-user");
         assert_eq!(credential.password(), "fixture-password-1");
+    }
+
+    fn payment_entry_node(title: &str, notes: &str) -> NodePtr {
+        let mut db = Database::new(DatabaseConfig::default());
+        let root_uuid = db.root.borrow().get_uuid();
+        let node = db.create_new_entry(root_uuid, 0).unwrap();
+        {
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some(title));
+            entry.set_notes(Some(notes));
+        }
+        node
+    }
+
+    #[test]
+    fn payment_note_with_reordered_lines_loads() {
+        // Field detection is order-independent ("any Number: and Expiry:
+        // line"), so parsing must not assume the line layout written by
+        // create_payment_entry either.
+        let node = payment_entry_node(
+            "Reordered Card",
+            "Expiry: 12/30\nName on card: Reordered User\nNumber: 4111111111111111\nCVV: 123\nColor: \nBilling Address: ",
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.number(), "4111111111111111");
+        assert_eq!(payment.expiry_str(), "12/30");
+        assert_eq!(payment.name_on_card(), "Reordered User");
+    }
+
+    #[test]
+    fn payment_note_with_unparseable_expiry_is_skipped() {
+        // A "Number:"/"Expiry:" note whose expiry does not parse is not a
+        // payment card; it must be skipped, not panic.
+        let node = payment_entry_node(
+            "Broken Card",
+            "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry: never\nColor: \nBilling Address: ",
+        );
+        assert!(KeepassVault::node_to_payment(node).is_none());
     }
 }
