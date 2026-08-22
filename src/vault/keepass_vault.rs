@@ -6,7 +6,9 @@ use keepass_ng::db::{
     Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
 };
 use keepass_ng::db::DatabaseSaveError;
-use keepass_ng::{DatabaseConfig, DatabaseKey, DatabaseOpenError, DatabaseVersion};
+use keepass_ng::{
+    ChallengeResponseKey, DatabaseConfig, DatabaseKey, DatabaseOpenError, DatabaseVersion,
+};
 
 use log::debug;
 use std::fs::{File, OpenOptions};
@@ -21,6 +23,7 @@ pub struct KeepassVault {
     db: Database,
     filepath: String,
     keyfile: Option<String>,
+    challenge_response: Option<ChallengeResponseKey>,
 }
 
 impl Drop for KeepassVault {
@@ -156,19 +159,31 @@ fn node_looks_like_credential(node: &NodePtr) -> bool {
     has_username || has_password || has_url
 }
 
+/// Only the hardware-key variant blocks on a physical touch; a
+/// `LocalChallenge` key (recovery via backed-up secret, tests) computes the
+/// response locally, so no "touch" prompt should be shown for it.
+fn requires_touch(challenge_response: Option<&ChallengeResponseKey>) -> bool {
+    matches!(
+        challenge_response,
+        Some(ChallengeResponseKey::YubikeyChallenge(..))
+    )
+}
+
 impl KeepassVault {
     pub fn open(
         password: &str,
         filepath: &str,
         keyfile_path: Option<String>,
+        challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
-        let db = Self::open_database(filepath, password, &keyfile_path)?;
+        let db = Self::open_database(filepath, password, &keyfile_path, challenge_response)?;
         Ok(Self {
             password: String::from(password),
             db,
             filepath: filepath.to_string(),
             keyfile: keyfile_path,
+            challenge_response: challenge_response.cloned(),
         })
     }
 
@@ -176,6 +191,7 @@ impl KeepassVault {
         filepath: &str,
         password: &str,
         keyfile: Option<&str>,
+        challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<KeepassVault, Error> {
         let mut db = Database::new(DatabaseConfig::default());
         db.meta.database_name = Some("Passlane database".to_string());
@@ -188,8 +204,14 @@ impl KeepassVault {
             password: password.to_string(),
             filepath: filepath.to_string(),
             keyfile: keyfile.map(ToString::to_string),
+            challenge_response: challenge_response.cloned(),
         };
-        let key = Self::build_key(password, &vault.keyfile)?;
+        let key = Self::build_key(password, &vault.keyfile, challenge_response)?;
+        // The challenge happens during the save below; print only once the
+        // keyfile opened fine, mirroring the open path.
+        if requires_touch(challenge_response) {
+            eprintln!("Touch your hardware key to encrypt the vault...");
+        }
         vault.save_atomically(key)?;
 
         Ok(vault)
@@ -204,22 +226,50 @@ impl KeepassVault {
     }
 
     fn save_database(&self) -> Result<(), Error> {
-        let key = Self::build_key(&self.password, &self.keyfile)?;
+        // Every save issues a fresh challenge to the hardware key, so tell the
+        // user why passlane is waiting. Stderr keeps stdout parseable for
+        // commands with JSON output.
+        if requires_touch(self.challenge_response.as_ref()) {
+            eprintln!("Touch your hardware key to authorize saving...");
+        }
+        let key = Self::build_key(&self.password, &self.keyfile, self.challenge_response.as_ref())?;
         debug!("Saving database to file '{}'", &self.filepath);
         self.save_atomically(key)
     }
 
     pub fn change_master_password(&mut self, mut new_password: String) -> Result<(), Error> {
-        let result = Self::build_key(&new_password, &self.keyfile).and_then(|key| {
-            debug!("Re-encrypting database '{}' with new master password", &self.filepath);
-            self.save_atomically(key)
-        });
+        let result =
+            Self::build_key(&new_password, &self.keyfile, self.challenge_response.as_ref()).and_then(
+                |key| {
+                    debug!("Re-encrypting database '{}' with new master password", &self.filepath);
+                    self.save_atomically(key)
+                },
+            );
         if let Err(e) = result {
             new_password.zeroize();
             return Err(e);
         }
         let mut old_password = std::mem::replace(&mut self.password, new_password);
         old_password.zeroize();
+        Ok(())
+    }
+
+    /// Enroll or remove the hardware-key challenge-response factor and re-save
+    /// the vault. The save itself challenges the *new* key, so a successful
+    /// return proves the enrollment works before any config is persisted.
+    /// Removing the factor (`None`) needs the current key only to open the
+    /// vault, which the caller has already done. If the save fails, the
+    /// previous factor is restored so the in-memory state keeps matching the
+    /// file on disk.
+    pub fn update_challenge_response(
+        &mut self,
+        challenge_response: Option<ChallengeResponseKey>,
+    ) -> Result<(), Error> {
+        let previous = std::mem::replace(&mut self.challenge_response, challenge_response);
+        if let Err(e) = self.save_database() {
+            self.challenge_response = previous;
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -288,23 +338,30 @@ impl KeepassVault {
         })
     }
 
-    fn build_key(password: &str, keyfile: &Option<String>) -> Result<DatabaseKey, Error> {
-        match keyfile {
+    fn build_key(
+        password: &str,
+        keyfile: &Option<String>,
+        challenge_response: Option<&ChallengeResponseKey>,
+    ) -> Result<DatabaseKey, Error> {
+        let mut key = match keyfile {
             Some(kf) => {
                 debug!("Using keyfile '{}' and password", kf);
                 let mut file = File::open(kf)?;
-                Ok(DatabaseKey::new()
-                    .with_password(password)
-                    .with_keyfile(&mut file)?)
+                DatabaseKey::new().with_password(password).with_keyfile(&mut file)?
             }
-            None => Ok(DatabaseKey::new().with_password(password)),
+            None => DatabaseKey::new().with_password(password),
+        };
+        if let Some(cr) = challenge_response {
+            key = key.with_challenge_response_key(cr.clone());
         }
+        Ok(key)
     }
 
     fn open_database(
         filepath: &str,
         password: &str,
         keyfile: &Option<String>,
+        challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<Database, Error> {
         match std::fs::metadata(filepath) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -322,7 +379,14 @@ impl KeepassVault {
             }
             Ok(_) => {}
         }
-        let (mut db_file, key) = Self::get_database_key(filepath, password, keyfile)?;
+        let (mut db_file, key) =
+            Self::get_database_key(filepath, password, keyfile, challenge_response)?;
+        // Printed only once the vault file and keyfile opened fine, so the
+        // user is never told to touch the key for an operation that is about
+        // to fail before any challenge happens.
+        if requires_touch(challenge_response) {
+            eprintln!("Touch your hardware key to open the vault...");
+        }
         let mut db = Database::open(&mut db_file, key)?;
         db.set_recycle_bin_enabled(false);
         // keepass-ng 0.11 only writes KDBX 4.1, while vaults created with
@@ -351,19 +415,22 @@ impl KeepassVault {
         filepath: &str,
         password: &str,
         keyfile: &Option<String>,
+        challenge_response: Option<&ChallengeResponseKey>,
     ) -> Result<(File, DatabaseKey), DatabaseOpenError> {
         let db_file = File::open(filepath)?;
-        let key = match keyfile {
+        let mut key = match keyfile {
             Some(kf) => {
                 debug!("Using keyfile '{}' and password", kf);
-                let file = &mut File::open(kf).expect("Failed to open keyfile");
+                let mut file = File::open(kf)?;
                 DatabaseKey::new()
                     .with_password(password)
-                    .with_keyfile(file)
-                    .unwrap()
+                    .with_keyfile(&mut file)?
             }
             None => DatabaseKey::new().with_password(password),
         };
+        if let Some(cr) = challenge_response {
+            key = key.with_challenge_response_key(cr.clone());
+        }
         Ok((db_file, key))
     }
 
@@ -997,7 +1064,7 @@ mod tests {
         let path = dir.path().join("does-not-exist.kdbx");
         let path_str = path.to_str().unwrap();
 
-        let result = KeepassVault::open("any-password", path_str, None);
+        let result = KeepassVault::open("any-password", path_str, None, None);
         let err = result.err().expect("opening a missing vault file must fail");
         assert!(
             err.message.contains("does not exist"),
@@ -1012,7 +1079,7 @@ mod tests {
         let path = dir.path().join("vault.kdbx");
         let path_str = path.to_str().unwrap();
 
-        let vault = KeepassVault::new(path_str, "master-pw", None).unwrap();
+        let vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
 
         // Simulate stale trailing bytes left by a previously larger version.
         use std::io::Write;
@@ -1024,7 +1091,7 @@ mod tests {
 
         let bytes = std::fs::read(&path).unwrap();
         assert!(!bytes.ends_with(&[0xAB; 4096]), "stale bytes survived the save");
-        KeepassVault::open("master-pw", path_str, None).unwrap();
+        KeepassVault::open("master-pw", path_str, None, None).unwrap();
 
         let leftover_tmp = std::fs::read_dir(dir.path())
             .unwrap()
@@ -1039,11 +1106,67 @@ mod tests {
         let path = dir.path().join("vault.kdbx");
         let path_str = path.to_str().unwrap();
 
-        let mut vault = KeepassVault::new(path_str, "old-pw", None).unwrap();
+        let mut vault = KeepassVault::new(path_str, "old-pw", None, None).unwrap();
         vault.change_master_password("new-pw".to_string()).unwrap();
 
-        assert!(KeepassVault::open("new-pw", path_str, None).is_ok());
-        assert!(KeepassVault::open("old-pw", path_str, None).is_err());
+        assert!(KeepassVault::open("new-pw", path_str, None, None).is_ok());
+        assert!(KeepassVault::open("old-pw", path_str, None, None).is_err());
+    }
+
+    /// A stand-in for a hardware key: the 20-byte HMAC-SHA1 secret a
+    /// challenge-response slot would hold, hex-encoded. LocalChallenge is also
+    /// what the lost-key recovery path uses.
+    fn local_challenge() -> ChallengeResponseKey {
+        ChallengeResponseKey::LocalChallenge("0102030405060708090a0b0c0d0e0f1011121314".to_string())
+    }
+
+    #[test]
+    fn hwkey_enrolled_vault_requires_challenge_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let cr = local_challenge();
+        KeepassVault::new(path_str, "master-pw", None, Some(&cr)).unwrap();
+
+        // Opening with the enrolled factor works; without it the key is wrong.
+        assert!(KeepassVault::open("master-pw", path_str, None, Some(&cr)).is_ok());
+        assert!(KeepassVault::open("master-pw", path_str, None, None).is_err());
+    }
+
+    #[test]
+    fn update_challenge_response_enrolls_and_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        let cr = local_challenge();
+        vault.update_challenge_response(Some(cr.clone())).unwrap();
+        drop(vault);
+        // The enrollment is persisted: reopening needs the factor.
+        assert!(KeepassVault::open("master-pw", path_str, None, Some(&cr)).is_ok());
+
+        let mut vault = KeepassVault::open("master-pw", path_str, None, Some(&cr)).unwrap();
+        vault.update_challenge_response(None).unwrap();
+        drop(vault);
+        assert!(KeepassVault::open("master-pw", path_str, None, None).is_ok());
+        assert!(KeepassVault::open("master-pw", path_str, None, Some(&cr)).is_err());
+    }
+
+    #[test]
+    fn change_master_password_preserves_challenge_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let cr = local_challenge();
+        let mut vault = KeepassVault::new(path_str, "old-pw", None, Some(&cr)).unwrap();
+        vault.change_master_password("new-pw".to_string()).unwrap();
+        drop(vault);
+
+        assert!(KeepassVault::open("new-pw", path_str, None, Some(&cr)).is_ok());
+        assert!(KeepassVault::open("new-pw", path_str, None, None).is_err());
     }
 
     #[test]
@@ -1059,7 +1182,7 @@ mod tests {
         std::fs::copy(&fixture, &path).unwrap();
         let path_str = path.to_str().unwrap().to_string();
 
-        let vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        let vault = KeepassVault::open("fixture-password", &path_str, None, None).unwrap();
         assert_eq!(vault.grep(None).len(), 1);
         assert_eq!(vault.find_payments().len(), 1);
         assert_eq!(vault.find_totp(None).len(), 1);
@@ -1067,9 +1190,9 @@ mod tests {
         drop(vault);
 
         // The upgraded vault must save and reload with all entries intact.
-        let mut vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        let mut vault = KeepassVault::open("fixture-password", &path_str, None, None).unwrap();
         vault.save_database().unwrap();
-        let vault = KeepassVault::open("fixture-password", &path_str, None).unwrap();
+        let vault = KeepassVault::open("fixture-password", &path_str, None, None).unwrap();
         assert_eq!(vault.grep(None).len(), 1);
         assert_eq!(vault.find_payments().len(), 1);
         assert_eq!(vault.find_totp(None).len(), 1);

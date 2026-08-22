@@ -15,6 +15,7 @@ Passlane is written in Rust.
 - Keepass storage format which allows you to use the vault with other Keepass compatible applications
   - Supports KDB, KDBX3 and KDBX4 file formats
   - The keepass storage file can be optionally secured using a [key file](https://keepassxc.org/docs/) to provide additional protection
+  - Optional hardware key (e.g. a YubiKey) challenge-response factor for unlocking the vault
 - Generate and save passwords
 - Add optional notes to credentials (useful when you have several accounts on the same service)
 - Save and view payment card information
@@ -33,6 +34,7 @@ Passlane is written in Rust.
 - [Installation](#installation)
 - [Usage](#usage)
   - [Locking and unlocking the vault](#locking-and-unlocking-the-vault)
+  - [Hardware key (YubiKey) unlock](#hardware-key-yubikey-unlock)
   - [Generating and saving passwords](#generating-and-saving-passwords)
   - [Using saved credentials](#using-saved-credentials)
   - [Payment cards](#payment-cards)
@@ -121,9 +123,10 @@ The REPL supports **tab completion** for commands and types, and **command histo
 ### To compile from sources
 
 1. Install rust development environment: [rustup](https://rustup.rs)
-2. Clone this repo
-3. Run build: `cargo build --release`
-4. Add the built `passlane` binary to your `$PATH`
+2. On Linux, install the USB development packages needed by the hardware key support: `libusb-1.0-0-dev` and `libudev-dev` on Debian/Ubuntu, or `libusb-devel` and `systemd-devel` on Fedora. macOS and Windows need no extra prerequisites.
+3. Clone this repo
+4. Run build: `cargo build --release`
+5. Add the built `passlane` binary to your `$PATH`
 
 ### Nix
 
@@ -158,6 +161,57 @@ You place the vault file to the cloud allowing access from all your devices. [Se
 In addition to the master password, you can use a key file to provide additional protection for the vault file. At this
 time, Passlane cannot be used to create a key file, but you can create one with KeepassXC or other Keepass compatible
 app. Once you have the file, configure the location of this file in the `.keyfile_path` file in the `~/.passlane/` directory.
+
+### Hardware key (YubiKey) unlock
+
+You can require a hardware security key (such as a YubiKey) as an additional unlock factor for the main vault, using the
+same HMAC-SHA1 challenge-response mechanism as KeepassXC. The vault is then encrypted with the master password (and key
+file, if configured) plus the hardware key: something you know + something you have.
+
+Note that this is *not* the same as passkeys (FIDO2/WebAuthn): it uses the key's HMAC-SHA1 challenge-response slots. A
+YubiKey supports both, independently — enrolling a slot does not interfere with passkey use on the same device.
+
+Prerequisite: program one of the key's challenge-response slots and save the printed secret. It is the only way to
+recover the vault if the key is lost:
+
+```bash
+ykman otp chalresp --generate 2
+```
+
+Enroll the key (or answer yes to the hardware key question during `passlane init` when creating a new vault):
+
+```bash
+passlane hwkey add
+```
+
+After enrolling, the hardware key must be connected whenever the vault is opened or saved:
+
+- Read commands (`show`, `list`, `export`) need one touch, when opening the vault.
+- Commands that modify the vault (`add`, `edit`, `delete`, `csv`, `passwd`) touch the key twice: once to open the vault, and once to authorize saving.
+
+`passlane unlock` still caches the master password in the keychain — the hardware key does not replace the password, it
+adds a factor on top of it.
+
+Check the enrollment status and connected keys:
+
+```bash
+passlane hwkey status
+```
+
+Remove the hardware key from the vault (requires one last touch):
+
+```bash
+passlane hwkey remove
+```
+
+If the key is lost, recover using the backed-up slot secret printed by ykman:
+
+```bash
+passlane hwkey remove --secret
+```
+
+The vault remains usable in other Keepass compatible applications: register the same challenge-response slot in e.g.
+KeepassXC's database security settings. On Linux, USB access to the key requires libusb to be installed.
 
 ### Locking and unlocking the vault
 
@@ -218,6 +272,7 @@ Commands:
   lock    Lock the vaults to prevent all access
   unlock  Opens the vaults and grants access to the entries
   passwd  Change the master password of the vault.
+  hwkey   Manage the hardware key (e.g. a YubiKey) that protects the main vault with challenge-response.
   export  Exports the vault contents to a CSV file.
   gen     Generate a random password and copy it to the clipboard.
   repl    Launch the interactive REPL session.

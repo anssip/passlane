@@ -1,6 +1,7 @@
 mod actions;
 mod completion_cache;
 mod crypto;
+mod hwkey;
 mod keychain;
 mod repl;
 mod store;
@@ -15,6 +16,7 @@ use crate::actions::edit::EditAction;
 use crate::actions::export::ExportAction;
 use crate::actions::generate::GeneratePasswordAction;
 use crate::actions::help::PrintHelpAction;
+use crate::actions::hwkey::HwKeyAction;
 use crate::actions::import::ImportCsvAction;
 use crate::actions::list::ListAction;
 use crate::actions::lock::LockAction;
@@ -162,6 +164,34 @@ pub fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
+            Command::new("hwkey")
+                .about("Manage the hardware key (e.g. a YubiKey) that protects the main vault with challenge-response.")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("add")
+                        .about("Enroll a hardware key as an additional unlock factor for the main vault.")
+                        .long_about("Enrolls one of the key's HMAC-SHA1 challenge-response slots (program it first with e.g. 'ykman otp chalresp'). The vault then opens only with the master password (and keyfile) plus this key; every save needs a touch.")
+                        .arg(arg!(
+                            --slot <SLOT> "Challenge-response slot to use (1 or 2)."
+                        ).value_parser(["1", "2"]))
+                        .arg(arg!(
+                            --serial <SERIAL> "Serial number of the key to enroll, when several are connected."
+                        ).value_parser(clap::value_parser!(u32)))
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove the hardware key from the main vault.")
+                        .arg(arg!(
+                            --secret "Recover with the backed-up HMAC-SHA1 slot secret instead of the (lost) hardware key."
+                        ).action(ArgAction::SetTrue))
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Show the enrolled hardware key configuration and connected keys.")
+                )
+        )
+        .subcommand(
             Command::new("export")
                 .about("Exports the vault contents to a CSV file.")
                 .arg(arg!(
@@ -225,6 +255,9 @@ fn main() {
         }
         Some(("passwd", sub_matches)) => {
             VaultAction::Action(Box::new(ChangePasswordAction::new(sub_matches)))
+        }
+        Some(("hwkey", sub_matches)) => {
+            VaultAction::Action(Box::new(HwKeyAction::new(sub_matches)))
         }
         Some(("export", sub_matches)) => {
             VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches)))

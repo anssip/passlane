@@ -6,6 +6,7 @@ pub mod edit;
 pub mod export;
 pub mod generate;
 pub mod help;
+pub mod hwkey;
 pub mod import;
 pub mod init;
 pub mod list;
@@ -22,6 +23,7 @@ use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use arboard::Clipboard;
+use keepass_ng::ChallengeResponseKey;
 use zeroize::Zeroize;
 
 pub(crate) trait MatchHandlerTemplate
@@ -65,18 +67,37 @@ pub trait Action {
     }
 }
 
-fn get_vault_properties() -> (String, String, Option<String>) {
-    let stored_password = keychain::get_master_password();
-    let master_pwd = stored_password.unwrap_or_else(|_| ask_master_password(None));
-    let filepath = store::get_vault_path();
-    let keyfile_path = store::get_keyfile_path();
-    (master_pwd, filepath, keyfile_path)
+/// The main vault's master password: from the keychain when unlocked, else
+/// prompted for.
+pub(crate) fn get_vault_password() -> String {
+    keychain::get_master_password().unwrap_or_else(|_| ask_master_password(None))
 }
 
-fn unlock() -> Result<Box<dyn Vault>, Error> {
-    let (mut master_pwd, filepath, keyfile_path) = get_vault_properties();
+type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
+
+fn get_vault_properties() -> Result<VaultProperties, Error> {
+    let mut master_pwd = get_vault_password();
+    let challenge_response = match crate::hwkey::configured_challenge_response_key() {
+        Ok(cr) => cr,
+        Err(e) => {
+            // The key not being connected lands here; keep the password
+            // zeroize discipline on this early return too.
+            master_pwd.zeroize();
+            return Err(e);
+        }
+    };
+    Ok((
+        master_pwd,
+        store::get_vault_path(),
+        store::get_keyfile_path(),
+        challenge_response,
+    ))
+}
+
+pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
+    let (mut master_pwd, filepath, keyfile_path, challenge_response) = get_vault_properties()?;
     println!("Unlocking vault...");
-    let vault = get_vault(&master_pwd, &filepath, keyfile_path);
+    let vault = get_vault(&master_pwd, &filepath, keyfile_path, challenge_response.as_ref());
     master_pwd.zeroize();
     vault
 }
@@ -87,7 +108,7 @@ fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
     let filepath = store::get_totp_vault_path();
     let keyfile_path = store::get_totp_keyfile_path();
     println!("Unlocking TOTP vault...");
-    let vault = get_vault(&master_pwd, &filepath, keyfile_path);
+    let vault = get_vault(&master_pwd, &filepath, keyfile_path, None);
     master_pwd.zeroize();
     vault
 }
@@ -96,9 +117,10 @@ fn get_vault(
     password: &str,
     filepath: &str,
     keyfile_path: Option<String>,
+    challenge_response: Option<&ChallengeResponseKey>,
 ) -> Result<Box<dyn Vault>, Error> {
     // we could return some other Vault implementation here
-    let vault = KeepassVault::open(password, filepath, keyfile_path)?;
+    let vault = KeepassVault::open(password, filepath, keyfile_path, challenge_response)?;
     Ok(Box::new(vault))
 }
 

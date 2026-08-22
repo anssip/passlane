@@ -651,6 +651,16 @@ pub fn ask_store_totp_master_password() -> bool {
     .unwrap()
 }
 
+pub fn ask_store_hwkey() -> bool {
+    Confirm::new(
+        "Protect the vault with a hardware key (e.g. a YubiKey)? It becomes an additional unlock factor: the key must be connected and touched every time the vault is opened or saved.",
+    )
+    .with_default(false)
+    .with_help_message("Requires a key with a programmed HMAC-SHA1 challenge-response slot. Program one with e.g. 'ykman otp chalresp --generate 2' and save the printed secret.")
+    .prompt()
+    .unwrap()
+}
+
 pub fn ask_open_existing_vault() -> bool {
     Select::new(
         "Do you want to create a new vault or open an existing one?",
