@@ -136,11 +136,18 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
     if has_credential_fields {
         return false;
     }
-    // Legacy format written by older passlane versions.
+    // Legacy format written by older passlane versions. The expiry line
+    // must parse: node_to_payment drops entries whose expiry does not, so
+    // claiming them here would make them invisible to every loader. With
+    // the parse required, a malformed entry falls through to the note
+    // loaders instead.
     if let Some(notes) = e.get_notes() {
         let has_number = notes.lines().any(|l| l.starts_with("Number: "));
-        let has_expiry = notes.lines().any(|l| l.starts_with("Expiry: "));
-        if has_number && has_expiry {
+        let expiry = notes
+            .lines()
+            .find_map(|l| l.strip_prefix("Expiry: "))
+            .and_then(|value| Expiry::from_str(value).ok());
+        if has_number && expiry.is_some() {
             return true;
         }
     }
@@ -1627,6 +1634,20 @@ mod tests {
             "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry: never\nColor: \nBilling Address: ",
         );
         assert!(KeepassVault::node_to_payment(node).is_none());
+    }
+
+    #[test]
+    fn payment_note_with_unparseable_expiry_is_visible_as_note() {
+        // Detection must not claim the malformed entry either: load_payments
+        // drops it in filter_map, and the note/credential loaders exclude
+        // payment-looking nodes, so claiming it would make the entry
+        // invisible to every loader.
+        let node = payment_entry_node(
+            "Broken Card",
+            "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry: never\nColor: \nBilling Address: ",
+        );
+        assert!(!node_looks_like_payment(&node));
+        assert!(node_looks_like_note(&node));
     }
 
     fn custom_field_entry_node(title: &str, attrs: &[(&str, &str)]) -> NodePtr {
