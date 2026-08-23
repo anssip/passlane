@@ -741,11 +741,11 @@ impl KeepassVault {
             .get(PAYMENT_FIELD_COLOR)
             .filter(|color| !color.is_empty())
             .map(String::from);
-        let street = e.get(PAYMENT_FIELD_ADDRESS_STREET);
-        let zip = e.get(PAYMENT_FIELD_ADDRESS_ZIP);
-        let city = e.get(PAYMENT_FIELD_ADDRESS_CITY);
-        let state = e.get(PAYMENT_FIELD_ADDRESS_STATE);
-        let country = e.get(PAYMENT_FIELD_ADDRESS_COUNTRY);
+        let street = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_STREET));
+        let zip = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_ZIP));
+        let city = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_CITY));
+        let state = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_STATE));
+        let country = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_COUNTRY));
         // An address is present when any of its parts is, the state
         // included; entries without one store none of the address
         // attributes.
@@ -792,6 +792,13 @@ impl KeepassVault {
         note.lines()
             .find_map(|line| line.strip_prefix(&prefix))
             .map(String::from)
+    }
+
+    fn non_empty_str(value: Option<&str>) -> Option<&str> {
+        match value.map(str::trim) {
+            Some(value) if !value.is_empty() => Some(value),
+            _ => None,
+        }
     }
 
     fn extract_value_from_note(note: &str, name: &str) -> String {
@@ -928,16 +935,16 @@ impl KeepassVault {
         )?;
         let address = payment.billing_address();
         entry
-            .set_additional_attribute(PAYMENT_FIELD_ADDRESS_STREET, address.map(|a| a.street()))?;
-        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_ZIP, address.map(|a| a.zip()))?;
-        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_CITY, address.map(|a| a.city()))?;
+            .set_additional_attribute(PAYMENT_FIELD_ADDRESS_STREET, Self::non_empty_str(address.map(|a| a.street())))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_ZIP, Self::non_empty_str(address.map(|a| a.zip())))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_CITY, Self::non_empty_str(address.map(|a| a.city())))?;
         entry.set_additional_attribute(
             PAYMENT_FIELD_ADDRESS_STATE,
-            address.and_then(|a| a.state()).map(|state| state.as_str()),
+            Self::non_empty_str(address.and_then(|a| a.state()).map(|state| state.as_str())),
         )?;
         entry.set_additional_attribute(
             PAYMENT_FIELD_ADDRESS_COUNTRY,
-            address.map(|a| a.country()),
+            Self::non_empty_str(address.map(|a| a.country())),
         )?;
         Ok(())
     }
@@ -1674,6 +1681,21 @@ mod tests {
     }
 
     #[test]
+    fn payment_empty_address_attributes_do_not_create_address() {
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", "4111111111111111"),
+                ("Expiry", "12/30"),
+                ("Billing Address Street", ""),
+                ("Billing Address State", ""),
+            ],
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert!(payment.billing_address().is_none());
+    }
+
+    #[test]
     fn credential_with_number_and_expiry_attributes_is_not_a_payment() {
         let db = Database::new(DatabaseConfig::default());
         let root_uuid = db.root.borrow().get_uuid();
@@ -1879,5 +1901,40 @@ mod tests {
         assert_eq!(entry.get("Color"), None);
         assert_eq!(entry.get("Billing Address Street"), None);
         assert_eq!(entry.get("Billing Address State"), None);
+    }
+
+    #[test]
+    fn payment_save_state_only_address_does_not_write_blank_address_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let address = Address::new(None, "", "", "", Some("CA"), "");
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            None,
+            Some(&address),
+            None,
+        );
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        let id = *vault.find_payments()[0].id();
+
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("Billing Address State"), Some("CA"));
+        assert_eq!(entry.get("Billing Address Street"), None);
+        assert_eq!(entry.get("Billing Address Zip"), None);
+        assert_eq!(entry.get("Billing Address City"), None);
+        assert_eq!(entry.get("Billing Address Country"), None);
     }
 }
