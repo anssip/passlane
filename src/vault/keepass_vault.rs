@@ -142,11 +142,14 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
     // the parse required, a malformed entry falls through to the note
     // loaders instead.
     if let Some(notes) = e.get_notes() {
-        let has_number = notes.lines().any(|l| l.starts_with("Number: "));
+        let has_number = notes
+            .lines()
+            .find_map(|l| l.strip_prefix("Number: "))
+            .is_some_and(|value| !value.trim().is_empty());
         let expiry = notes
             .lines()
             .find_map(|l| l.strip_prefix("Expiry: "))
-            .and_then(|value| Expiry::from_str(value).ok());
+            .and_then(|value| Expiry::from_str(value.trim()).ok());
         if has_number && expiry.is_some() {
             return true;
         }
@@ -161,10 +164,10 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
 fn node_has_payment_custom_fields(e: &Entry) -> bool {
     let has_number = e
         .get(PAYMENT_FIELD_NUMBER)
-        .is_some_and(|number| !number.is_empty());
+        .is_some_and(|number| !number.trim().is_empty());
     let has_expiry = e
         .get(PAYMENT_FIELD_EXPIRY)
-        .is_some_and(|expiry| Expiry::from_str(expiry).is_ok());
+        .is_some_and(|expiry| Expiry::from_str(expiry.trim()).is_ok());
     has_number && has_expiry
 }
 
@@ -707,10 +710,11 @@ impl KeepassVault {
         // card.
         let note = e.get_notes()?;
         let name_on_card = Self::extract_value_from_note(note, "Name on card");
-        let number = Self::extract_value_from_note(note, "Number");
+        let number = Self::extract_value_from_note_opt(note, "Number")
+            .and_then(|value| Self::non_empty_str(Some(&value)).map(String::from))?;
         let cvv = Self::extract_value_from_note(note, "CVV");
         let expiry = Self::extract_value_from_note_opt(note, "Expiry")
-            .and_then(|value| Expiry::from_str(&value).ok())?;
+            .and_then(|value| Expiry::from_str(value.trim()).ok())?;
         // The legacy format always wrote a "Color: " line, empty when no
         // color was set; an empty value is no color, matching the
         // custom-fields read path.
@@ -746,17 +750,11 @@ impl KeepassVault {
         Option<String>,
         Option<Address>,
     )> {
-        let number = e.get(PAYMENT_FIELD_NUMBER)?;
-        if number.is_empty() {
-            return None;
-        }
-        let expiry = Expiry::from_str(e.get(PAYMENT_FIELD_EXPIRY)?).ok()?;
+        let number = Self::non_empty_str(e.get(PAYMENT_FIELD_NUMBER))?;
+        let expiry = Expiry::from_str(e.get(PAYMENT_FIELD_EXPIRY)?.trim()).ok()?;
         let name_on_card = e.get(PAYMENT_FIELD_NAME_ON_CARD).unwrap_or("").to_string();
         let cvv = e.get(PAYMENT_FIELD_CVV).unwrap_or("").to_string();
-        let color = e
-            .get(PAYMENT_FIELD_COLOR)
-            .filter(|color| !color.is_empty())
-            .map(String::from);
+        let color = Self::non_empty_str(e.get(PAYMENT_FIELD_COLOR)).map(String::from);
         let street = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_STREET));
         let zip = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_ZIP));
         let city = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_CITY));
@@ -1650,6 +1648,28 @@ mod tests {
         assert!(node_looks_like_note(&node));
     }
 
+    #[test]
+    fn payment_note_with_blank_number_is_visible_as_note() {
+        let node = payment_entry_node(
+            "Broken Card",
+            "Name on card: X\nNumber:   \nCVV: 1\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        assert!(!node_looks_like_payment(&node));
+        assert!(node_looks_like_note(&node));
+        assert!(KeepassVault::node_to_payment(node).is_none());
+    }
+
+    #[test]
+    fn payment_note_detection_trims_expiry() {
+        let node = payment_entry_node(
+            "Visa",
+            "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry:  12/30  \nColor: \nBilling Address: ",
+        );
+        assert!(node_looks_like_payment(&node));
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.expiry_str(), "12/30");
+    }
+
     fn custom_field_entry_node(title: &str, attrs: &[(&str, &str)]) -> NodePtr {
         let db = Database::new(DatabaseConfig::default());
         let root_uuid = db.root.borrow().get_uuid();
@@ -1733,6 +1753,23 @@ mod tests {
         );
         let payment = KeepassVault::node_to_payment(node).unwrap();
         assert!(payment.billing_address().is_none());
+    }
+
+    #[test]
+    fn payment_custom_fields_trim_whitespace() {
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", " 4111111111111111 "),
+                ("Expiry", " 12/30 "),
+                ("Color", "   "),
+            ],
+        );
+        assert!(node_looks_like_payment(&node));
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.number(), "4111111111111111");
+        assert_eq!(payment.expiry_str(), "12/30");
+        assert!(payment.color().is_none());
     }
 
     #[test]
