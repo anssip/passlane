@@ -104,18 +104,70 @@ fn node_has_totp(node: &NodePtr) -> bool {
     }
 }
 
+/// Custom attribute keys that carry the payment card fields. Older passlane
+/// versions stored these as "Key: value" lines in the notes field; reads
+/// still accept that format, but all writes go to custom attributes. Values
+/// are stored unprotected: keepass-ng 0.11 has no API for protected custom
+/// fields.
+const PAYMENT_FIELD_NAME_ON_CARD: &str = "Name on card";
+const PAYMENT_FIELD_NUMBER: &str = "Number";
+const PAYMENT_FIELD_CVV: &str = "CVV";
+const PAYMENT_FIELD_EXPIRY: &str = "Expiry";
+const PAYMENT_FIELD_COLOR: &str = "Color";
+const PAYMENT_FIELD_ADDRESS_STREET: &str = "Billing Address Street";
+const PAYMENT_FIELD_ADDRESS_ZIP: &str = "Billing Address Zip";
+const PAYMENT_FIELD_ADDRESS_CITY: &str = "Billing Address City";
+const PAYMENT_FIELD_ADDRESS_STATE: &str = "Billing Address State";
+const PAYMENT_FIELD_ADDRESS_COUNTRY: &str = "Billing Address Country";
+
 fn node_looks_like_payment(node: &NodePtr) -> bool {
     let node = node.borrow();
     let e = match node.downcast_ref::<Entry>() {
         Some(e) => e,
         None => return false,
     };
-    let notes = match e.get_notes() {
-        Some(n) if !n.is_empty() => n,
-        _ => return false,
-    };
-    let has_number = notes.lines().any(|l| l.starts_with("Number: "));
-    let has_expiry = notes.lines().any(|l| l.starts_with("Expiry: "));
+    // An entry with username/password/URL set is a credential that happens
+    // to carry card-like data, whether in "Number"/"Expiry" custom
+    // attributes or in "Number: "/"Expiry: " note lines. passlane card
+    // entries never set those fields, in either format.
+    let has_credential_fields = e.get_username().is_some_and(|u| !u.is_empty())
+        || e.get_password().is_some_and(|p| !p.is_empty())
+        || e.get_url().is_some_and(|u| !u.is_empty());
+    if has_credential_fields {
+        return false;
+    }
+    // Legacy format written by older passlane versions. The expiry line
+    // must parse: node_to_payment drops entries whose expiry does not, so
+    // claiming them here would make them invisible to every loader. With
+    // the parse required, a malformed entry falls through to the note
+    // loaders instead.
+    if let Some(notes) = e.get_notes() {
+        let has_number = notes
+            .lines()
+            .find_map(|l| l.strip_prefix("Number: "))
+            .is_some_and(|value| !value.trim().is_empty());
+        let expiry = notes
+            .lines()
+            .find_map(|l| l.strip_prefix("Expiry: "))
+            .and_then(|value| Expiry::from_str(value.trim()).ok());
+        if has_number && expiry.is_some() {
+            return true;
+        }
+    }
+    // Current format.
+    node_has_payment_custom_fields(e)
+}
+
+/// True when the entry carries its payment card data in custom attributes:
+/// a non-empty "Number" plus an "Expiry" that parses as a month/year pair
+/// (see `Expiry::from_str`).
+fn node_has_payment_custom_fields(e: &Entry) -> bool {
+    let has_number = e
+        .get(PAYMENT_FIELD_NUMBER)
+        .is_some_and(|number| !number.trim().is_empty());
+    let has_expiry = e
+        .get(PAYMENT_FIELD_EXPIRY)
+        .is_some_and(|expiry| Expiry::from_str(expiry.trim()).is_ok());
     has_number && has_expiry
 }
 
@@ -596,10 +648,6 @@ impl KeepassVault {
     fn node_to_payment(node: NodePtr) -> Option<PaymentCard> {
         let (name, name_on_card, number, cvv, expiry, color, billing_address, id) =
             Self::get_node_payment_values(node)?;
-        // Cards saved without a billing address store an empty line in their
-        // notes; treat an empty or malformed address as "no address" instead
-        // of failing to load the card.
-        let billing_address = Address::from_str(&billing_address).ok();
         Some(PaymentCard::new(
             Some(&id),
             &name,
@@ -632,24 +680,51 @@ impl KeepassVault {
         String,
         Expiry,
         Option<String>,
-        String,
+        Option<Address>,
         Uuid,
     )> {
         let node = node.borrow();
         let e = node.downcast_ref::<Entry>().unwrap();
-        let note = e.get_notes()?;
         let name = e.get_title().unwrap_or("(no name)");
-        // Fields are matched by their "Name: " prefix rather than by line
-        // position, so notes edited in another KeePass client (reordered
-        // lines) still load. A missing or unparseable expiry means the entry
-        // is not treated as a payment card.
+        // The custom-fields format written since payments moved off the
+        // notes field takes precedence...
+        if let Some((name_on_card, number, cvv, expiry, color, billing_address)) =
+            Self::payment_values_from_custom_fields(e)
+        {
+            return Some((
+                name.to_string(),
+                name_on_card,
+                number,
+                cvv,
+                expiry,
+                color,
+                billing_address,
+                e.get_uuid(),
+            ));
+        }
+        // ...followed by the legacy "Key: value" notes lines written by
+        // older passlane versions. Fields are matched by their "Name: "
+        // prefix rather than by line position, so notes edited in another
+        // KeePass client (reordered lines) still load. A missing or
+        // unparseable expiry means the entry is not treated as a payment
+        // card.
+        let note = e.get_notes()?;
         let name_on_card = Self::extract_value_from_note(note, "Name on card");
-        let number = Self::extract_value_from_note(note, "Number");
+        let number = Self::extract_value_from_note_opt(note, "Number")
+            .and_then(|value| Self::non_empty_str(Some(&value)).map(String::from))?;
         let cvv = Self::extract_value_from_note(note, "CVV");
         let expiry = Self::extract_value_from_note_opt(note, "Expiry")
-            .and_then(|value| Expiry::from_str(&value).ok())?;
-        let color = Self::extract_value_from_note_opt(note, "Color");
-        let billing_address = Self::extract_value_from_note(note, "Billing Address");
+            .and_then(|value| Expiry::from_str(value.trim()).ok())?;
+        // The legacy format always wrote a "Color: " line, empty when no
+        // color was set; an empty value is no color, matching the
+        // custom-fields read path.
+        let color_note = Self::extract_value_from_note_opt(note, "Color");
+        let color = Self::non_empty_str(color_note.as_deref()).map(String::from);
+        // Cards saved without a billing address store an empty line in their
+        // notes; treat an empty or malformed address as "no address" instead
+        // of failing to load the card.
+        let billing_address =
+            Address::from_str(&Self::extract_value_from_note(note, "Billing Address")).ok();
 
         Some((
             name.to_string(),
@@ -660,6 +735,54 @@ impl KeepassVault {
             color,
             billing_address,
             e.get_uuid(),
+        ))
+    }
+
+    /// Read a card from custom attributes. Returns None unless the entry has
+    /// a non-empty "Number" and a parseable "Expiry" attribute.
+    fn payment_values_from_custom_fields(
+        e: &Entry,
+    ) -> Option<(
+        String,
+        String,
+        String,
+        Expiry,
+        Option<String>,
+        Option<Address>,
+    )> {
+        let number = Self::non_empty_str(e.get(PAYMENT_FIELD_NUMBER))?;
+        let expiry = Expiry::from_str(e.get(PAYMENT_FIELD_EXPIRY)?.trim()).ok()?;
+        let name_on_card = e.get(PAYMENT_FIELD_NAME_ON_CARD).unwrap_or("").to_string();
+        let cvv = e.get(PAYMENT_FIELD_CVV).unwrap_or("").to_string();
+        let color = Self::non_empty_str(e.get(PAYMENT_FIELD_COLOR)).map(String::from);
+        let street = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_STREET));
+        let zip = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_ZIP));
+        let city = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_CITY));
+        let state = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_STATE));
+        let country = Self::non_empty_str(e.get(PAYMENT_FIELD_ADDRESS_COUNTRY));
+        // An address is present when any of its parts is, the state
+        // included; entries without one store none of the address
+        // attributes.
+        let has_address = [street, zip, city, state, country].iter().any(|p| p.is_some());
+        let billing_address = if has_address {
+            Some(Address::new(
+                None,
+                street.unwrap_or(""),
+                city.unwrap_or(""),
+                country.unwrap_or(""),
+                state,
+                zip.unwrap_or(""),
+            ))
+        } else {
+            None
+        };
+        Some((
+            name_on_card,
+            number.to_string(),
+            cvv,
+            expiry,
+            color,
+            billing_address,
         ))
     }
 
@@ -683,6 +806,13 @@ impl KeepassVault {
         note.lines()
             .find_map(|line| line.strip_prefix(&prefix))
             .map(String::from)
+    }
+
+    fn non_empty_str(value: Option<&str>) -> Option<&str> {
+        match value.map(str::trim) {
+            Some(value) if !value.is_empty() => Some(value),
+            _ => None,
+        }
     }
 
     fn extract_value_from_note(note: &str, name: &str) -> String {
@@ -797,6 +927,42 @@ impl KeepassVault {
         Ok(())
     }
 
+    /// Write all payment card fields onto a KeePass entry as custom
+    /// attributes. Absent optional fields (color, billing address) have
+    /// their attributes removed, so edits can clear them. Unlike
+    /// credentials, unknown custom attributes are left untouched: a card
+    /// cannot round-trip them, and they may have been added by the user in
+    /// another KeePass client.
+    fn apply_payment_fields(entry: &mut Entry, payment: &PaymentCard) -> keepass_ng::Result<()> {
+        entry.set_title(Some(payment.name()));
+        // Older passlane versions stored the card as "Key: value" lines in
+        // the notes field; clear them so they don't linger next to the
+        // custom attributes.
+        entry.set_notes(None);
+        entry.set_additional_attribute(PAYMENT_FIELD_NAME_ON_CARD, Some(payment.name_on_card()))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_NUMBER, Some(payment.number()))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_CVV, Some(payment.cvv()))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_EXPIRY, Some(&payment.expiry_str()))?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_COLOR,
+            Self::non_empty_str(payment.color().map(|color| color.as_str())),
+        )?;
+        let address = payment.billing_address();
+        entry
+            .set_additional_attribute(PAYMENT_FIELD_ADDRESS_STREET, Self::non_empty_str(address.map(|a| a.street())))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_ZIP, Self::non_empty_str(address.map(|a| a.zip())))?;
+        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_CITY, Self::non_empty_str(address.map(|a| a.city())))?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_ADDRESS_STATE,
+            Self::non_empty_str(address.and_then(|a| a.state()).map(|state| state.as_str())),
+        )?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_ADDRESS_COUNTRY,
+            Self::non_empty_str(address.map(|a| a.country())),
+        )?;
+        Ok(())
+    }
+
     fn create_password_entry(
         &mut self,
         parent_uuid: &Uuid,
@@ -834,21 +1000,15 @@ impl KeepassVault {
         parent_uuid: &Uuid,
         payment: &PaymentCard,
     ) -> keepass_ng::Result<Option<Uuid>> {
-        self.db.create_new_entry(parent_uuid.clone(), 0).map(|node| {
-            let note = format!("Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
-                               payment.name_on_card(),
-                               payment.number(),
-                               payment.cvv(),
-                               payment.expiry_str(),
-                               payment.color_str(),
-                               payment.billing_address().as_ref().map(|a| a.to_string()).unwrap_or("".to_string())
-            );
-            node.borrow_mut().downcast_mut::<Entry>().map(|entry| {
-                entry.set_title(Some(payment.name()));
-                entry.set_notes(Some(&note));
-                entry.get_uuid()
-            })
-        })
+        let node = self.db.create_new_entry(parent_uuid.clone(), 0)?;
+        let mut node_ref = node.borrow_mut();
+        match node_ref.downcast_mut::<Entry>() {
+            Some(entry) => {
+                Self::apply_payment_fields(entry, payment)?;
+                Ok(Some(entry.get_uuid()))
+            }
+            None => Ok(None),
+        }
     }
 
     fn create_note_entry(
@@ -997,8 +1157,7 @@ impl PaymentVault for KeepassVault {
 
     fn save_payment(&mut self, payment: PaymentCard) -> Result<(), Error> {
         let group = self.find_or_create_group("Payments");
-        self.create_payment_entry(&group, &payment)
-            .expect("Failed to save payment");
+        self.create_payment_entry(&group, &payment)?;
         self.save_database()?;
         Ok(())
     }
@@ -1009,25 +1168,33 @@ impl PaymentVault for KeepassVault {
     }
 
     fn update_payment(&mut self, payment: PaymentCard) -> Result<(), Error> {
-        let uuid = payment.id();
-        self.update_entry(*uuid, |entry| {
-            let note = format!(
-                "Name on card: {}\nNumber: {}\nCVV: {}\nExpiry: {}\nColor: {}\nBilling Address: {}",
-                payment.name_on_card(),
-                payment.number(),
-                payment.cvv(),
-                payment.expiry_str(),
-                payment.color_str(),
-                payment
-                    .billing_address()
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or("".to_string())
-            );
-
-            entry.set_title(Some(payment.name()));
-            entry.set_notes(Some(&note));
-        })
+        let uuid = *payment.id();
+        let node = match self.db.search_node_by_uuid(uuid) {
+            Some(node) => node,
+            None => {
+                return Err(Error {
+                    message: format!("Entry with uuid '{}' not found", uuid),
+                })
+            }
+        };
+        {
+            let mut node = node.borrow_mut();
+            let entry = match node.downcast_mut::<Entry>() {
+                Some(entry) => entry,
+                None => {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    })
+                }
+            };
+            // Apply before saving: set_additional_attribute only fails for
+            // KeePass-reserved field names, and a failed apply must not
+            // persist a partially-updated entry.
+            Self::apply_payment_fields(entry, &payment)?;
+            entry.update_history();
+        }
+        self.save_database()?;
+        Ok(())
     }
 }
 
@@ -1447,6 +1614,16 @@ mod tests {
     }
 
     #[test]
+    fn payment_note_with_empty_color_is_treated_as_absent() {
+        let node = payment_entry_node(
+            "No Color Card",
+            "Name on card: User\nNumber: 4111111111111111\nCVV: 123\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert!(payment.color().is_none());
+    }
+
+    #[test]
     fn payment_note_with_unparseable_expiry_is_skipped() {
         // A "Number:"/"Expiry:" note whose expiry does not parse is not a
         // payment card; it must be skipped, not panic.
@@ -1455,5 +1632,422 @@ mod tests {
             "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry: never\nColor: \nBilling Address: ",
         );
         assert!(KeepassVault::node_to_payment(node).is_none());
+    }
+
+    #[test]
+    fn payment_note_with_unparseable_expiry_is_visible_as_note() {
+        // Detection must not claim the malformed entry either: load_payments
+        // drops it in filter_map, and the note/credential loaders exclude
+        // payment-looking nodes, so claiming it would make the entry
+        // invisible to every loader.
+        let node = payment_entry_node(
+            "Broken Card",
+            "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry: never\nColor: \nBilling Address: ",
+        );
+        assert!(!node_looks_like_payment(&node));
+        assert!(node_looks_like_note(&node));
+    }
+
+    #[test]
+    fn payment_note_with_blank_number_is_visible_as_note() {
+        let node = payment_entry_node(
+            "Broken Card",
+            "Name on card: X\nNumber:   \nCVV: 1\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        assert!(!node_looks_like_payment(&node));
+        assert!(node_looks_like_note(&node));
+        assert!(KeepassVault::node_to_payment(node).is_none());
+    }
+
+    #[test]
+    fn payment_note_detection_trims_expiry() {
+        let node = payment_entry_node(
+            "Visa",
+            "Name on card: X\nNumber: 4111\nCVV: 1\nExpiry:  12/30  \nColor: \nBilling Address: ",
+        );
+        assert!(node_looks_like_payment(&node));
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.expiry_str(), "12/30");
+    }
+
+    fn custom_field_entry_node(title: &str, attrs: &[(&str, &str)]) -> NodePtr {
+        let db = Database::new(DatabaseConfig::default());
+        let root_uuid = db.root.borrow().get_uuid();
+        let node = db.create_new_entry(root_uuid, 0).unwrap();
+        {
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some(title));
+            for (key, value) in attrs {
+                entry.set_additional_attribute(key, Some(value)).unwrap();
+            }
+        }
+        node
+    }
+
+    #[test]
+    fn payment_custom_fields_are_detected_and_parsed() {
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Name on card", "Jane Doe"),
+                ("Number", "4111111111111111"),
+                ("CVV", "123"),
+                ("Expiry", "12/30"),
+                ("Color", "silver"),
+                ("Billing Address Street", "Main St 1"),
+                ("Billing Address Zip", "00100"),
+                ("Billing Address City", "Helsinki"),
+                ("Billing Address State", "Uusimaa"),
+                ("Billing Address Country", "Finland"),
+            ],
+        );
+        assert!(node_looks_like_payment(&node));
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.name(), "Visa");
+        assert_eq!(payment.name_on_card(), "Jane Doe");
+        assert_eq!(payment.number(), "4111111111111111");
+        assert_eq!(payment.cvv(), "123");
+        assert_eq!(payment.expiry_str(), "12/30");
+        assert_eq!(payment.color(), Some(&"silver".to_string()));
+        let address = payment.billing_address().unwrap();
+        assert_eq!(address.street(), "Main St 1");
+        assert_eq!(address.zip(), "00100");
+        assert_eq!(address.city(), "Helsinki");
+        // Unlike the legacy comma-joined notes format, the structured
+        // address attributes keep the state.
+        assert_eq!(address.state(), Some(&"Uusimaa".to_string()));
+        assert_eq!(address.country(), "Finland");
+    }
+
+    #[test]
+    fn payment_address_state_only_is_not_dropped() {
+        // An address edited in another KeePass client can consist of just
+        // the state attribute; the read must keep it instead of dropping
+        // the address (and the next write deleting the attribute).
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", "4111111111111111"),
+                ("Expiry", "12/30"),
+                ("Billing Address State", "CA"),
+            ],
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        let address = payment
+            .billing_address()
+            .expect("state-only address must survive the read");
+        assert_eq!(address.state(), Some(&"CA".to_string()));
+    }
+
+    #[test]
+    fn payment_empty_address_attributes_do_not_create_address() {
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", "4111111111111111"),
+                ("Expiry", "12/30"),
+                ("Billing Address Street", ""),
+                ("Billing Address State", ""),
+            ],
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert!(payment.billing_address().is_none());
+    }
+
+    #[test]
+    fn payment_custom_fields_trim_whitespace() {
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", " 4111111111111111 "),
+                ("Expiry", " 12/30 "),
+                ("Color", "   "),
+            ],
+        );
+        assert!(node_looks_like_payment(&node));
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.number(), "4111111111111111");
+        assert_eq!(payment.expiry_str(), "12/30");
+        assert!(payment.color().is_none());
+    }
+
+    #[test]
+    fn credential_with_card_like_fields_is_not_a_payment() {
+        // A credential carrying card-like data — "Number"/"Expiry" custom
+        // attributes or legacy "Key: value" note lines — must stay a
+        // credential, in both the custom-fields and the legacy-notes
+        // detection path.
+        let db = Database::new(DatabaseConfig::default());
+        let root_uuid = db.root.borrow().get_uuid();
+        let node = db.create_new_entry(root_uuid, 0).unwrap();
+        {
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some("Server"));
+            entry.set_username(Some("admin"));
+            entry.set_password(Some("hunter2"));
+            entry
+                .set_additional_attribute("Number", Some("42"))
+                .unwrap();
+            entry
+                .set_additional_attribute("Expiry", Some("12/30"))
+                .unwrap();
+            entry.set_notes(Some("Number: 4111111111111111\nExpiry: 12/30"));
+        }
+        assert!(!node_looks_like_payment(&node));
+        assert!(node_looks_like_credential(&node));
+    }
+
+    #[test]
+    fn payment_custom_fields_roundtrip_through_kdbx() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let address = Address::new(
+            None,
+            "Main St 1",
+            "Helsinki",
+            "Finland",
+            Some("Uusimaa"),
+            "00100",
+        );
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane Doe",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            Some("silver"),
+            Some(&address),
+            None,
+        );
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.find_payments().len(), 1);
+        let found = &vault.find_payments()[0];
+        assert_eq!(found.name(), "Visa");
+        assert_eq!(found.name_on_card(), "Jane Doe");
+        assert_eq!(found.number(), "4111111111111111");
+        assert_eq!(found.cvv(), "123");
+        assert_eq!(found.expiry_str(), "12/30");
+        assert_eq!(found.color(), Some(&"silver".to_string()));
+        let address = found.billing_address().unwrap();
+        assert_eq!(address.street(), "Main St 1");
+        assert_eq!(address.state(), Some(&"Uusimaa".to_string()));
+        assert_eq!(address.country(), "Finland");
+        // The card must not leak into the other item types.
+        assert_eq!(vault.grep(None).len(), 0);
+        assert_eq!(vault.find_notes().len(), 0);
+    }
+
+    #[test]
+    fn payment_update_rewrites_legacy_notes_entry_to_custom_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        // Write a card the way old passlane did: "Key: value" lines in notes.
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        {
+            let group_uuid = vault.find_or_create_group("Payments");
+            let node = vault.db.create_new_entry(group_uuid, 0).unwrap();
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some("Legacy Card"));
+            entry.set_notes(Some(
+                "Name on card: Jane\nNumber: 4111111111111111\nCVV: 123\nExpiry: 11/29\nColor: \nBilling Address: Main St 1, 00100, Helsinki, Finland",
+            ));
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        // The legacy entry reads transparently...
+        let mut vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let legacy = vault.find_payments()[0].clone();
+        assert_eq!(legacy.number(), "4111111111111111");
+        assert_eq!(legacy.name_on_card(), "Jane");
+
+        // ...and an edit rewrites it into custom fields.
+        let updated = PaymentCard::new(
+            Some(legacy.id()),
+            legacy.name(),
+            legacy.name_on_card(),
+            "5555444433332222",
+            "999",
+            Expiry { month: 1, year: 31 },
+            None,
+            None,
+            None,
+        );
+        vault.update_payment(updated).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.find_payments().len(), 1);
+        let card = &vault.find_payments()[0];
+        assert_eq!(card.number(), "5555444433332222");
+        assert_eq!(card.cvv(), "999");
+        assert_eq!(card.expiry_str(), "1/31");
+        assert_eq!(card.color(), None);
+        assert!(card.billing_address().is_none());
+        // The cleared notes left no note or credential behind.
+        assert_eq!(vault.grep(None).len(), 0);
+        assert_eq!(vault.find_notes().len(), 0);
+
+        // The notes are gone and the card data lives in custom attributes.
+        let node = vault.db.search_node_by_uuid(*card.id()).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert!(entry.get_notes().map_or(true, |notes| notes.is_empty()));
+        assert_eq!(entry.get("Number"), Some("5555444433332222"));
+        assert_eq!(entry.get("Expiry"), Some("1/31"));
+    }
+
+    #[test]
+    fn payment_update_preserves_unknown_custom_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let address = Address::new(None, "Main St 1", "Helsinki", "Finland", None, "00100");
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            Some("silver"),
+            Some(&address),
+            None,
+        );
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_payment(card).unwrap();
+
+        // A user adds an attribute in another KeePass client.
+        let id = *vault.find_payments()[0].id();
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        {
+            let mut n = node.borrow_mut();
+            n.downcast_mut::<Entry>()
+                .unwrap()
+                .set_additional_attribute("PIN", Some("4321"))
+                .unwrap();
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        // Editing the card clears its color and address but must keep the
+        // user's own attribute.
+        let mut vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let stored = vault.find_payments()[0].clone();
+        let updated = PaymentCard::new(
+            Some(stored.id()),
+            stored.name(),
+            stored.name_on_card(),
+            stored.number(),
+            stored.cvv(),
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            None,
+            None,
+            None,
+        );
+        vault.update_payment(updated).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.find_payments().len(), 1);
+        let card = &vault.find_payments()[0];
+        assert_eq!(card.color(), None);
+        assert!(card.billing_address().is_none());
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("PIN"), Some("4321"));
+        assert_eq!(entry.get("Number"), Some("4111111111111111"));
+        assert_eq!(entry.get("Color"), None);
+        assert_eq!(entry.get("Billing Address Street"), None);
+        assert_eq!(entry.get("Billing Address State"), None);
+    }
+
+    #[test]
+    fn payment_save_state_only_address_does_not_write_blank_address_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let address = Address::new(None, "", "", "", Some("CA"), "");
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            None,
+            Some(&address),
+            None,
+        );
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        let id = *vault.find_payments()[0].id();
+
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("Billing Address State"), Some("CA"));
+        assert_eq!(entry.get("Billing Address Street"), None);
+        assert_eq!(entry.get("Billing Address Zip"), None);
+        assert_eq!(entry.get("Billing Address City"), None);
+        assert_eq!(entry.get("Billing Address Country"), None);
+    }
+
+    #[test]
+    fn payment_save_empty_color_does_not_write_color_attribute() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            Some(""),
+            None,
+            None,
+        );
+        let master_password = Uuid::new_v4().to_string();
+        let mut vault = KeepassVault::new(path_str, &master_password, None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        let id = *vault.find_payments()[0].id();
+
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("Color"), None);
     }
 }
