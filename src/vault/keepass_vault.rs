@@ -144,7 +144,8 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
 }
 
 /// True when the entry carries its payment card data in custom attributes:
-/// a non-empty "Number" plus an "Expiry" that parses as MM/YYYY.
+/// a non-empty "Number" plus an "Expiry" that parses as a month/year pair
+/// (see `Expiry::from_str`).
 fn node_has_payment_custom_fields(e: &Entry) -> bool {
     let has_number = e
         .get(PAYMENT_FIELD_NUMBER)
@@ -745,9 +746,10 @@ impl KeepassVault {
         let city = e.get(PAYMENT_FIELD_ADDRESS_CITY);
         let state = e.get(PAYMENT_FIELD_ADDRESS_STATE);
         let country = e.get(PAYMENT_FIELD_ADDRESS_COUNTRY);
-        // An address is present when any of its parts is; entries without
-        // one store none of the address attributes.
-        let has_address = street.is_some() || zip.is_some() || city.is_some() || country.is_some();
+        // An address is present when any of its parts is, the state
+        // included; entries without one store none of the address
+        // attributes.
+        let has_address = [street, zip, city, state, country].iter().any(|p| p.is_some());
         let billing_address = if has_address {
             Some(Address::new(
                 None,
@@ -1649,6 +1651,26 @@ mod tests {
         // address attributes keep the state.
         assert_eq!(address.state(), Some(&"Uusimaa".to_string()));
         assert_eq!(address.country(), "Finland");
+    }
+
+    #[test]
+    fn payment_address_state_only_is_not_dropped() {
+        // An address edited in another KeePass client can consist of just
+        // the state attribute; the read must keep it instead of dropping
+        // the address (and the next write deleting the attribute).
+        let node = custom_field_entry_node(
+            "Visa",
+            &[
+                ("Number", "4111111111111111"),
+                ("Expiry", "12/30"),
+                ("Billing Address State", "CA"),
+            ],
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        let address = payment
+            .billing_address()
+            .expect("state-only address must survive the read");
+        assert_eq!(address.state(), Some(&"CA".to_string()));
     }
 
     #[test]
