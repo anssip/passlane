@@ -126,6 +126,16 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
         Some(e) => e,
         None => return false,
     };
+    // An entry with username/password/URL set is a credential that happens
+    // to carry card-like data, whether in "Number"/"Expiry" custom
+    // attributes or in "Number: "/"Expiry: " note lines. passlane card
+    // entries never set those fields, in either format.
+    let has_credential_fields = e.get_username().is_some_and(|u| !u.is_empty())
+        || e.get_password().is_some_and(|p| !p.is_empty())
+        || e.get_url().is_some_and(|u| !u.is_empty());
+    if has_credential_fields {
+        return false;
+    }
     // Legacy format written by older passlane versions.
     if let Some(notes) = e.get_notes() {
         let has_number = notes.lines().any(|l| l.starts_with("Number: "));
@@ -134,13 +144,8 @@ fn node_looks_like_payment(node: &NodePtr) -> bool {
             return true;
         }
     }
-    // Current format. An entry with username/password/URL set is a
-    // credential that happens to carry "Number"/"Expiry" attributes, not a
-    // card.
-    let has_credential_fields = e.get_username().is_some_and(|u| !u.is_empty())
-        || e.get_password().is_some_and(|p| !p.is_empty())
-        || e.get_url().is_some_and(|u| !u.is_empty());
-    !has_credential_fields && node_has_payment_custom_fields(e)
+    // Current format.
+    node_has_payment_custom_fields(e)
 }
 
 /// True when the entry carries its payment card data in custom attributes:
@@ -1674,7 +1679,11 @@ mod tests {
     }
 
     #[test]
-    fn credential_with_number_and_expiry_attributes_is_not_a_payment() {
+    fn credential_with_card_like_fields_is_not_a_payment() {
+        // A credential carrying card-like data — "Number"/"Expiry" custom
+        // attributes or legacy "Key: value" note lines — must stay a
+        // credential, in both the custom-fields and the legacy-notes
+        // detection path.
         let db = Database::new(DatabaseConfig::default());
         let root_uuid = db.root.borrow().get_uuid();
         let node = db.create_new_entry(root_uuid, 0).unwrap();
@@ -1690,6 +1699,7 @@ mod tests {
             entry
                 .set_additional_attribute("Expiry", Some("12/30"))
                 .unwrap();
+            entry.set_notes(Some("Number: 4111111111111111\nExpiry: 12/30"));
         }
         assert!(!node_looks_like_payment(&node));
         assert!(node_looks_like_credential(&node));
