@@ -707,8 +707,8 @@ impl KeepassVault {
         // The legacy format always wrote a "Color: " line, empty when no
         // color was set; an empty value is no color, matching the
         // custom-fields read path.
-        let color = Self::extract_value_from_note_opt(note, "Color")
-            .filter(|color| !color.is_empty());
+        let color_note = Self::extract_value_from_note_opt(note, "Color");
+        let color = Self::non_empty_str(color_note.as_deref()).map(String::from);
         // Cards saved without a billing address store an empty line in their
         // notes; treat an empty or malformed address as "no address" instead
         // of failing to load the card.
@@ -1609,6 +1609,16 @@ mod tests {
     }
 
     #[test]
+    fn payment_note_with_empty_color_is_treated_as_absent() {
+        let node = payment_entry_node(
+            "No Color Card",
+            "Name on card: User\nNumber: 4111111111111111\nCVV: 123\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert!(payment.color().is_none());
+    }
+
+    #[test]
     fn payment_note_with_unparseable_expiry_is_skipped() {
         // A "Number:"/"Expiry:" note whose expiry does not parse is not a
         // payment card; it must be skipped, not panic.
@@ -1687,47 +1697,6 @@ mod tests {
             .billing_address()
             .expect("state-only address must survive the read");
         assert_eq!(address.state(), Some(&"CA".to_string()));
-    }
-
-    #[test]
-    fn payment_empty_color_is_dropped_on_read_and_write() {
-        // The legacy notes format always wrote a "Color: " line, empty when
-        // no color was set; the empty value must not become an empty custom
-        // attribute.
-        let node = payment_entry_node(
-            "Legacy Card",
-            "Name on card: Jane\nNumber: 4111111111111111\nCVV: 123\nExpiry: 11/29\nColor: \nBilling Address: ",
-        );
-        let payment = KeepassVault::node_to_payment(node).unwrap();
-        assert_eq!(payment.color(), None);
-
-        // Defense in depth: a card constructed with an empty color writes
-        // no Color attribute at all.
-        let card = PaymentCard::new(
-            None,
-            "Visa",
-            "Jane",
-            "4111111111111111",
-            "123",
-            Expiry {
-                month: 12,
-                year: 30,
-            },
-            Some(""),
-            None,
-            None,
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vault.kdbx");
-        let mut vault = KeepassVault::new(path.to_str().unwrap(), "master-pw", None, None).unwrap();
-        vault.save_payment(card).unwrap();
-        let node = vault
-            .db
-            .search_node_by_uuid(*vault.find_payments()[0].id())
-            .unwrap();
-        let n = node.borrow();
-        let entry = n.downcast_ref::<Entry>().unwrap();
-        assert_eq!(entry.get("Color"), None);
     }
 
     #[test]
@@ -1991,5 +1960,36 @@ mod tests {
         assert_eq!(entry.get("Billing Address Zip"), None);
         assert_eq!(entry.get("Billing Address City"), None);
         assert_eq!(entry.get("Billing Address Country"), None);
+    }
+
+    #[test]
+    fn payment_save_empty_color_does_not_write_color_attribute() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            Some(""),
+            None,
+            None,
+        );
+        let master_password = Uuid::new_v4().to_string();
+        let mut vault = KeepassVault::new(path_str, &master_password, None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        let id = *vault.find_payments()[0].id();
+
+        let node = vault.db.search_node_by_uuid(id).unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("Color"), None);
     }
 }
