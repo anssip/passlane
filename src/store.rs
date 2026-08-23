@@ -149,17 +149,15 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let mut credentials = Vec::new();
     for result in reader.deserialize::<CsvImportRow>() {
         let row = result?;
-        // Firefox-style exports have no title column at all; in that case, their url is
-        // the best available title.
-        let title = if has_title_column {
-            row.title.clone().unwrap_or_default()
-        } else {
-            row.title
-                .clone()
-                .filter(|title| !title.is_empty())
-                .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
-                .unwrap_or_default()
-        };
+        // Firefox-style exports have no title column at all; their url is
+        // the best available title. A blank title cell also falls back to
+        // the url so the credential always gets a displayable title.
+        let title = row
+            .title
+            .clone()
+            .filter(|title| !title.is_empty())
+            .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
+            .unwrap_or_default();
         if title.is_empty() && row.username.is_empty() && row.password.is_empty() {
             continue;
         }
@@ -523,7 +521,8 @@ mod tests {
     fn test_csv_import_empty_title_column_keeps_url() {
         // A title column that exists but is blank must not be treated like a
         // Firefox export (which has no title column): the provided url value
-        // is kept instead of being folded into the title.
+        // is kept instead of being folded away, and the blank title still
+        // falls back to the url for display.
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
         std::fs::write(
