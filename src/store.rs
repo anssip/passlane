@@ -162,10 +162,9 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
             continue;
         }
         // When the URL became the title (no title column in the file), don't
-        // also store it as the URL: the vault treats URL == Title as the
-        // legacy passlane duplicate and would drop it on read. A title column
-        // that is merely empty still counts as present, so its url value is
-        // kept as provided.
+        // also store it as the URL: that duplicate remains ambiguous with
+        // legacy passlane entries. A title column that is merely empty still
+        // counts as present, so its url value is kept as provided.
         let url = if has_title_column {
             row.url.clone()
         } else {

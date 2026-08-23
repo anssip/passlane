@@ -563,7 +563,7 @@ impl KeepassVault {
         let url = e
             .get_url()
             .map(|u| u.to_string())
-            .filter(|u| !u.is_empty() && u != &title);
+            .filter(|u| !u.is_empty() && (u != &title || u.contains("://")));
         let password = e.get_password().unwrap_or("(no password)").to_string();
         let note = e
             .get_notes()
@@ -1279,6 +1279,32 @@ mod tests {
         let found = &vault.grep(None)[0];
         assert_eq!(found.title(), "legacy-service");
         assert_eq!(found.url(), None);
+    }
+
+    #[test]
+    fn entry_with_absolute_url_equal_to_title_keeps_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        {
+            let group_uuid = vault.find_or_create_group("Passwords");
+            let node = vault.db.create_new_entry(group_uuid, 0).unwrap();
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some("https://example.com"));
+            entry.set_url(Some("https://example.com"));
+            entry.set_username(Some("user"));
+            entry.set_password(Some("pass"));
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let found = &vault.grep(None)[0];
+        assert_eq!(found.title(), "https://example.com");
+        assert_eq!(found.url(), Some("https://example.com"));
     }
 
     #[test]
