@@ -1,6 +1,7 @@
 use crate::vault::entities::{Credential, Error, Note, PaymentCard};
 use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
 use serde::{Deserialize, Serialize};
 use std::fs::create_dir;
 use std::fs::OpenOptions;
@@ -99,13 +100,38 @@ struct CsvImportRow {
     last_modified: Option<DateTime<Utc>>,
 }
 
+/// Characters that would break the "key=value;key=value" CSV encoding of
+/// custom attributes; percent-encoded in keys and values on export and
+/// decoded on import so attributes containing them roundtrip.
+const CSV_ATTRIBUTE_ESCAPE: &AsciiSet = &AsciiSet::EMPTY.add(b';').add(b'=').add(b'%');
+
 fn parse_custom_attributes(encoded: &str) -> Vec<(String, String)> {
     encoded
         .split(';')
         .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .map(|(key, value)| (decode_attribute_component(key), decode_attribute_component(value)))
         .filter(|(key, _)| !key.is_empty())
         .collect()
+}
+
+fn decode_attribute_component(component: &str) -> String {
+    percent_decode_str(component.trim())
+        .decode_utf8_lossy()
+        .to_string()
+}
+
+fn encode_custom_attributes(attributes: &[(String, String)]) -> String {
+    attributes
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                utf8_percent_encode(key, CSV_ATTRIBUTE_ESCAPE),
+                utf8_percent_encode(value, CSV_ATTRIBUTE_ESCAPE)
+            )
+        })
+        .collect::<Vec<String>>()
+        .join(";")
 }
 
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
@@ -117,15 +143,22 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
         let row = result?;
         // Firefox-style exports have no title column; their url is the best
         // available title.
-        let title = row
-            .title
+        let explicit_title = row.title.clone().filter(|title| !title.is_empty());
+        let title = explicit_title
             .clone()
-            .filter(|title| !title.is_empty())
             .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
             .unwrap_or_default();
         if title.is_empty() && row.username.is_empty() && row.password.is_empty() {
             continue;
         }
+        // When the URL became the title, don't also store it as the URL: the
+        // vault treats URL == Title as the legacy passlane duplicate and would
+        // drop it on read, and the information already lives in the title.
+        let url = if explicit_title.is_some() {
+            row.url.clone()
+        } else {
+            None
+        };
         let parsed_uuid = row
             .uuid
             .as_deref()
@@ -140,7 +173,7 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
                 row.note.as_deref(),
                 row.last_modified,
             )
-            .with_url(row.url.as_deref())
+            .with_url(url.as_deref())
             .with_tags(&crate::ui::input::parse_tags(
                 row.tags.as_deref().unwrap_or(""),
             ))
@@ -254,12 +287,7 @@ pub(crate) fn write_credentials_to_csv(
                 .expiry_time()
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default(),
-            custom_attributes: cred
-                .custom_attributes()
-                .iter()
-                .map(|(key, value)| format!("{}={}", key, value))
-                .collect::<Vec<String>>()
-                .join(";"),
+            custom_attributes: encode_custom_attributes(cred.custom_attributes()),
             last_modified: cred.last_modified().to_rfc3339(),
         })?;
     }
@@ -463,6 +491,23 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_roundtrip_escapes_custom_attribute_delimiters() {
+        let cred = Credential::new(None, "secret", "github.com", "user", None, None)
+            .with_custom_attributes(&[(
+                "Rate limit=high;strict".to_string(),
+                "a=b;c %100".to_string(),
+            )]);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(
+            imported[0].custom_attributes(),
+            &[("Rate limit=high;strict".to_string(), "a=b;c %100".to_string())]
+        );
+    }
+
+    #[test]
     fn test_csv_import_legacy_service_column() {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
@@ -505,7 +550,10 @@ mod tests {
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].title(), "https://example.com");
-        assert_eq!(imported[0].url(), Some("https://example.com"));
+        // The URL became the title and is not stored twice: URL == Title is
+        // treated as the legacy duplicate on vault reads, so storing both
+        // would lose the URL field.
+        assert_eq!(imported[0].url(), None);
         assert_eq!(imported[0].username(), "alice");
         assert_eq!(imported[0].password(), "hunter2");
     }

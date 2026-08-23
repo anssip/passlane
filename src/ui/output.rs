@@ -1,5 +1,4 @@
 use comfy_table::*;
-use std::cmp::min;
 
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 
@@ -19,12 +18,13 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
             .collect::<Vec<Cell>>(),
     );
     for (index, creds) in (0_i16..).zip(credentials.iter()) {
-        let title = creds.title().to_string();
-        let truncated = &title[..min(title.len(), 30)];
+        // Char-based truncation: byte slicing would panic when the cut lands
+        // inside a multi-byte UTF-8 character.
+        let truncated: String = creds.title().chars().take(30).collect();
         let modified = creds.last_modified().format("%d.%m.%Y").to_string();
-        let mut lines: Vec<String> = vec![truncated.to_string()];
+        let mut lines: Vec<String> = vec![truncated];
         if let Some(url) = creds.url() {
-            let url_truncated = &url[..min(url.len(), 40)];
+            let url_truncated: String = url.chars().take(40).collect();
             lines.push(format!("🔗 {}", url_truncated));
         }
         if !creds.tags().is_empty() {
@@ -278,5 +278,20 @@ mod tests {
             .with_custom_attributes(&[("Recovery code".to_string(), "12345".to_string())]);
         show_credential(&credential, true);
         show_credential(&credential, false);
+    }
+
+    // Long multi-byte titles/URLs must truncate on char boundaries, not bytes.
+    #[test]
+    fn credentials_table_truncates_multibyte_titles_without_panicking() {
+        let credential = Credential::new(
+            None,
+            "secret",
+            "パスワードマネージャーのタイトルが非常に長い場合の切り詰めテスト",
+            "user",
+            None,
+            None,
+        )
+        .with_url(Some("https://example.com/パスワード/とても長いURLを切り詰めるテスト"));
+        show_credentials_table(&[credential], false, true);
     }
 }

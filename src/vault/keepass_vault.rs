@@ -935,19 +935,32 @@ impl PasswordVault for KeepassVault {
 
     fn update_credential(&mut self, credential: Credential) -> Result<(), Error> {
         let uuid = *credential.uuid();
-        // set_additional_attribute only fails for KeePass-reserved field names,
-        // which the prompts reject; surface such an error instead of saving a
-        // half-applied entry.
-        let mut field_error: Option<keepass_ng::Error> = None;
-        self.update_entry(uuid, |entry| {
-            if let Err(e) = Self::apply_credential_fields(entry, &credential) {
-                field_error = Some(e);
+        let node = match self.db.search_node_by_uuid(uuid) {
+            Some(node) => node,
+            None => {
+                return Err(Error {
+                    message: format!("Entry with uuid '{}' not found", uuid),
+                })
             }
-        })?;
-        match field_error {
-            Some(e) => Err(e.into()),
-            None => Ok(()),
+        };
+        {
+            let mut node = node.borrow_mut();
+            let entry = match node.downcast_mut::<Entry>() {
+                Some(entry) => entry,
+                None => {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    })
+                }
+            };
+            // Apply before saving: set_additional_attribute only fails for
+            // KeePass-reserved field names, and a failed apply must not
+            // persist a partially-updated entry.
+            Self::apply_credential_fields(entry, &credential)?;
+            entry.update_history();
         }
+        self.save_database()?;
+        Ok(())
     }
 
     fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {
@@ -1266,6 +1279,34 @@ mod tests {
         let found = &vault.grep(None)[0];
         assert_eq!(found.title(), "legacy-service");
         assert_eq!(found.url(), None);
+    }
+
+    #[test]
+    fn update_with_reserved_attribute_name_fails_without_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let credential = Credential::new(None, "secret", "GitHub", "user", None, None);
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_one_credential(credential).unwrap();
+        drop(vault);
+
+        // A reserved KeePass field name must be rejected before the database
+        // is saved, so the stored entry stays untouched.
+        let mut vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let stored = vault.grep(None)[0].clone();
+        let rejected = stored
+            .clone()
+            .with_custom_attributes(&[("Title".to_string(), "hijack".to_string())]);
+        let err = vault.update_credential(rejected).unwrap_err();
+        assert!(err.message.contains("Title"), "unexpected error: {}", err.message);
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let stored = &vault.grep(None)[0];
+        assert_eq!(stored.title(), "GitHub");
+        assert!(stored.custom_attributes().is_empty());
     }
 
     #[test]
