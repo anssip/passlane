@@ -784,7 +784,7 @@ impl KeepassVault {
             .custom_attributes()
             .iter()
             .map(|(key, _)| key.to_string())
-            .collect::<Vec<String>>();
+            .collect::<std::collections::HashSet<String>>();
         for key in entry
             .additional_attributes()
             .into_iter()

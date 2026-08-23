@@ -9,7 +9,8 @@ use rustyline::{Config, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
 use crate::vault::entities::{
-    Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS, Totp,
+    parse_tags, Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS,
+    Totp,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use inquire::{Confirm, CustomType, Password, Select, Text};
@@ -267,16 +268,6 @@ fn ask_advanced_fields(credential: Credential) -> Credential {
         .with_tags(&tags)
         .with_expiry(expires, expiry_time)
         .with_custom_attributes(&attributes)
-}
-
-/// Split free-form tag input. KeePass treats ';', ',' and tab as tag
-/// separators, so tags must never contain them.
-pub(crate) fn parse_tags(input: &str) -> Vec<String> {
-    input
-        .split([';', ',', '\t'])
-        .map(|tag| tag.trim().to_string())
-        .filter(|tag| !tag.is_empty())
-        .collect()
 }
 
 fn ask_tags(current: Option<&[String]>) -> Vec<String> {
@@ -861,21 +852,6 @@ pub fn ask_with_options(question: &str, options: Vec<&str>) -> String {
 mod tests {
     use super::*;
     use std::cell::Cell;
-
-    #[test]
-    fn parse_tags_splits_on_keepass_delimiters() {
-        assert_eq!(
-            parse_tags("work; dev, ops\tmisc"),
-            ["work".to_string(), "dev".to_string(), "ops".to_string(), "misc".to_string()]
-        );
-    }
-
-    #[test]
-    fn parse_tags_drops_empty_entries() {
-        assert!(parse_tags("").is_empty());
-        assert!(parse_tags(";;, ;").is_empty());
-        assert_eq!(parse_tags("  work  "), ["work".to_string()]);
-    }
 
     #[test]
     fn totp_url_preserves_algorithm() {

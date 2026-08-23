@@ -56,8 +56,9 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
 
 /// Full detail view of a single credential, showing every stored field
 /// including custom attributes.
-pub fn show_credential(credential: &Credential, show_password: bool) {
+pub fn show_credential(credential: &Credential, show_password: bool, plain: bool) {
     let mut table = Table::new();
+    apply_plain(&mut table, plain);
     let mut add_row = |label: &str, value: String| {
         table.add_row(vec![
             Cell::new(label).fg(Color::Yellow),
@@ -276,8 +277,8 @@ mod tests {
             .with_tags(&["work".to_string()])
             .with_expiry(true, Some(expiry))
             .with_custom_attributes(&[("Recovery code".to_string(), "12345".to_string())]);
-        show_credential(&credential, true);
-        show_credential(&credential, false);
+        show_credential(&credential, true, false);
+        show_credential(&credential, false, true);
     }
 
     // Long multi-byte titles/URLs must truncate on char boundaries, not bytes.

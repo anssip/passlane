@@ -1,4 +1,4 @@
-use crate::vault::entities::{Credential, Error, Note, PaymentCard};
+use crate::vault::entities::{parse_tags, Credential, Error, Note, PaymentCard};
 use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
@@ -109,15 +109,16 @@ fn parse_custom_attributes(encoded: &str) -> Vec<(String, String)> {
     encoded
         .split(';')
         .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (decode_attribute_component(key), decode_attribute_component(value)))
+        .map(|(key, value)| {
+            // Only the key is trimmed: trimming values would irreversibly
+            // drop leading/trailing whitespace the user stored.
+            (
+                percent_decode_str(key.trim()).decode_utf8_lossy().to_string(),
+                percent_decode_str(value).decode_utf8_lossy().to_string(),
+            )
+        })
         .filter(|(key, _)| !key.is_empty())
         .collect()
-}
-
-fn decode_attribute_component(component: &str) -> String {
-    percent_decode_str(component.trim())
-        .decode_utf8_lossy()
-        .to_string()
 }
 
 fn encode_custom_attributes(attributes: &[(String, String)]) -> String {
@@ -138,23 +139,33 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let path = PathBuf::from(file_path);
     let in_file = OpenOptions::new().read(true).open(path)?;
     let mut reader = ReaderBuilder::new().has_headers(true).from_reader(in_file);
+    // The csv crate deserializes an empty field into None for Option<String>,
+    // so a blank title cell is indistinguishable from a missing column at the
+    // value level — check the header row instead.
+    let has_title_column = reader
+        .headers()?
+        .iter()
+        .any(|header| matches!(header.trim().to_lowercase().as_str(), "title" | "service"));
     let mut credentials = Vec::new();
     for result in reader.deserialize::<CsvImportRow>() {
         let row = result?;
-        // Firefox-style exports have no title column; their url is the best
-        // available title.
-        let explicit_title = row.title.clone().filter(|title| !title.is_empty());
-        let title = explicit_title
+        // Firefox-style exports have no title column at all; their url is
+        // the best available title.
+        let title = row
+            .title
             .clone()
+            .filter(|title| !title.is_empty())
             .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
             .unwrap_or_default();
         if title.is_empty() && row.username.is_empty() && row.password.is_empty() {
             continue;
         }
-        // When the URL became the title, don't also store it as the URL: the
-        // vault treats URL == Title as the legacy passlane duplicate and would
-        // drop it on read, and the information already lives in the title.
-        let url = if explicit_title.is_some() {
+        // When the URL became the title (no title column in the file), don't
+        // also store it as the URL: the vault treats URL == Title as the
+        // legacy passlane duplicate and would drop it on read. A title column
+        // that is merely empty still counts as present, so its url value is
+        // kept as provided.
+        let url = if has_title_column {
             row.url.clone()
         } else {
             None
@@ -174,9 +185,7 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
                 row.last_modified,
             )
             .with_url(url.as_deref())
-            .with_tags(&crate::ui::input::parse_tags(
-                row.tags.as_deref().unwrap_or(""),
-            ))
+            .with_tags(&parse_tags(row.tags.as_deref().unwrap_or("")))
             .with_expiry(row.expires, row.expiry_time)
             .with_custom_attributes(&parse_custom_attributes(
                 row.custom_attributes.as_deref().unwrap_or(""),
@@ -504,6 +513,39 @@ mod tests {
         assert_eq!(
             imported[0].custom_attributes(),
             &[("Rate limit=high;strict".to_string(), "a=b;c %100".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_csv_import_empty_title_column_keeps_url() {
+        // A title column that exists but is blank must not be treated like a
+        // Firefox export (which has no title column): the provided url value
+        // is kept instead of being folded into the title.
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(
+            &path,
+            "title,url,username,password\n\
+             \"\",\"https://example.com\",\"alice\",\"hunter2\"\n",
+        )
+        .unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title(), "https://example.com");
+        assert_eq!(imported[0].url(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn test_csv_roundtrip_preserves_custom_attribute_whitespace() {
+        let cred = Credential::new(None, "secret", "example.com", "user", None, None)
+            .with_custom_attributes(&[("key".to_string(), "  padded value  ".to_string())]);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(
+            imported[0].custom_attributes(),
+            &[("key".to_string(), "  padded value  ".to_string())]
         );
     }
 

@@ -193,6 +193,16 @@ pub const RESERVED_CUSTOM_ATTRIBUTE_KEYS: &[&str] = &[
     "BinaryDesc",
 ];
 
+/// Split free-form tag input. KeePass treats ';', ',' and tab as tag
+/// separators, so tags must never contain them.
+pub fn parse_tags(input: &str) -> Vec<String> {
+    input
+        .split([';', ',', '\t'])
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
 #[derive(Clone, Serialize)]
 pub struct PaymentCard {
     id: Uuid,
@@ -655,6 +665,26 @@ mod tests {
     fn test_credential_with_empty_note_becomes_none() {
         let cred = Credential::new(None, "pass", "google.com", "user", Some(""), None);
         assert_eq!(cred.note(), None);
+    }
+
+    #[test]
+    fn parse_tags_splits_on_keepass_delimiters() {
+        assert_eq!(
+            parse_tags("work; dev, ops\tmisc"),
+            [
+                "work".to_string(),
+                "dev".to_string(),
+                "ops".to_string(),
+                "misc".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_tags_drops_empty_entries() {
+        assert!(parse_tags("").is_empty());
+        assert!(parse_tags(";;, ;").is_empty());
+        assert_eq!(parse_tags("  work  "), ["work".to_string()]);
     }
 
     #[test]
