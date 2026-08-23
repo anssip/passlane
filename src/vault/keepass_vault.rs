@@ -704,7 +704,11 @@ impl KeepassVault {
         let cvv = Self::extract_value_from_note(note, "CVV");
         let expiry = Self::extract_value_from_note_opt(note, "Expiry")
             .and_then(|value| Expiry::from_str(&value).ok())?;
-        let color = Self::extract_value_from_note_opt(note, "Color");
+        // The legacy format always wrote a "Color: " line, empty when no
+        // color was set; an empty value is no color, matching the
+        // custom-fields read path.
+        let color = Self::extract_value_from_note_opt(note, "Color")
+            .filter(|color| !color.is_empty());
         // Cards saved without a billing address store an empty line in their
         // notes; treat an empty or malformed address as "no address" instead
         // of failing to load the card.
@@ -936,7 +940,7 @@ impl KeepassVault {
         entry.set_additional_attribute(PAYMENT_FIELD_EXPIRY, Some(&payment.expiry_str()))?;
         entry.set_additional_attribute(
             PAYMENT_FIELD_COLOR,
-            payment.color().map(|color| color.as_str()),
+            Self::non_empty_str(payment.color().map(|color| color.as_str())),
         )?;
         let address = payment.billing_address();
         entry
@@ -1683,6 +1687,47 @@ mod tests {
             .billing_address()
             .expect("state-only address must survive the read");
         assert_eq!(address.state(), Some(&"CA".to_string()));
+    }
+
+    #[test]
+    fn payment_empty_color_is_dropped_on_read_and_write() {
+        // The legacy notes format always wrote a "Color: " line, empty when
+        // no color was set; the empty value must not become an empty custom
+        // attribute.
+        let node = payment_entry_node(
+            "Legacy Card",
+            "Name on card: Jane\nNumber: 4111111111111111\nCVV: 123\nExpiry: 11/29\nColor: \nBilling Address: ",
+        );
+        let payment = KeepassVault::node_to_payment(node).unwrap();
+        assert_eq!(payment.color(), None);
+
+        // Defense in depth: a card constructed with an empty color writes
+        // no Color attribute at all.
+        let card = PaymentCard::new(
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            Some(""),
+            None,
+            None,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let mut vault = KeepassVault::new(path.to_str().unwrap(), "master-pw", None, None).unwrap();
+        vault.save_payment(card).unwrap();
+        let node = vault
+            .db
+            .search_node_by_uuid(*vault.find_payments()[0].id())
+            .unwrap();
+        let n = node.borrow();
+        let entry = n.downcast_ref::<Entry>().unwrap();
+        assert_eq!(entry.get("Color"), None);
     }
 
     #[test]
