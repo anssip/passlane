@@ -47,8 +47,8 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
         ) {
             Ok(index) => {
                 println!(
-                    "Editing credential for service '{}'...",
-                    matches[index].service()
+                    "Editing credential for title '{}'...",
+                    matches[index].title()
                 );
                 self.edit_and_save_credential(&matches[index])
             }

@@ -159,6 +159,21 @@ fn node_looks_like_credential(node: &NodePtr) -> bool {
     has_username || has_password || has_url
 }
 
+/// The KeePass entry fields of a credential entry, as read from the vault.
+struct NodeCredentialValues {
+    username: String,
+    title: String,
+    url: Option<String>,
+    password: String,
+    note: Option<String>,
+    tags: Vec<String>,
+    expires: bool,
+    expiry_time: Option<DateTime<Utc>>,
+    custom_attributes: Vec<(String, String)>,
+    uuid: Uuid,
+    last_modified: Option<NaiveDateTime>,
+}
+
 /// Only the hardware-key variant blocks on a physical touch; a
 /// `LocalChallenge` key (recovery via backed-up secret, tests) computes the
 /// response locally, so no "touch" prompt should be shown for it.
@@ -448,10 +463,12 @@ impl KeepassVault {
                 let title = e.get_title().unwrap_or("").to_lowercase();
                 let url = e.get_url().unwrap_or("").to_lowercase();
                 let username = e.get_username().unwrap_or("").to_lowercase();
-                let combined = format!("{}:{}", url, username);
+                let tags = e.get_tags().join(" ").to_lowercase();
+                let combined = format!("{}:{}", title, username);
                 title.contains(grep_lower)
                     || url.contains(grep_lower)
                     || username.contains(grep_lower)
+                    || tags.contains(grep_lower)
                     || combined.contains(grep_lower)
             })
             .map(Self::node_to_credential)
@@ -494,15 +511,21 @@ impl KeepassVault {
     }
 
     fn node_to_credential(node: NodePtr) -> Credential {
-        let (username, service, password, note, uuid, modified_date_time) = Self::get_node_values(node);
+        let values = Self::get_node_values(node);
         Credential::new(
-            Some(&uuid),
-            &password,
-            &service,
-            &username,
-            note.as_deref(),
-            modified_date_time.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
+            Some(&values.uuid),
+            &values.password,
+            &values.title,
+            &values.username,
+            values.note.as_deref(),
+            values
+                .last_modified
+                .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
         )
+        .with_url(values.url.as_deref())
+        .with_tags(&values.tags)
+        .with_expiry(values.expires, values.expiry_time)
+        .with_custom_attributes(&values.custom_attributes)
     }
 
     fn node_to_totp(node: NodePtr) -> Totp {
@@ -529,28 +552,45 @@ impl KeepassVault {
         }
     }
 
-    fn get_node_values(node: NodePtr) -> (String, String, String, Option<String>, Uuid, Option<NaiveDateTime>) {
+    fn get_node_values(node: NodePtr) -> NodeCredentialValues {
         let node = node.borrow();
         let e = node.downcast_ref::<Entry>().unwrap();
-        let username = e.get_username().unwrap_or("(no username)");
-        let service = match e.get_url() {
-            Some(url) if !url.is_empty() => url,
-            _ => e.get_title().unwrap_or("(no service)"),
-        };
-        let password = e.get_password().unwrap_or("(no password)");
-        let note = e.get_notes()
+        let username = e.get_username().unwrap_or("(no username)").to_string();
+        let title = e.get_title().unwrap_or("(no title)").to_string();
+        // Older passlane versions stored the service value in both Title and
+        // URL; a URL identical to the Title is that legacy duplicate, not a
+        // real URL, so drop it on read.
+        let url = e
+            .get_url()
+            .map(|u| u.to_string())
+            .filter(|u| !u.is_empty() && u != &title);
+        let password = e.get_password().unwrap_or("(no password)").to_string();
+        let note = e
+            .get_notes()
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
+        let tags = e.get_tags().clone();
+        let times = e.get_times();
+        let expires = times.get_expires();
+        let expiry_time = times
+            .get_expiry_time()
+            .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+        let custom_attributes = e.additional_attributes();
         let uuid = e.get_uuid();
-        let last_modified = e.get_times().get_last_modification();
-        (
-            username.to_string(),
-            service.to_string(),
-            password.to_string(),
+        let last_modified = times.get_last_modification();
+        NodeCredentialValues {
+            username,
+            title,
+            url,
+            password,
             note,
+            tags,
+            expires,
+            expiry_time,
+            custom_attributes,
             uuid,
             last_modified,
-        )
+        }
     }
 
     fn node_to_payment(node: NodePtr) -> Option<PaymentCard> {
@@ -721,25 +761,56 @@ impl KeepassVault {
         }
     }
 
+    /// Write all credential fields onto a KeePass entry. Custom attributes
+    /// that exist on the entry but are absent from the credential are
+    /// removed, so edits can delete attributes.
+    fn apply_credential_fields(
+        entry: &mut Entry,
+        credentials: &Credential,
+    ) -> keepass_ng::Result<()> {
+        entry.set_title(Some(credentials.title()));
+        entry.set_url(credentials.url());
+        entry.set_username(Some(credentials.username()));
+        entry.set_password(Some(credentials.password()));
+        entry.set_notes(credentials.note());
+        *entry.get_tags_mut() = credentials.tags().to_vec();
+        let times = entry.get_times_mut();
+        times.set_expires(credentials.expires());
+        times.set_expiry_time(credentials.expiry_time().map(|dt| dt.naive_utc()));
+        for (key, value) in credentials.custom_attributes() {
+            entry.set_additional_attribute(key, Some(value))?;
+        }
+        let kept_keys = credentials
+            .custom_attributes()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect::<Vec<String>>();
+        for key in entry
+            .additional_attributes()
+            .into_iter()
+            .map(|(key, _)| key)
+        {
+            if !kept_keys.contains(&key) {
+                entry.set_additional_attribute(&key, None)?;
+            }
+        }
+        Ok(())
+    }
+
     fn create_password_entry(
         &mut self,
         parent_uuid: &Uuid,
         credentials: &Credential,
     ) -> keepass_ng::Result<Option<Uuid>> {
-        self.db
-            .create_new_entry(parent_uuid.clone(), 0)
-            .map(|node| {
-                node.borrow_mut()
-                    .downcast_mut::<Entry>()
-                    .map(|entry| {
-                        entry.set_title(Some(credentials.service()));
-                        entry.set_username(Some(credentials.username()));
-                        entry.set_password(Some(credentials.password()));
-                        entry.set_url(Some(&credentials.service()));
-                        entry.set_notes(credentials.note());
-                        entry.get_uuid()
-                    })
-            })
+        let node = self.db.create_new_entry(parent_uuid.clone(), 0)?;
+        let mut node_ref = node.borrow_mut();
+        match node_ref.downcast_mut::<Entry>() {
+            Some(entry) => {
+                Self::apply_credential_fields(entry, credentials)?;
+                Ok(Some(entry.get_uuid()))
+            }
+            None => Ok(None),
+        }
     }
 
     fn create_totp_entry(
@@ -863,14 +934,33 @@ impl PasswordVault for KeepassVault {
     }
 
     fn update_credential(&mut self, credential: Credential) -> Result<(), Error> {
-        let uuid = credential.uuid();
-        self.update_entry(*uuid, |entry| {
-            entry.set_title(Some(credential.service()));
-            entry.set_username(Some(credential.username()));
-            entry.set_password(Some(credential.password()));
-            entry.set_url(Some(credential.service()));
-            entry.set_notes(credential.note());
-        })
+        let uuid = *credential.uuid();
+        let node = match self.db.search_node_by_uuid(uuid) {
+            Some(node) => node,
+            None => {
+                return Err(Error {
+                    message: format!("Entry with uuid '{}' not found", uuid),
+                })
+            }
+        };
+        {
+            let mut node = node.borrow_mut();
+            let entry = match node.downcast_mut::<Entry>() {
+                Some(entry) => entry,
+                None => {
+                    return Err(Error {
+                        message: "Node is not an Entry".to_string(),
+                    })
+                }
+            };
+            // Apply before saving: set_additional_attribute only fails for
+            // KeePass-reserved field names, and a failed apply must not
+            // persist a partially-updated entry.
+            Self::apply_credential_fields(entry, &credential)?;
+            entry.update_history();
+        }
+        self.save_database()?;
+        Ok(())
     }
 
     fn delete_credentials(&mut self, uuid: &Uuid) -> Result<(), Error> {
@@ -886,8 +976,9 @@ impl PasswordVault for KeepassVault {
                 let node = node.borrow();
                 let e = node.downcast_ref::<Entry>().unwrap();
                 let username = e.get_username().unwrap_or("(no username)");
-                let service = e.get_url().unwrap_or("(no service)");
-                username.contains(grep) || service.contains(grep)
+                let title = e.get_title().unwrap_or("(no title)");
+                let url = e.get_url().unwrap_or("");
+                username.contains(grep) || title.contains(grep) || url.contains(grep)
             })
             .collect();
         // delete
@@ -1111,6 +1202,128 @@ mod tests {
 
         assert!(KeepassVault::open("new-pw", path_str, None, None).is_ok());
         assert!(KeepassVault::open("old-pw", path_str, None, None).is_err());
+    }
+
+    #[test]
+    fn credential_fields_roundtrip_through_kdbx() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let credential = Credential::new(None, "secret", "GitHub", "user", Some("note"), None)
+            .with_url(Some("https://github.com/login"))
+            .with_tags(&["work".to_string(), "dev".to_string()])
+            .with_expiry(true, Some(expiry))
+            .with_custom_attributes(&[("Recovery code".to_string(), "12345".to_string())]);
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_one_credential(credential).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let found = &vault.grep(None)[0];
+        assert_eq!(found.title(), "GitHub");
+        assert_eq!(found.url(), Some("https://github.com/login"));
+        assert_eq!(found.username(), "user");
+        assert_eq!(found.password(), "secret");
+        assert_eq!(found.note(), Some("note"));
+        assert_eq!(found.tags(), ["work".to_string(), "dev".to_string()]);
+        assert!(found.expires());
+        assert_eq!(found.expiry_time(), Some(expiry));
+        assert_eq!(
+            found.custom_attributes(),
+            &[("Recovery code".to_string(), "12345".to_string())]
+        );
+
+        // Editing must be able to drop custom attributes and disable expiry.
+        let updated = found
+            .clone()
+            .with_expiry(false, None)
+            .with_custom_attributes(&[]);
+        let mut vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        vault.update_credential(updated).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let found = &vault.grep(None)[0];
+        assert!(!found.expires());
+        assert_eq!(found.expiry_time(), None);
+        assert!(found.custom_attributes().is_empty());
+    }
+
+    #[test]
+    fn legacy_entry_with_url_equal_to_title_reads_url_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        // Write an entry the way old passlane did: service in both Title and URL.
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        {
+            let group_uuid = vault.find_or_create_group("Passwords");
+            let node = vault.db.create_new_entry(group_uuid, 0).unwrap();
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some("legacy-service"));
+            entry.set_url(Some("legacy-service"));
+            entry.set_username(Some("user"));
+            entry.set_password(Some("pass"));
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let found = &vault.grep(None)[0];
+        assert_eq!(found.title(), "legacy-service");
+        assert_eq!(found.url(), None);
+    }
+
+    #[test]
+    fn update_with_reserved_attribute_name_fails_without_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let credential = Credential::new(None, "secret", "GitHub", "user", None, None);
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_one_credential(credential).unwrap();
+        drop(vault);
+
+        // A reserved KeePass field name must be rejected before the database
+        // is saved, so the stored entry stays untouched.
+        let mut vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let stored = vault.grep(None)[0].clone();
+        let rejected = stored
+            .clone()
+            .with_custom_attributes(&[("Title".to_string(), "hijack".to_string())]);
+        let err = vault.update_credential(rejected).unwrap_err();
+        assert!(err.message.contains("Title"), "unexpected error: {}", err.message);
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let stored = &vault.grep(None)[0];
+        assert_eq!(stored.title(), "GitHub");
+        assert!(stored.custom_attributes().is_empty());
+    }
+
+    #[test]
+    fn grep_matches_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let credential = Credential::new(None, "secret", "GitHub", "user", None, None)
+            .with_tags(&["infra".to_string()]);
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault.save_one_credential(credential).unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.grep(Some("infra")).len(), 1);
+        assert_eq!(vault.grep(Some("no-such-tag")).len(), 0);
     }
 
     /// A stand-in for a hardware key: the 20-byte HMAC-SHA1 secret a

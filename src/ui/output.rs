@@ -1,5 +1,4 @@
 use comfy_table::*;
-use std::cmp::min;
 
 use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
 
@@ -8,9 +7,9 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
     apply_plain(&mut table, plain);
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
     let headers = if show_password {
-        vec!["", "Service", "Username/email", "Password"]
+        vec!["", "Title", "Username/email", "Password"]
     } else {
-        vec!["", "Service", "Username/email"]
+        vec!["", "Title", "Username/email"]
     };
     table.set_header(
         headers
@@ -19,31 +18,84 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
             .collect::<Vec<Cell>>(),
     );
     for (index, creds) in (0_i16..).zip(credentials.iter()) {
-        let service = creds.service().to_string();
-        let truncated = &service[..min(service.len(), 30)];
+        // Char-based truncation: byte slicing would panic when the cut lands
+        // inside a multi-byte UTF-8 character.
+        let truncated: String = creds.title().chars().take(30).collect();
         let modified = creds.last_modified().format("%d.%m.%Y").to_string();
-        let mut lines: Vec<String> = vec![truncated.to_string()];
+        let mut lines: Vec<String> = vec![truncated];
+        if let Some(url) = creds.url() {
+            let url_truncated: String = url.chars().take(40).collect();
+            lines.push(format!("🔗 {}", url_truncated));
+        }
+        if !creds.tags().is_empty() {
+            lines.push(format!("🏷 {}", creds.tags().join(", ")));
+        }
         if let Some(note) = creds.note() {
             lines.push(format!("📝 {}", note));
         }
         lines.push(format!("🕐 {}", modified));
-        let service_cell = lines.join("\n");
+        let title_cell = lines.join("\n");
         let columns = if show_password {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service_cell),
+                Cell::new(title_cell),
                 Cell::new(String::from(creds.username())),
                 Cell::new(String::from(creds.password())),
             ]
         } else {
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
-                Cell::new(service_cell),
+                Cell::new(title_cell),
                 Cell::new(String::from(creds.username())),
             ]
         };
         table.add_row(columns);
     }
+    println!("{table}");
+}
+
+/// Full detail view of a single credential, showing every stored field
+/// including custom attributes.
+pub fn show_credential(credential: &Credential, show_password: bool) {
+    let mut table = Table::new();
+    let mut add_row = |label: &str, value: String| {
+        table.add_row(vec![
+            Cell::new(label).fg(Color::Yellow),
+            Cell::new(value),
+        ]);
+    };
+    add_row("Title", credential.title().to_string());
+    add_row(
+        "URL",
+        credential.url().unwrap_or("-").to_string(),
+    );
+    add_row("Username", credential.username().to_string());
+    if show_password {
+        add_row("Password", credential.password().to_string());
+    }
+    add_row("Note", credential.note().unwrap_or("-").to_string());
+    add_row(
+        "Tags",
+        if credential.tags().is_empty() {
+            "-".to_string()
+        } else {
+            credential.tags().join(", ")
+        },
+    );
+    add_row(
+        "Expires",
+        match (credential.expires(), credential.expiry_time()) {
+            (true, Some(expiry)) => expiry.format("%d.%m.%Y").to_string(),
+            _ => "-".to_string(),
+        },
+    );
+    for (key, value) in credential.custom_attributes() {
+        add_row(key, value.to_string());
+    }
+    add_row(
+        "Last modified",
+        credential.last_modified().format("%d.%m.%Y %H:%M").to_string(),
+    );
     println!("{table}");
 }
 
@@ -206,4 +258,40 @@ pub(crate) fn show_totp_table(totps: &[Totp], plain: bool) {
         ]);
     }
     println!("{table}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    // Renders without panicking; run with --nocapture to eyeball the layout.
+    #[test]
+    fn show_credential_renders_all_fields() {
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let credential = Credential::new(None, "secret", "GitHub", "user", Some("note"), None)
+            .with_url(Some("https://github.com/login"))
+            .with_tags(&["work".to_string()])
+            .with_expiry(true, Some(expiry))
+            .with_custom_attributes(&[("Recovery code".to_string(), "12345".to_string())]);
+        show_credential(&credential, true);
+        show_credential(&credential, false);
+    }
+
+    // Long multi-byte titles/URLs must truncate on char boundaries, not bytes.
+    #[test]
+    fn credentials_table_truncates_multibyte_titles_without_panicking() {
+        let credential = Credential::new(
+            None,
+            "secret",
+            "パスワードマネージャーのタイトルが非常に長い場合の切り詰めテスト",
+            "user",
+            None,
+            None,
+        )
+        .with_url(Some("https://example.com/パスワード/とても長いURLを切り詰めるテスト"));
+        show_credentials_table(&[credential], false, true);
+    }
 }

@@ -27,10 +27,10 @@
 - [ ] Better table formatting with color coding for password age/strength (`passlane shell`)
 
 #### Advanced Features
-- [ ] **Tags/Categories** - Tag credentials and filter by tags (keepass-ng 0.11: `Entry::get_tags()` / `get_tags_mut()`, tags are now persisted on save)
-- [ ] **Favorites/Pinning** - Quick access to frequently used credentials
+- [x] **Tags/Categories** - Tag credentials and filter by tags (keepass-ng 0.11: `Entry::get_tags()` / `get_tags_mut()`, tags are now persisted on save)
+- [x] **Favorites/Pinning** - Quick access to frequently used credentials
 - [ ] **Multi-Vault Support** - Manage multiple vaults (personal, work, family)
-- [ ] **Custom Fields** - Support arbitrary fields (API keys, security questions, etc.) (keepass-ng 0.11: `Entry::set_additional_attribute()` / `get()`, read + write)
+- [x] **Custom Fields** - Support arbitrary fields (API keys, security questions, etc.) (keepass-ng 0.11: `Entry::set_additional_attribute()` / `get()`, read + write)
 - [ ] **Attachment Support** - Store files in vault (keepass-ng 0.11: `Entry::attachments` is first-class and written to the inner-header binary pool on save)
 
 ### Unlocked by the keepass-ng 0.11 upgrade

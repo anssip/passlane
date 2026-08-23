@@ -85,7 +85,8 @@ import <file> — Import credentials from a CSV file
 
   import /path/to/file.csv
 
-  The CSV file should have columns: username, password, service"#
+  The CSV file should have columns: username, password, title
+  (older exports with a 'service' column are also accepted)"#
         ),
         "export" => println!(
             r#"
