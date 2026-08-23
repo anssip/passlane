@@ -159,6 +159,25 @@ fn node_looks_like_credential(node: &NodePtr) -> bool {
     has_username || has_password || has_url
 }
 
+/// True for absolute URIs like `https://…`, `mailto:…`, `tel:…` or `urn:…`
+/// (an RFC 3986 `scheme:` prefix), false for bare names like `github.com`
+/// that legacy passlane duplicated into the URL field.
+fn is_absolute_uri(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for c in chars {
+        match c {
+            ':' => return true,
+            c if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.') => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// The KeePass entry fields of a credential entry, as read from the vault.
 struct NodeCredentialValues {
     username: String,
@@ -559,11 +578,12 @@ impl KeepassVault {
         let title = e.get_title().unwrap_or("(no title)").to_string();
         // Older passlane versions stored the service value in both Title and
         // URL; a URL identical to the Title is that legacy duplicate, not a
-        // real URL, so drop it on read.
+        // real URL, so drop it on read — unless it is an absolute URI, which
+        // no legacy service name ever was.
         let url = e
             .get_url()
             .map(|u| u.to_string())
-            .filter(|u| !u.is_empty() && (u != &title || u.contains("://")));
+            .filter(|u| !u.is_empty() && (u != &title || is_absolute_uri(u)));
         let password = e.get_password().unwrap_or("(no password)").to_string();
         let note = e
             .get_notes()
@@ -1305,6 +1325,49 @@ mod tests {
         let found = &vault.grep(None)[0];
         assert_eq!(found.title(), "https://example.com");
         assert_eq!(found.url(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn entry_with_scheme_only_url_equal_to_title_keeps_url() {
+        // mailto:/tel:/urn: URIs carry no "//", but are still absolute URIs
+        // and must not be mistaken for the legacy Title == URL duplicate.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        {
+            let group_uuid = vault.find_or_create_group("Passwords");
+            let node = vault.db.create_new_entry(group_uuid, 0).unwrap();
+            let mut n = node.borrow_mut();
+            let entry = n.downcast_mut::<Entry>().unwrap();
+            entry.set_title(Some("mailto:support@example.com"));
+            entry.set_url(Some("mailto:support@example.com"));
+            entry.set_username(Some("user"));
+            entry.set_password(Some("pass"));
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        let found = &vault.grep(None)[0];
+        assert_eq!(found.title(), "mailto:support@example.com");
+        assert_eq!(found.url(), Some("mailto:support@example.com"));
+    }
+
+    #[test]
+    fn is_absolute_uri_recognizes_schemes() {
+        assert!(is_absolute_uri("https://example.com"));
+        assert!(is_absolute_uri("mailto:user@example.com"));
+        assert!(is_absolute_uri("tel:+3581234567"));
+        assert!(is_absolute_uri("urn:isbn:0451450523"));
+        assert!(is_absolute_uri("otpauth://totp/x"));
+        // Bare service names and paths are not absolute URIs
+        assert!(!is_absolute_uri("github.com"));
+        assert!(!is_absolute_uri("example.com/login"));
+        assert!(!is_absolute_uri("/var/tmp"));
+        assert!(!is_absolute_uri("1password://x"));
+        assert!(!is_absolute_uri("no scheme here"));
     }
 
     #[test]
