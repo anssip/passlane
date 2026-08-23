@@ -149,14 +149,17 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let mut credentials = Vec::new();
     for result in reader.deserialize::<CsvImportRow>() {
         let row = result?;
-        // Firefox-style exports have no title column at all; their url is
+        // Firefox-style exports have no title column at all; in that case, their url is
         // the best available title.
-        let title = row
-            .title
-            .clone()
-            .filter(|title| !title.is_empty())
-            .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
-            .unwrap_or_default();
+        let title = if has_title_column {
+            row.title.clone().unwrap_or_default()
+        } else {
+            row.title
+                .clone()
+                .filter(|title| !title.is_empty())
+                .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
+                .unwrap_or_default()
+        };
         if title.is_empty() && row.username.is_empty() && row.password.is_empty() {
             continue;
         }
