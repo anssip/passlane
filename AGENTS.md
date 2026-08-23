@@ -134,5 +134,5 @@ The `keychain` module uses the OS keychain (Keychain on macOS, Credential Manage
 - Search functionality uses regex patterns
 - Clipboard integration automatically copies passwords/OTPs when displaying single results
 - The TOTP implementation continuously refreshes and copies codes to clipboard
-- CSV import expects columns: username, password, service
+- CSV import expects columns: username, password, title (older exports with a `service` column are accepted; `url`, `tags`, `expires`, `expiry_time` and `custom_attributes` columns are optional)
 - Keepass compatibility is maintained through the `keepass-ng` crate

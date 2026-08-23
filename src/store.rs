@@ -26,6 +26,24 @@ impl From<serde_json::Error> for Error {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct CSVCredential {
+    pub uuid: String,
+    pub password: String,
+    pub title: String,
+    pub url: String,
+    pub username: String,
+    pub note: String,
+    /// Semicolon-separated tags
+    pub tags: String,
+    pub expires: bool,
+    /// RFC 3339 timestamp, empty when the credential does not expire
+    pub expiry_time: String,
+    /// Custom attributes encoded as "key=value" pairs joined with ";"
+    pub custom_attributes: String,
+    pub last_modified: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct CSVPaymentCard {
     pub name: String,
     pub name_on_card: String,
@@ -57,8 +75,12 @@ fn dir_path() -> PathBuf {
 
 #[derive(Debug, Deserialize)]
 struct CsvImportRow {
-    #[serde(alias = "url")]
-    service: String,
+    /// "service" is accepted for exports written by older passlane versions;
+    /// Firefox exports only have a "url" column, handled below.
+    #[serde(default, alias = "service")]
+    title: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
     username: String,
     password: String,
     #[serde(default, alias = "guid")]
@@ -66,7 +88,24 @@ struct CsvImportRow {
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
+    tags: Option<String>,
+    #[serde(default)]
+    expires: bool,
+    #[serde(default)]
+    expiry_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    custom_attributes: Option<String>,
+    #[serde(default)]
     last_modified: Option<DateTime<Utc>>,
+}
+
+fn parse_custom_attributes(encoded: &str) -> Vec<(String, String)> {
+    encoded
+        .split(';')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .filter(|(key, _)| !key.is_empty())
+        .collect()
 }
 
 pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
@@ -76,7 +115,15 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     let mut credentials = Vec::new();
     for result in reader.deserialize::<CsvImportRow>() {
         let row = result?;
-        if row.service.is_empty() && row.username.is_empty() && row.password.is_empty() {
+        // Firefox-style exports have no title column; their url is the best
+        // available title.
+        let title = row
+            .title
+            .clone()
+            .filter(|title| !title.is_empty())
+            .or_else(|| row.url.clone().filter(|url| !url.is_empty()))
+            .unwrap_or_default();
+        if title.is_empty() && row.username.is_empty() && row.password.is_empty() {
             continue;
         }
         let parsed_uuid = row
@@ -84,14 +131,24 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
             .as_deref()
             .filter(|s| !s.is_empty())
             .and_then(|s| Uuid::parse_str(s).ok());
-        credentials.push(Credential::new(
-            parsed_uuid.as_ref(),
-            &row.password,
-            &row.service,
-            &row.username,
-            row.note.as_deref(),
-            row.last_modified,
-        ));
+        credentials.push(
+            Credential::new(
+                parsed_uuid.as_ref(),
+                &row.password,
+                &title,
+                &row.username,
+                row.note.as_deref(),
+                row.last_modified,
+            )
+            .with_url(row.url.as_deref())
+            .with_tags(&crate::ui::input::parse_tags(
+                row.tags.as_deref().unwrap_or(""),
+            ))
+            .with_expiry(row.expires, row.expiry_time)
+            .with_custom_attributes(&parse_custom_attributes(
+                row.custom_attributes.as_deref().unwrap_or(""),
+            )),
+        );
     }
     Ok(credentials)
 }
@@ -184,7 +241,27 @@ pub(crate) fn write_credentials_to_csv(
 ) -> Result<i64, Error> {
     let mut wtr = Writer::from_writer(create_private_file(file_path)?);
     for cred in creds {
-        wtr.serialize(cred)?;
+        wtr.serialize(CSVCredential {
+            uuid: cred.uuid().to_string(),
+            password: cred.password().to_string(),
+            title: cred.title().to_string(),
+            url: cred.url().unwrap_or("").to_string(),
+            username: cred.username().to_string(),
+            note: cred.note().unwrap_or("").to_string(),
+            tags: cred.tags().join(";"),
+            expires: cred.expires(),
+            expiry_time: cred
+                .expiry_time()
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            custom_attributes: cred
+                .custom_attributes()
+                .iter()
+                .map(|(key, value)| format!("{}={}", key, value))
+                .collect::<Vec<String>>()
+                .join(";"),
+            last_modified: cred.last_modified().to_rfc3339(),
+        })?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)
@@ -355,7 +432,53 @@ mod tests {
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].note(), None);
-        assert_eq!(imported[0].service(), "google.com");
+        assert_eq!(imported[0].title(), "google.com");
+        assert_eq!(imported[0].url(), None);
+    }
+
+    #[test]
+    fn test_csv_roundtrip_with_new_fields() {
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cred = Credential::new(None, "pass123", "github.com", "user", Some("note"), None)
+            .with_url(Some("https://github.com/login"))
+            .with_tags(&["work".to_string(), "dev".to_string()])
+            .with_expiry(true, Some(expiry))
+            .with_custom_attributes(&[("Recovery code".to_string(), "12345".to_string())]);
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        write_credentials_to_csv(&path, &vec![cred]).unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title(), "github.com");
+        assert_eq!(imported[0].url(), Some("https://github.com/login"));
+        assert_eq!(imported[0].tags(), ["work".to_string(), "dev".to_string()]);
+        assert!(imported[0].expires());
+        assert_eq!(imported[0].expiry_time(), Some(expiry));
+        assert_eq!(
+            imported[0].custom_attributes(),
+            &[("Recovery code".to_string(), "12345".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_csv_import_legacy_service_column() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(
+            &path,
+            "uuid,password,service,username,note,last_modified\n\
+             \"00000000-0000-0000-0000-000000000001\",\"pass123\",\"google.com\",\"user\",\"\",\"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let imported = read_from_csv(&path).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title(), "google.com");
+        assert_eq!(imported[0].url(), None);
+        assert!(!imported[0].expires());
+        assert!(imported[0].tags().is_empty());
+        assert!(imported[0].custom_attributes().is_empty());
     }
 
     #[test]
@@ -381,7 +504,8 @@ mod tests {
         .unwrap();
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(imported.len(), 1);
-        assert_eq!(imported[0].service(), "https://example.com");
+        assert_eq!(imported[0].title(), "https://example.com");
+        assert_eq!(imported[0].url(), Some("https://example.com"));
         assert_eq!(imported[0].username(), "alice");
         assert_eq!(imported[0].password(), "hunter2");
     }
@@ -398,7 +522,7 @@ mod tests {
         .unwrap();
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(imported.len(), 1);
-        assert_eq!(imported[0].service(), "https://example.com");
+        assert_eq!(imported[0].title(), "https://example.com");
         assert_eq!(imported[0].username(), "bob");
         // A fresh uuid should have been generated since the guid was unparseable.
         assert_eq!(imported[0].uuid().get_version_num(), 4);

@@ -58,10 +58,21 @@ impl Display for Error {
 pub struct Credential {
     uuid: Uuid,
     password: String,
-    service: String,
+    #[serde(alias = "service")]
+    title: String,
+    #[serde(default)]
+    url: Option<String>,
     username: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    expires: bool,
+    #[serde(default)]
+    expiry_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    custom_attributes: Vec<(String, String)>,
     #[serde(default = "default_last_modified")]
     last_modified: DateTime<Utc>,
 }
@@ -74,7 +85,7 @@ impl Credential {
     pub fn new(
         uuid: Option<&Uuid>,
         password: &str,
-        service: &str,
+        title: &str,
         username: &str,
         note: Option<&str>,
         last_modified: Option<DateTime<Utc>>,
@@ -82,11 +93,45 @@ impl Credential {
         Credential {
             uuid: uuid.map(|id| id.clone()).unwrap_or_else(|| Uuid::new_v4()),
             password: password.to_string(),
-            service: sanitize(service),
+            title: sanitize(title),
             username: sanitize(username),
+            url: None,
             note: note.map(|n| sanitize(n)).filter(|n| !n.is_empty()),
+            tags: Vec::new(),
+            expires: false,
+            expiry_time: None,
+            custom_attributes: Vec::new(),
             last_modified: last_modified.unwrap_or(Utc::now()),
         }
+    }
+
+    pub fn with_url(mut self, url: Option<&str>) -> Self {
+        self.url = url.map(sanitize).filter(|u| !u.is_empty());
+        self
+    }
+
+    pub fn with_tags(mut self, tags: &[String]) -> Self {
+        self.tags = tags
+            .iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+        self
+    }
+
+    pub fn with_expiry(mut self, expires: bool, expiry_time: Option<DateTime<Utc>>) -> Self {
+        self.expires = expires;
+        self.expiry_time = if expires { expiry_time } else { None };
+        self
+    }
+
+    pub fn with_custom_attributes(mut self, attributes: &[(String, String)]) -> Self {
+        self.custom_attributes = attributes
+            .iter()
+            .filter(|(key, _)| !key.trim().is_empty())
+            .map(|(key, value)| (key.trim().to_string(), value.clone()))
+            .collect();
+        self
     }
 
     pub fn uuid(&self) -> &Uuid {
@@ -97,8 +142,12 @@ impl Credential {
         &self.password
     }
 
-    pub fn service(&self) -> &str {
-        &self.service
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        self.url.as_deref()
     }
 
     pub fn username(&self) -> &str {
@@ -109,10 +158,40 @@ impl Credential {
         self.note.as_deref()
     }
 
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    pub fn expires(&self) -> bool {
+        self.expires
+    }
+
+    pub fn expiry_time(&self) -> Option<DateTime<Utc>> {
+        self.expiry_time
+    }
+
+    pub fn custom_attributes(&self) -> &[(String, String)] {
+        &self.custom_attributes
+    }
+
     pub fn last_modified(&self) -> &DateTime<Utc> {
         &self.last_modified
     }
 }
+
+/// Field names KeePass reserves for its built-in entry fields; custom
+/// attributes may not use them (keepass-ng rejects them on write).
+pub const RESERVED_CUSTOM_ATTRIBUTE_KEYS: &[&str] = &[
+    "Password",
+    "BinaryData",
+    "otp",
+    "Title",
+    "URL",
+    "UserName",
+    "Notes",
+    "Additional",
+    "BinaryDesc",
+];
 
 #[derive(Clone, Serialize)]
 pub struct PaymentCard {
@@ -597,5 +676,62 @@ mod tests {
         let json = r#"{"uuid":"00000000-0000-0000-0000-000000000000","password":"pass","service":"google.com","username":"user","last_modified":"2024-01-01T00:00:00Z"}"#;
         let cred: Credential = serde_json::from_str(json).unwrap();
         assert_eq!(cred.note(), None);
+        assert_eq!(cred.title(), "google.com");
+        assert_eq!(cred.url(), None);
+        assert!(cred.tags().is_empty());
+        assert!(!cred.expires());
+        assert!(cred.custom_attributes().is_empty());
+    }
+
+    #[test]
+    fn test_credential_with_url_tags_expiry_and_custom_attributes() {
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cred = Credential::new(None, "pass", "github.com", "user", None, None)
+            .with_url(Some("https://github.com/login"))
+            .with_tags(&["  work  ".to_string(), "".to_string()])
+            .with_expiry(true, Some(expiry))
+            .with_custom_attributes(&[("Recovery code".to_string(), "a=b;c".to_string())]);
+        assert_eq!(cred.url(), Some("https://github.com/login"));
+        assert_eq!(cred.tags(), ["work".to_string()]);
+        assert!(cred.expires());
+        assert_eq!(cred.expiry_time(), Some(expiry));
+        // Custom attribute values are stored verbatim, keys are trimmed
+        assert_eq!(
+            cred.custom_attributes(),
+            &[("Recovery code".to_string(), "a=b;c".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_credential_expiry_disabled_ignores_time() {
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cred = Credential::new(None, "pass", "github.com", "user", None, None)
+            .with_expiry(false, Some(expiry));
+        assert!(!cred.expires());
+        assert_eq!(cred.expiry_time(), None);
+    }
+
+    #[test]
+    fn test_credential_json_roundtrip_with_new_fields() {
+        let expiry = DateTime::parse_from_rfc3339("2027-01-31T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cred = Credential::new(None, "pass", "github.com", "user", Some("note"), None)
+            .with_url(Some("https://github.com"))
+            .with_tags(&["work".to_string()])
+            .with_expiry(true, Some(expiry))
+            .with_custom_attributes(&[("key".to_string(), "value".to_string())]);
+        let json = serde_json::to_string(&cred).unwrap();
+        let parsed: Credential = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.title(), cred.title());
+        assert_eq!(parsed.url(), cred.url());
+        assert_eq!(parsed.tags(), cred.tags());
+        assert_eq!(parsed.expires(), cred.expires());
+        assert_eq!(parsed.expiry_time(), cred.expiry_time());
+        assert_eq!(parsed.custom_attributes(), cred.custom_attributes());
     }
 }

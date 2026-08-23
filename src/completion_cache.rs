@@ -128,10 +128,10 @@ fn create_cache_from_keychain() {
 fn collect_entry_names(vault: &Box<dyn Vault>) -> Vec<String> {
     let mut pairs = BTreeSet::new();
     for cred in vault.grep(None) {
-        let service = cred.service().to_string();
+        let title = cred.title().to_string();
         let username = cred.username().to_string();
-        if !service.is_empty() || !username.is_empty() {
-            pairs.insert(format!("{}:{}", service, username));
+        if !title.is_empty() || !username.is_empty() {
+            pairs.insert(format!("{}:{}", title, username));
         }
     }
     pairs.into_iter().collect()

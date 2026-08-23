@@ -5,8 +5,8 @@ use crate::actions::{
 
 use crate::ui::input::{ask_index, ask_with_options};
 use crate::ui::output::{
-    show_card, show_credentials_table, show_note, show_notes_table, show_payment_cards_table,
-    show_totp_table,
+    show_card, show_credential, show_credentials_table, show_note, show_notes_table,
+    show_payment_cards_table, show_totp_table,
 };
 use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::Vault;
@@ -31,15 +31,14 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_credentials_table(&vec![the_match.clone()], self.verbose, self.plain);
         if self.stdout_only {
             println!("{}", the_match.password());
-            Ok(None)
-        } else {
-            println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
-            copy_to_clipboard_timed(the_match.password(), 20);
-            Ok(None)
+            return Ok(None);
         }
+        show_credential(&the_match, self.verbose);
+        println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
+        copy_to_clipboard_timed(the_match.password(), 20);
+        Ok(None)
     }
 
     fn handle_many_matches(
@@ -51,19 +50,20 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         let prompt = if self.stdout_only {
             "To print one of these passwords, please enter a row number from the table above"
         } else {
-            "To copy one of these passwords to clipboard, please enter a row number from the table above"
+            "To show one of these credentials, please enter a row number from the table above"
         };
 
         match ask_index(
             prompt,
             matches.len() as i16 - 1,
-            Some("Press q to exit without copying the password"),
+            Some("Press q to exit without showing the credential"),
         ) {
             Ok(index) => {
                 if self.stdout_only {
                     println!("{}", matches[index].password());
                     Ok(None)
                 } else {
+                    show_credential(&matches[index], self.verbose);
                     println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
                     copy_to_clipboard_timed(matches[index].password(), 20);
                     Ok(None)

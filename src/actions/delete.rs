@@ -41,8 +41,8 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
                     Ok(Some("Deleted".to_string()))
                 } else {
                     println!(
-                        "Deleting credential for service '{}'...",
-                        matches[index].service()
+                        "Deleting credential for title '{}'...",
+                        matches[index].title()
                     );
                     self.vault.delete_credentials(matches[index].uuid())?;
                     Ok(Some("Deleted".to_string()))

@@ -144,10 +144,22 @@ impl ListAction {
         let mut lines = vec![format!("Found {} credentials:", count)];
         for entry in entries {
             lines.push(String::new());
-            lines.push(format!("Service: {}", entry.service()));
+            lines.push(format!("Title: {}", entry.title()));
+            if let Some(url) = entry.url() {
+                lines.push(format!("URL: {}", url));
+            }
             lines.push(format!("Username: {}", entry.username()));
             if let Some(note) = entry.note() {
                 lines.push(format!("Note: {}", note));
+            }
+            if !entry.tags().is_empty() {
+                lines.push(format!("Tags: {}", entry.tags().join(", ")));
+            }
+            if let Some(expiry) = entry.expiry_time().filter(|_| entry.expires()) {
+                lines.push(format!("Expires: {}", expiry.format("%d.%m.%Y")));
+            }
+            for (key, value) in entry.custom_attributes() {
+                lines.push(format!("{}: {}", key, value));
             }
             if verbose {
                 lines.push(format!("Password: {}", entry.password()));
@@ -249,9 +261,13 @@ mod tests {
         );
         let json = serde_json::to_string(&cred).unwrap();
         assert!(json.contains("\"uuid\""));
-        assert!(json.contains("\"service\""));
+        assert!(json.contains("\"title\""));
+        assert!(json.contains("\"url\""));
         assert!(json.contains("\"username\""));
         assert!(json.contains("\"password\""));
+        assert!(json.contains("\"tags\""));
+        assert!(json.contains("\"expires\""));
+        assert!(json.contains("\"custom_attributes\""));
         assert!(json.contains("\"last_modified\""));
         assert!(json.contains("google.com"));
         assert!(json.contains("user@example.com"));
@@ -363,21 +379,25 @@ mod tests {
 
     #[test]
     fn test_format_credentials_plain_non_verbose() {
-        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None);
+        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None)
+            .with_url(Some("https://google.com"));
         let result = ListAction::format_credentials_plain(&[cred], false);
         assert!(result.contains("Found 1 credentials:"));
-        assert!(result.contains("Service: google.com"));
+        assert!(result.contains("Title: google.com"));
+        assert!(result.contains("URL: https://google.com"));
         assert!(result.contains("Username: user@test.com"));
         assert!(!result.contains("Password:"));
     }
 
     #[test]
     fn test_format_credentials_plain_verbose() {
-        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None);
+        let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None)
+            .with_tags(&["work".to_string()]);
         let result = ListAction::format_credentials_plain(&[cred], true);
         assert!(result.contains("Found 1 credentials:"));
-        assert!(result.contains("Service: google.com"));
+        assert!(result.contains("Title: google.com"));
         assert!(result.contains("Username: user@test.com"));
+        assert!(result.contains("Tags: work"));
         assert!(result.contains("Password: secret"));
         assert!(result.contains("Last Modified:"));
     }

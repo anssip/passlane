@@ -8,7 +8,10 @@ use rustyline::validate::Validator;
 use rustyline::{Config, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
-use crate::vault::entities::{Address, Credential, Expiry, Note, PaymentCard, Totp};
+use crate::vault::entities::{
+    Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS, Totp,
+};
+use chrono::{DateTime, NaiveDate, Utc};
 use inquire::{Confirm, CustomType, Password, Select, Text};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
@@ -173,39 +176,208 @@ pub fn ask_number(question: &str) -> u64 {
 }
 
 pub fn ask_credentials(password: &str) -> Credential {
-    let service = ask("Enter URL or service");
+    let title = ask("Enter title");
+    let url = ask_with_initial_optional(
+        "Enter URL (optional)",
+        None,
+        Some("Press enter to skip"),
+        true,
+    );
     let username = ask("Enter username");
-    let note = ask_with_initial_optional("Enter note (optional)", None, Some("Press enter to skip"), true);
-    Credential::new(None, password, &service, &username, note.as_deref(), None)
+    let note = ask_with_initial_optional(
+        "Enter note (optional)",
+        None,
+        Some("Press enter to skip"),
+        true,
+    );
+    let credential = Credential::new(None, password, &title, &username, note.as_deref(), None)
+        .with_url(url.as_deref());
+    ask_advanced_fields(credential)
 }
 
-pub(crate) fn ask_modified_credential<'a>(the_match: &'a Credential) -> Credential {
-    let service = ask_with_initial(
-        "Enter URL or service",
-        Some(the_match.service()),
-        Some("Press enter and leave empty to keep the current value shown in parantheses"),
+pub(crate) fn ask_modified_credential(the_match: &Credential) -> Credential {
+    let title = ask_with_initial(
+        "Enter title",
+        Some(the_match.title()),
+        Some("Press enter and leave empty to keep the current value shown in parentheses"),
+    );
+    let url = ask_with_initial_optional(
+        "Enter URL (optional)",
+        the_match.url(),
+        Some("Press enter to keep current value, or type clear to remove"),
+        true,
     );
     let username = ask_with_initial(
         "Enter username",
         Some(the_match.username()),
-        Some("Press enter and leave empty to keep the current value shown in parantheses"),
+        Some("Press enter and leave empty to keep the current value shown in parentheses"),
     );
     let password = ask_new_password("Enter new password");
     let note = ask_with_initial_optional(
         "Enter note (optional)",
         the_match.note(),
-        Some("Press enter to keep current value, or clear to remove"),
+        Some("Press enter to keep current value, or type clear to remove"),
         true,
     );
 
-    Credential::new(
+    let credential = Credential::new(
         Some(the_match.uuid()),
         password.as_deref().unwrap_or(the_match.password()),
-        &service,
+        &title,
         &username,
-        note.as_deref(),
+        edited_optional_field(note, the_match.note()).as_deref(),
         None,
     )
+    .with_url(edited_optional_field(url, the_match.url()).as_deref())
+    // Carry the advanced fields over so skipping the advanced step below
+    // preserves them; opting in re-prompts with these as the defaults.
+    .with_tags(the_match.tags())
+    .with_expiry(the_match.expires(), the_match.expiry_time())
+    .with_custom_attributes(the_match.custom_attributes());
+    ask_advanced_fields(credential)
+}
+
+/// Interpret optional-field input during edit: an unchanged prompt keeps the
+/// current value, the literal word "clear" removes it, anything else is the
+/// new value.
+fn edited_optional_field(input: Option<String>, current: Option<&str>) -> Option<String> {
+    match input {
+        None => current.map(|value| value.to_string()),
+        Some(value) if value.eq_ignore_ascii_case("clear") => None,
+        Some(value) => Some(value),
+    }
+}
+
+/// Offer the advanced credential fields (tags, expiry date, custom
+/// attributes). Skipped unless the user opts in; fields the user never sees
+/// keep the values already stored on the credential.
+fn ask_advanced_fields(credential: Credential) -> Credential {
+    let configure =
+        Confirm::new("Configure advanced fields (tags, expiry date, custom attributes)?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
+    if !configure {
+        return credential;
+    }
+    let tags = ask_tags(Some(credential.tags()));
+    let (expires, expiry_time) = ask_expiry(credential.expires(), credential.expiry_time());
+    let attributes = ask_custom_attributes(Some(credential.custom_attributes()));
+    credential
+        .with_tags(&tags)
+        .with_expiry(expires, expiry_time)
+        .with_custom_attributes(&attributes)
+}
+
+/// Split free-form tag input. KeePass treats ';', ',' and tab as tag
+/// separators, so tags must never contain them.
+pub(crate) fn parse_tags(input: &str) -> Vec<String> {
+    input
+        .split([';', ',', '\t'])
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+fn ask_tags(current: Option<&[String]>) -> Vec<String> {
+    let default = current.map(|tags| tags.join(";"));
+    let input = ask_with_initial_optional(
+        "Enter tags, separated by semicolons",
+        default.as_deref(),
+        Some("Press enter to keep current value, or type clear to remove all tags"),
+        true,
+    );
+    match input {
+        Some(text) if text.eq_ignore_ascii_case("clear") => Vec::new(),
+        Some(text) => parse_tags(&text),
+        None => Vec::new(),
+    }
+}
+
+fn ask_expiry(
+    current_expires: bool,
+    current_expiry: Option<DateTime<Utc>>,
+) -> (bool, Option<DateTime<Utc>>) {
+    let expires = Confirm::new("Does this credential expire?")
+        .with_default(current_expires)
+        .prompt()
+        .unwrap_or(false);
+    if !expires {
+        return (false, None);
+    }
+    let default = current_expiry.map(|dt| dt.format("%Y-%m-%d").to_string());
+    loop {
+        // optional=false re-prompts on empty input when there is no default
+        let input = ask_with_initial_optional(
+            "Enter expiry date (YYYY-MM-DD)",
+            default.as_deref(),
+            Some("Press enter to keep the current value"),
+            default.is_none(),
+        );
+        let Some(raw) = input else {
+            continue;
+        };
+        match NaiveDate::parse_from_str(&raw, "%Y-%m-%d") {
+            Ok(date) => return (true, Some(date.and_hms_opt(0, 0, 0).unwrap().and_utc())),
+            Err(_) => println!("Invalid date '{}', please use the YYYY-MM-DD format", raw),
+        }
+    }
+}
+
+fn ask_custom_attributes(current: Option<&[(String, String)]>) -> Vec<(String, String)> {
+    let mut attributes: Vec<(String, String)> =
+        current.map(|attrs| attrs.to_vec()).unwrap_or_default();
+    loop {
+        if !attributes.is_empty() {
+            println!("Custom attributes:");
+            for (key, value) in &attributes {
+                println!("  {} = {}", key, value);
+            }
+        }
+        let mut options = vec!["Add attribute"];
+        if !attributes.is_empty() {
+            options.push("Remove attribute");
+        }
+        options.push("Done");
+        match ask_with_options("Custom attributes", options).as_str() {
+            "Add attribute" => {
+                let key = ask_attribute_name(&attributes);
+                let value = ask("Enter attribute value");
+                attributes.push((key, value));
+            }
+            "Remove attribute" => {
+                let keys: Vec<String> =
+                    attributes.iter().map(|(key, _)| key.clone()).collect();
+                match Select::new("Which attribute should be removed?", keys).prompt() {
+                    Ok(key) => attributes.retain(|(k, _)| k != &key),
+                    Err(_) => println!("No attribute removed"),
+                }
+            }
+            _ => return attributes,
+        }
+    }
+}
+
+fn ask_attribute_name(existing: &[(String, String)]) -> String {
+    loop {
+        let name = ask("Enter attribute name");
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        if RESERVED_CUSTOM_ATTRIBUTE_KEYS.contains(&name.as_str()) {
+            println!(
+                "'{}' is a reserved KeePass field name, please choose another",
+                name
+            );
+            continue;
+        }
+        if existing.iter().any(|(key, _)| key == &name) {
+            println!("An attribute named '{}' already exists", name);
+            continue;
+        }
+        return name;
+    }
 }
 
 pub(crate) fn ask_modified_address(address: &Address) -> Address {
@@ -689,6 +861,21 @@ pub fn ask_with_options(question: &str, options: Vec<&str>) -> String {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn parse_tags_splits_on_keepass_delimiters() {
+        assert_eq!(
+            parse_tags("work; dev, ops\tmisc"),
+            ["work".to_string(), "dev".to_string(), "ops".to_string(), "misc".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_tags_drops_empty_entries() {
+        assert!(parse_tags("").is_empty());
+        assert!(parse_tags(";;, ;").is_empty());
+        assert_eq!(parse_tags("  work  "), ["work".to_string()]);
+    }
 
     #[test]
     fn totp_url_preserves_algorithm() {

@@ -17,6 +17,7 @@ Passlane is written in Rust.
   - The keepass storage file can be optionally secured using a [key file](https://keepassxc.org/docs/) to provide additional protection
   - Optional hardware key (e.g. a YubiKey) challenge-response factor for unlocking the vault
 - Generate and save passwords
+- Full KeePass entry format for credentials: title, URL, note, tags, expiry date and custom attributes (custom fields) — all fields are visible in other KeePass compatible applications
 - Add optional notes to credentials (useful when you have several accounts on the same service)
 - Save and view payment card information
 - Save and view secure notes
@@ -25,7 +26,7 @@ Passlane is written in Rust.
 - Export vault contents to CSV files
 - Clipboard auto-clear: passwords are automatically cleared from the clipboard after 20 seconds
 - `--out` flag for scripting: output passwords to stdout instead of the clipboard
-- Shell tab completion for bash, zsh, and fish with dynamic service/username suggestions
+- Shell tab completion for bash, zsh, and fish with dynamic title/username suggestions
 - REPL mode (interactive mode)
 
 ## Table of contents
@@ -67,17 +68,27 @@ Type 'help' for commands, 'quit' to exit.
 passlane> show user@
 Found 3 credentials:
 +---+------------------+---------------------+
-|   | Service          | Username/email      |
+|   | Title            | Username/email      |
 +===+==================+=====================+
 | 0 | github.com       | user@example.com    |
 | 1 | google.com       | user@gmail.com      |
 | 2 | aws.amazon.com   | user@company.com   |
 +---+------------------+---------------------+
-> To copy one of these passwords to clipboard, please enter a row number from the table above: 0
+> To show one of these credentials, please enter a row number from the table above: 0
 Unlocking vault...
-Password copied to clipboard!
-
-passlane> show github
++----------------+----------------------+
+| Title          | github.com           |
+|----------------+----------------------|
+| URL            | https://github.com   |
+|----------------+----------------------|
+| Username       | user@example.com     |
+|----------------+----------------------|
+| Tags           | work                 |
+|----------------+----------------------|
+| Expires        | -                    |
+|----------------+----------------------|
+| Last modified  | 23.08.2026 09:34     |
++----------------+----------------------+
 Password copied to clipboard!
 
 passlane> add card
@@ -309,7 +320,15 @@ To generate a new password and save credentials with one command:
 passlane add -g
 ```
 
-When adding credentials, you will be prompted for an optional note. This is useful for annotating entries, e.g., "work account" or "admin access".
+When adding credentials, you will be prompted for a title, an optional URL, the username and an optional note. The note is useful for annotating entries, e.g., "work account" or "admin access".
+
+Credentials also support **advanced fields** — tags, an expiry date and custom attributes (KeePass custom fields). They are never prompted by default; answer yes to the "Configure advanced fields?" question when adding or editing a credential to set them:
+
+- **Tags** — free-form labels, separated by semicolons; entries can be searched by tag with `show`/`list`
+- **Expiry date** — marks the credential as expiring on a given date (`YYYY-MM-DD`)
+- **Custom attributes** — extra name/value fields stored on the entry, e.g., a recovery code or a customer number; they are also visible in other KeePass compatible applications
+
+When editing, skipping the advanced prompt keeps any existing tags, expiry date and custom attributes unchanged.
 
 ### Using saved credentials
 
@@ -319,7 +338,7 @@ You can search and show saved credentials with regular expressions
 passlane show <regexp>
 ```
 
-Run `passlane show foobar.com` → shows foobar.com's password and copies it to the clipboard. The clipboard is **automatically cleared after 20 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
+Run `passlane show foobar.com` → shows the full details of the matching credential (title, URL, username, note, tags, expiry date and custom attributes) and copies its password to the clipboard. The clipboard is **automatically cleared after 20 seconds**. If you press Ctrl+C during the wait, the clipboard is cleared immediately before exiting.
 
 To print the password to stdout instead of copying to the clipboard (useful for scripting):
 
@@ -334,13 +353,14 @@ If the search finds more than one matches:
 Unlocking vault...
 Found 5 credentials:
 +---+------------------------------------------+--------------------------------+
-|   | Service                                  | Username/email                 |
+|   | Title                                    | Username/email                 |
 +===+==========================================+================================+
 | 0 | google.com                               | anssi@emmy.fi                  |
 |   | 📝 personal         Modified: 23.10.2024 |                                |
 |---+------------------------------------------+--------------------------------|
-| 1 | https://accounts.google.com/si           | anssi@amm.co.jp                |
-|   | Modified: 23.04.2024 14:15               |                                |
+| 1 | accounts.google.com                      | anssi@amm.co.jp                |
+|   | 🔗 https://accounts.google.com           |                                |
+|   | 🏷 work          Modified: 23.04.2024    |                                |
 |---+------------------------------------------+--------------------------------|
 | 2 | google.com                               | anssi.piirainen@flowplayer.com |
 |   | 📝 work account  Modified: 23.04.2024    |                                |
@@ -351,11 +371,13 @@ Found 5 credentials:
 | 4 | google.com                               | anssi@carbon.video             |
 |   | 📝 Carbon Video  Modified: 23.04.2024    |                                |
 +---+------------------------------------------+--------------------------------+
-? To copy one of these passwords to clipboard, please enter a row number from the table above
-[Press q to exit without copying the password]
+? To show one of these credentials, please enter a row number from the table above
+[Press q to exit without showing the credential]
 ```
 
-Each credential row shows the service and username on the first line, and an optional note (prefixed with 📝) along with the last modified date on the second line. Notes are useful for distinguishing between multiple accounts on the same service.
+Each credential row shows the title and username on the first line, and optional details — URL (🔗), tags (🏷), note (📝) and the last modified date — on the following lines. Notes are useful for distinguishing between multiple accounts on the same service.
+
+Selecting a row shows the full entry details, including tags, expiry date and custom attributes, and copies the password to the clipboard. Add `-v` to also display the password in the detail view.
 
 ### Payment cards
 
@@ -485,10 +507,14 @@ First, make sure that the CSV file has a header line (1st line) with the followi
 
 - username
 - password
-- service (or `url` — Firefox exports work out of the box)
+- title (or `service` / `url` — older Passlane exports and [Firefox exports](https://support.mozilla.org/en-US/kb/export-login-data-firefox) work out of the box)
+- url (optional)
 - note (optional)
+- tags (optional, separated by semicolons)
+- expires (optional, `true`/`false`) and expiry_time (optional, RFC 3339 timestamp, e.g. `2027-01-31T00:00:00Z`)
+- custom_attributes (optional, `key=value` pairs separated by semicolons)
 
-The `service` field is the URL or name of the service. A `url` column is accepted as an alias, so [Firefox-exported CSVs](https://support.mozilla.org/en-US/kb/export-login-data-firefox) can be imported with no preparation. The `note` column is optional — if omitted, credentials will be imported without notes.
+The `title` field is the name of the service. The `service` and `url` columns are accepted as aliases for it, so no preparation is needed for older Passlane exports or Firefox-exported CSVs — in Firefox exports the URL doubles as the title. All other columns are optional — if omitted, credentials will be imported without them.
 
 To export the credentials to a CSV file and import the file into Passlane:
 
@@ -512,6 +538,8 @@ To export credentials to a file called creds.csv
 ```bash
 passlane export creds.csv
 ```
+
+The credentials CSV includes all entry fields: title, url, username, note, tags, expiry and custom_attributes — using the same column format that [import accepts](#import-from-csv).
 
 To export payment cards to a file called cards.csv.
 
@@ -577,7 +605,7 @@ passlane list --json | jq -r '
   .entries | group_by(.password) |
   map(select(length > 1) | {
     password: .[0].password,
-    services: [.[].service]
+    titles: [.[].title]
   })
 '
 ```
@@ -594,7 +622,7 @@ NOTE=$(echo "$CREDS" | jq -r '.entries[0].note // empty')
 Export to another format:
 
 ```bash
-passlane list --json | jq '.entries[] | {title: .service, username, password}' > export.json
+passlane list --json | jq '.entries[] | {title, username, password}' > export.json
 ```
 
 Fetch a TOTP code to log in non-interactively:
@@ -630,7 +658,7 @@ unattended.
 
 ### Shell Completion
 
-Passlane supports tab completion for bash, zsh, and fish. In addition to completing subcommands and flags, it provides **dynamic completions** that suggest service names and usernames from your vault.
+Passlane supports tab completion for bash, zsh, and fish. In addition to completing subcommands and flags, it provides **dynamic completions** that suggest entry titles and usernames from your vault.
 
 #### Enabling shell completion
 
@@ -664,7 +692,7 @@ Add the printed `source` line to your rc file (`~/.zshrc`, `~/.bashrc`, or `~/.c
 
 #### Dynamic completions
 
-When your vault is unlocked, Passlane maintains a lightweight completion cache at `~/.passlane/.completion_cache` containing service names and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands.
+When your vault is unlocked, Passlane maintains a lightweight completion cache at `~/.passlane/.completion_cache` containing entry titles and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands.
 
 The cache is automatically:
 
@@ -689,7 +717,7 @@ $ passlane show -<TAB>
 -p  -n  -o  -v  -c  --out
 ```
 
-Complete service names and usernames from your vault:
+Complete entry titles and usernames from your vault:
 
 ```bash
 $ passlane show gi<TAB>
@@ -705,7 +733,7 @@ $ passlane delete drop<TAB>
 dropbox.com:user@example.com
 ```
 
-When the vault is locked (cache file doesn't exist), completions fall back to subcommands and flags only — no service names are suggested.
+When the vault is locked (cache file doesn't exist), completions fall back to subcommands and flags only — no entry titles are suggested.
 
 ## Syncing data to your devices
 
