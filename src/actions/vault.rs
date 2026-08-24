@@ -153,15 +153,35 @@ impl VaultAction {
     }
 
     fn rename(&self, old_name: &str, new_name: &str) -> Result<String, Error> {
-        // Move the keychain entry first: on failure here the registry must
-        // not be renamed yet or the stored password would be orphaned.
-        if let Ok(password) = keychain::get_master_password(old_name) {
-            keychain::save_master_password(new_name, &password)?;
-            keychain::delete_master_password(old_name)?;
-        }
+        // Everything that can fail must fail before any mutation happens, so
+        // the keychain entry is never left filed under a name no vault has.
+        vault_registry::check_rename(old_name, new_name)?;
+
+        // Rename the registry entry first. If moving the keychain entry
+        // fails afterwards, the worst case is the password staying filed
+        // under the old name — the user is re-prompted once at the next
+        // unlock and it gets re-stored. The reverse order could orphan it.
+        let password = keychain::get_master_password(old_name).ok();
         vault_registry::rename_vault(old_name, new_name)?;
         completion_cache::clear_cache_for(old_name);
-        Ok(format!("Vault '{}' renamed to '{}'", old_name, new_name))
+
+        let mut warning = String::new();
+        if let Some(password) = &password {
+            if let Err(e) = keychain::save_master_password(new_name, password)
+                .and_then(|()| keychain::delete_master_password(old_name))
+            {
+                eprintln!(
+                    "Warning: could not move the stored master password of vault '{}' to its new name ({}). \
+                     You will be asked for the password at the next unlock.",
+                    new_name, e
+                );
+                warning = "\n(The stored master password could not be moved and will be re-requested at the next unlock.)".to_string();
+            }
+        }
+        Ok(format!(
+            "Vault '{}' renamed to '{}'{}",
+            old_name, new_name, warning
+        ))
     }
 
     fn info(&self, name: Option<&str>) -> Result<String, Error> {

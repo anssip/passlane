@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use log::debug;
@@ -15,10 +15,15 @@ const CACHE_FILENAME_PREFIX: &str = ".completion_cache";
 const STALE_DAYS: u64 = 7;
 
 /// One cache file per vault: `~/.passlane/.completion_cache.<name>`.
+/// Path construction under an explicit config dir is split out so tests
+/// never touch the real home directory.
+fn cache_path_in(config_dir: &Path, vault_name: &str) -> PathBuf {
+    config_dir.join(format!("{}.{}", CACHE_FILENAME_PREFIX, vault_name))
+}
+
 pub(crate) fn cache_path(vault_name: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".passlane")
-        .join(format!("{}.{}", CACHE_FILENAME_PREFIX, vault_name))
+    cache_path_in(&home.join(".passlane"), vault_name)
 }
 
 fn current_cache_path() -> Option<PathBuf> {
@@ -39,9 +44,12 @@ pub fn update_cache(vault: &Box<dyn Vault>) {
 
 /// Deletes a vault's completion cache file. No error if the file is missing.
 pub fn clear_cache_for(vault_name: &str) {
-    let path = cache_path(vault_name);
+    clear_cache_at(&cache_path(vault_name));
+}
+
+fn clear_cache_at(path: &Path) {
     if path.exists() {
-        if let Err(e) = fs::remove_file(&path) {
+        if let Err(e) = fs::remove_file(path) {
             debug!("Failed to remove completion cache: {}", e);
         }
     }
@@ -154,7 +162,7 @@ fn collect_entry_names(vault: &Box<dyn Vault>) -> Vec<String> {
     pairs.into_iter().collect()
 }
 
-fn write_cache(path: &PathBuf, entries: &[String]) -> std::io::Result<()> {
+fn write_cache(path: &Path, entries: &[String]) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -177,39 +185,46 @@ mod tests {
         let path_str = path.to_string_lossy();
         assert!(path_str.contains(".passlane"));
         assert!(path_str.ends_with(".completion_cache.work"));
-        assert_ne!(cache_path("work"), cache_path("personal"));
+        assert_ne!(cache_path_in(Path::new("/a"), "work"), cache_path_in(Path::new("/b"), "work"));
+        assert_ne!(
+            cache_path_in(Path::new("/a"), "work"),
+            cache_path_in(Path::new("/a"), "personal")
+        );
     }
 
     #[test]
     fn test_write_and_read_cache_for_vault() {
+        // Everything happens under a temp dir: the cache paths derived from
+        // the real home directory must never be written to by a test.
         let entries = vec![
             "github".to_string(),
             "google".to_string(),
             "alice".to_string(),
         ];
-        let path = cache_path("test-write-and-read");
-        let backup = fs::read_to_string(&path).ok();
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path_in(dir.path(), "work");
 
         write_cache(&path, &entries).unwrap();
-        match fs::read_to_string(&path) {
-            Ok(contents) => {
-                let read: Vec<String> = contents
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .map(|l| l.to_string())
-                    .collect();
-                assert_eq!(read, entries);
-            }
-            Err(e) => panic!("expected cache file to exist: {}", e),
-        }
+        let contents = fs::read_to_string(&path).unwrap();
+        let read: Vec<String> = contents
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(read, entries);
 
-        // Restore original or clean up
-        match backup {
-            Some(content) => fs::write(&path, content).unwrap(),
-            None => {
-                let _ = fs::remove_file(&path);
-            }
-        }
+        clear_cache_at(&path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_write_cache_creates_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join(".completion_cache.work");
+        write_cache(&path, &["github:alice".to_string()]).unwrap();
+        assert!(path.exists());
+        clear_cache_at(&path);
+        assert!(!path.exists());
     }
 
     #[test]

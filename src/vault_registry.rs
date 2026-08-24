@@ -222,20 +222,29 @@ pub fn remove_vault_from(dir: &Path, name: &str) -> Result<VaultConfig, Error> {
     Ok(removed)
 }
 
-/// Rename a vault. The keychain entry move is the caller's job (it needs the
-/// password, not just the registry).
-pub fn rename_vault_from(dir: &Path, old_name: &str, new_name: &str) -> Result<(), Error> {
+/// Validate that `rename_vault_from` would succeed, without mutating
+/// anything — callers move the vault's keychain entry around the rename and
+/// need every failure to surface before any mutation happens.
+pub fn check_rename_to(dir: &Path, old_name: &str, new_name: &str) -> Result<(), Error> {
     validate_name(new_name)?;
-    let mut vaults = load_from(dir)?;
+    let vaults = load_from(dir)?;
+    if find(&vaults, old_name).is_none() {
+        return Err(unknown_vault_error(old_name, &vaults));
+    }
     if old_name != new_name && find(&vaults, new_name).is_some() {
         return Err(Error::new(&format!(
             "A vault named '{}' already exists",
             new_name
         )));
     }
-    if find(&vaults, old_name).is_none() {
-        return Err(unknown_vault_error(old_name, &vaults));
-    }
+    Ok(())
+}
+
+/// Rename a vault. The keychain entry move is the caller's job (it needs the
+/// password, not just the registry).
+pub fn rename_vault_from(dir: &Path, old_name: &str, new_name: &str) -> Result<(), Error> {
+    check_rename_to(dir, old_name, new_name)?;
+    let mut vaults = load_from(dir)?;
     let vault = vaults.iter_mut().find(|v| v.name == old_name).unwrap();
     vault.name = new_name.to_string();
     save_to(dir, &vaults)?;
@@ -449,6 +458,11 @@ pub fn rename_vault(old_name: &str, new_name: &str) -> Result<(), Error> {
     rename_vault_from(&store::dir_path(), old_name, new_name)
 }
 
+/// Home-directory variant of `check_rename_to`.
+pub fn check_rename(old_name: &str, new_name: &str) -> Result<(), Error> {
+    check_rename_to(&store::dir_path(), old_name, new_name)
+}
+
 pub fn set_hwkey(vault_name: &str, hwkey: Option<HwKeyConfig>) -> Result<(), Error> {
     set_hwkey_to(&store::dir_path(), vault_name, hwkey)
 }
@@ -563,6 +577,24 @@ mod tests {
         rename_vault_from(dir.path(), "old", "new").unwrap();
         assert_eq!(get_active_from(dir.path()), Some("new".to_string()));
         assert!(find(&load_from(dir.path()).unwrap(), "new").is_some());
+    }
+
+    #[test]
+    fn check_rename_validates_without_mutating() {
+        let dir = tempdir().unwrap();
+        add_vault_to(dir.path(), sample_vault("a")).unwrap();
+        add_vault_to(dir.path(), sample_vault("b")).unwrap();
+
+        assert!(check_rename_to(dir.path(), "a", "c").is_ok());
+        // Unknown source, duplicate target and invalid names all fail...
+        assert!(check_rename_to(dir.path(), "nope", "c").is_err());
+        assert!(check_rename_to(dir.path(), "a", "b").is_err());
+        assert!(check_rename_to(dir.path(), "a", "has space").is_err());
+        // ...but leave the registry untouched.
+        let vaults = load_from(dir.path()).unwrap();
+        assert!(find(&vaults, "a").is_some());
+        assert!(find(&vaults, "b").is_some());
+        assert!(find(&vaults, "c").is_none());
     }
 
     #[test]

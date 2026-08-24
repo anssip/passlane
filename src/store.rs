@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
 use serde::{Deserialize, Serialize};
-use std::fs::create_dir;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
@@ -69,12 +68,46 @@ fn home_dir() -> PathBuf {
 /// the low-level file helpers and the CSV import/export.
 pub(crate) fn dir_path() -> PathBuf {
     let dir_path = home_dir().join(".passlane");
-    let exists = Path::new(&dir_path).exists();
-    if !exists {
-        create_dir(&dir_path).expect("Unable to create .passlane dir");
+    if !dir_path.exists() {
+        create_private_dir(&dir_path).expect("Unable to create .passlane dir");
     }
+    tighten_dir_permissions(&dir_path);
     dir_path
 }
+
+/// Create the config directory owner-only. It holds sensitive metadata (the
+/// vault registry, the active-vault pointer, per-vault completion caches):
+/// other local users must not even see the filenames.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    tighten_dir_permissions(path);
+    Ok(())
+}
+
+/// Pre-existing directories get their permissions tightened too, since they
+/// are about to receive fresh sensitive content — mirroring what
+/// create_private_file does for files. Non-Unix platforms keep the platform
+/// default ACLs.
+#[cfg(unix)]
+fn tighten_dir_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        eprintln!(
+            "Warning: could not restrict permissions on '{}': {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_dir_permissions(_path: &Path) {}
 
 #[derive(Debug, Deserialize)]
 struct CsvImportRow {
@@ -312,6 +345,25 @@ mod tests {
         create_private_file(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("passlane-home");
+        // A pre-existing directory with loose permissions gets tightened...
+        std::fs::create_dir(&config).unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+        tighten_dir_permissions(&config);
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // ...and a fresh one is created owner-only from the start.
+        let fresh = dir.path().join("passlane-home2");
+        create_private_dir(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]
