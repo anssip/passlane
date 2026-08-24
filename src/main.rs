@@ -7,6 +7,7 @@ mod repl;
 mod store;
 mod ui;
 mod vault;
+mod vault_registry;
 
 use crate::actions::add::AddAction;
 use crate::actions::change_password::ChangePasswordAction;
@@ -22,6 +23,7 @@ use crate::actions::list::ListAction;
 use crate::actions::lock::LockAction;
 use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
+use crate::actions::vault::VaultAction;
 use actions::*;
 use clap::{arg, ArgAction, Command};
 use init::InitAction;
@@ -33,9 +35,49 @@ pub fn cli() -> Command {
         .subcommand_required(false)
         .arg_required_else_help(false)
         .allow_external_subcommands(true)
+        .arg(
+            arg!(--vault <NAME> "Name of the vault to use for this command. Defaults to $PASSLANE_VAULT, then the active vault (see 'passlane vault use').")
+                .global(true)
+                .env("PASSLANE_VAULT"),
+        )
         .subcommand(
             Command::new("init")
                 .about("Initialize passlane. Walks you through the configuration process.")
+        )
+        .subcommand(
+            Command::new("vault")
+                .about("Manage vaults: list them, add one, switch the active vault, remove or rename.")
+                .subcommand(
+                    Command::new("list")
+                        .about("List configured vaults and their state.")
+                )
+                .subcommand(
+                    Command::new("add")
+                        .about("Create a new vault or register an existing vault file.")
+                        .arg(arg!([NAME] "Name for the vault, e.g. personal, work, family."))
+                )
+                .subcommand(
+                    Command::new("use")
+                        .about("Make a vault the active one used by default.")
+                        .alias("switch")
+                        .arg(arg!(<NAME> "Vault name."))
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a vault from the configuration. The vault file is not deleted.")
+                        .arg(arg!(<NAME> "Vault name."))
+                )
+                .subcommand(
+                    Command::new("rename")
+                        .about("Rename a vault.")
+                        .arg(arg!(<OLD_NAME> "Current vault name."))
+                        .arg(arg!(<NEW_NAME> "New vault name."))
+                )
+                .subcommand(
+                    Command::new("info")
+                        .about("Show details of a vault. Defaults to the active vault.")
+                        .arg(arg!([NAME] "Vault name."))
+                )
         )
         .subcommand(
             Command::new("add")
@@ -147,25 +189,28 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("lock")
-                .about("Lock the vaults to prevent all access")
+                .about("Lock a vault by removing its stored master password. Use --all to lock every vault.")
+                .arg(arg!(
+                    --all "Lock all configured vaults."
+                ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("unlock")
-                .about("Opens the vaults and grants access to the entries")
+                .about("Unlock a vault: open it and store the master password in the keychain.")
                 .arg(arg!(
-                    -o --otp "Opens the one time passwords vault"
+                    -o --otp "Legacy alias for --vault totp, the vault that held the one-time passwords before multi-vault support."
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("passwd")
                 .about("Change the master password of the vault.")
                 .arg(arg!(
-                    -o --otp "Change the master password of the one time passwords vault."
+                    -o --otp "Legacy alias for --vault totp, the vault that held the one-time passwords before multi-vault support."
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("hwkey")
-                .about("Manage the hardware key (e.g. a YubiKey) that protects the main vault with challenge-response.")
+                .about("Manage the hardware key (e.g. a YubiKey) that protects a vault with challenge-response.")
                 .subcommand_required(true)
                 .arg_required_else_help(true)
                 .subcommand(
@@ -224,53 +269,115 @@ pub fn cli() -> Command {
 
 }
 
+/// The vault a command targets: the --vault flag or $PASSLANE_VAULT first,
+/// then the legacy unlock -o / passwd -o alias for the migrated TOTP vault.
+fn explicit_vault(matches: &clap::ArgMatches) -> Option<String> {
+    if let Some(name) = matches.get_one::<String>("vault") {
+        return Some(name.clone());
+    }
+    match matches.subcommand() {
+        Some(("unlock", sub)) | Some(("passwd", sub))
+            if sub.get_one::<bool>("otp").map_or(false, |v| *v) =>
+        {
+            Some("totp".to_string())
+        }
+        _ => None,
+    }
+}
+
 fn main() {
     env_logger::init();
-    completion_cache::refresh_if_stale();
     let matches = cli().get_matches();
 
-    enum VaultAction {
+    // Migrate the pre-multi-vault configuration before anything reads it.
+    if let Err(e) = vault_registry::migrate_legacy() {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    }
+    // Pick the target vault up front so every action, including the REPL,
+    // works on the same vault. An explicitly named vault must resolve or the
+    // command aborts; the implicit (active) vault may be missing for commands
+    // like init or gen, which surface the error later via current().
+    // Vault-management commands, vault-independent commands and the REPL are
+    // exempt: a stale --vault/PASSLANE_VAULT name must not lock the user out
+    // of the very commands ('vault list', 'vault add', 'init') that fix the
+    // situation — and inside the REPL, 'vault use <name>' recovers. Exempted
+    // commands fall back to the active (or only) vault when the explicit
+    // name doesn't resolve.
+    let subcommand = matches.subcommand().map(|(name, _)| name);
+    // No subcommand at all means help output (or the bare REPL): never gate
+    // that on vault resolution, so 'passlane --vault bogus' still shows help.
+    let needs_vault = match subcommand {
+        Some("vault" | "init" | "gen" | "completions" | "repl") => false,
+        Some(_) => true,
+        None => false,
+    };
+    if let Some(name) = explicit_vault(&matches) {
+        if let Err(e) = vault_registry::init_current(Some(name.as_str())) {
+            if needs_vault {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+            eprintln!(
+                "Warning: ignoring the unknown vault '{}' — using the active vault instead.",
+                name
+            );
+            let _ = vault_registry::init_current(None);
+        }
+    } else if let Err(e) = vault_registry::init_current(None) {
+        // Fail fast with the actionable resolution error (e.g. "several
+        // vaults are configured and none is active") instead of letting the
+        // command die later on the generic "No vault selected".
+        if needs_vault {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
+    completion_cache::refresh_if_stale();
+
+    enum RoutedAction {
         Action(Box<dyn Action>),
         UnlockingAction(Box<dyn UnlockingAction>),
     }
 
     let action = match matches.subcommand() {
-        Some(("init", _)) => VaultAction::Action(Box::new(InitAction {})),
-        Some(("add", sub_matches)) => VaultAction::Action(Box::new(AddAction::new(sub_matches))),
+        Some(("init", _)) => RoutedAction::Action(Box::new(InitAction {})),
+        Some(("vault", sub_matches)) => {
+            RoutedAction::Action(Box::new(VaultAction::new(sub_matches)))
+        }
+        Some(("add", sub_matches)) => RoutedAction::Action(Box::new(AddAction::new(sub_matches))),
         Some(("show", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(ShowAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(ShowAction::new(sub_matches)))
         }
         Some(("list", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(ListAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(ListAction::new(sub_matches)))
         }
         Some(("delete", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(DeleteAction::new(sub_matches)))
         }
         Some(("csv", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(ImportCsvAction::new(sub_matches)))
         }
-        Some(("lock", _)) => VaultAction::Action(Box::new(LockAction {})),
-        Some(("unlock", sub_matches)) => {
-            VaultAction::Action(Box::new(UnlockAction::new(sub_matches)))
-        }
-        Some(("passwd", sub_matches)) => {
-            VaultAction::Action(Box::new(ChangePasswordAction::new(sub_matches)))
-        }
+        Some(("lock", sub_matches)) => RoutedAction::Action(Box::new(LockAction::new(
+            sub_matches.get_one::<bool>("all").map_or(false, |v| *v),
+        ))),
+        Some(("unlock", _)) => RoutedAction::Action(Box::new(UnlockAction::new())),
+        Some(("passwd", _)) => RoutedAction::Action(Box::new(ChangePasswordAction::new())),
         Some(("hwkey", sub_matches)) => {
-            VaultAction::Action(Box::new(HwKeyAction::new(sub_matches)))
+            RoutedAction::Action(Box::new(HwKeyAction::new(sub_matches)))
         }
         Some(("export", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(ExportAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(ExportAction::new(sub_matches)))
         }
         Some(("edit", sub_matches)) => {
-            VaultAction::UnlockingAction(Box::new(EditAction::new(sub_matches)))
+            RoutedAction::UnlockingAction(Box::new(EditAction::new(sub_matches)))
         }
         Some(("gen", sub_matches)) => {
-            VaultAction::Action(Box::new(GeneratePasswordAction::new(sub_matches)))
+            RoutedAction::Action(Box::new(GeneratePasswordAction::new(sub_matches)))
         }
         Some(("completions", sub_matches)) => {
             let shell = sub_matches.get_one::<String>("SHELL").cloned();
-            VaultAction::Action(Box::new(CompletionsAction::new(shell, cli())))
+            RoutedAction::Action(Box::new(CompletionsAction::new(shell, cli())))
         }
         Some(("repl", _)) => {
             repl::start_repl();
@@ -281,12 +388,12 @@ fn main() {
                 repl::start_repl();
                 return;
             } else {
-                VaultAction::Action(Box::new(PrintHelpAction::new(cli())))
+                RoutedAction::Action(Box::new(PrintHelpAction::new(cli())))
             }
         }
     };
     match action {
-        VaultAction::Action(action) => {
+        RoutedAction::Action(action) => {
             action
                 .run()
                 .map(|msg| println!("{}", msg))
@@ -295,7 +402,7 @@ fn main() {
                     std::process::exit(1);
                 });
         }
-        VaultAction::UnlockingAction(action) => {
+        RoutedAction::UnlockingAction(action) => {
             action
                 .execute()
                 .map(|msg| println!("{}", msg.unwrap_or("".to_string())))

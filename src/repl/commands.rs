@@ -10,19 +10,23 @@ pub enum ReplCommand {
     Import { file_path: Option<String> },
     Export { item_type: ItemType, file_path: Option<String> },
     Lock,
-    Unlock { totp: bool },
+    Unlock,
+    VaultList,
+    VaultUse { name: String },
     Status,
     Completions,
     Help { command: Option<String> },
     Quit,
     Empty,
+    /// A recognized-but-unsupported input; carries the message to show.
+    Hint(String),
     Unknown(String),
 }
 
 /// Known command names for completion
 pub const COMMAND_NAMES: &[&str] = &[
     "show", "add", "edit", "delete", "gen", "import", "export",
-    "unlock", "lock", "status", "completions", "help", "quit", "exit",
+    "unlock", "lock", "vault", "status", "completions", "help", "quit", "exit",
 ];
 
 /// Known type names for completion (second token)
@@ -107,12 +111,30 @@ pub fn parse_input(line: &str) -> ReplCommand {
         }
         "lock" => ReplCommand::Lock,
         "unlock" => {
-            let totp = rest.first().map_or(false, |t| {
+            // 'unlock otp' is the legacy way to reach the TOTP vault.
+            if rest.first().map_or(false, |t| {
                 let lower = t.to_lowercase();
                 lower == "otp" || lower == "totp"
-            });
-            ReplCommand::Unlock { totp }
+            }) {
+                ReplCommand::Hint(
+                    "The OTP vault is a regular vault now: switch to it with 'vault use totp', then 'unlock'."
+                        .to_string(),
+                )
+            } else {
+                ReplCommand::Unlock
+            }
         }
+        "vault" => match rest.first().map(|s| s.to_lowercase()).as_deref() {
+            None | Some("list") | Some("ls") => ReplCommand::VaultList,
+            Some("use") | Some("switch") => match rest.get(1) {
+                Some(name) => ReplCommand::VaultUse { name: name.to_string() },
+                None => ReplCommand::Hint("Usage: vault use <name> — a vault name is required".to_string()),
+            },
+            Some(other) => ReplCommand::Hint(format!(
+                "Unknown vault command: '{}'. Available: list, use <name>",
+                other
+            )),
+        },
         "status" => ReplCommand::Status,
         "completions" => ReplCommand::Completions,
         "help" => {
@@ -358,18 +380,33 @@ mod tests {
 
     #[test]
     fn test_unlock() {
-        match parse_input("unlock") {
-            ReplCommand::Unlock { totp } => assert!(!totp),
-            _ => panic!("Expected Unlock command"),
-        }
+        assert_eq!(parse_input("unlock"), ReplCommand::Unlock);
     }
 
     #[test]
-    fn test_unlock_otp() {
-        match parse_input("unlock otp") {
-            ReplCommand::Unlock { totp } => assert!(totp),
-            _ => panic!("Expected Unlock command"),
-        }
+    fn test_unlock_otp_gives_hint() {
+        assert!(matches!(parse_input("unlock otp"), ReplCommand::Hint(_)));
+    }
+
+    #[test]
+    fn test_vault_list() {
+        assert_eq!(parse_input("vault"), ReplCommand::VaultList);
+        assert_eq!(parse_input("vault list"), ReplCommand::VaultList);
+        assert_eq!(parse_input("vault ls"), ReplCommand::VaultList);
+    }
+
+    #[test]
+    fn test_vault_use() {
+        assert_eq!(
+            parse_input("vault use work"),
+            ReplCommand::VaultUse { name: "work".to_string() }
+        );
+        assert_eq!(
+            parse_input("vault switch work"),
+            ReplCommand::VaultUse { name: "work".to_string() }
+        );
+        assert!(matches!(parse_input("vault use"), ReplCommand::Hint(_)));
+        assert!(matches!(parse_input("vault bogus"), ReplCommand::Hint(_)));
     }
 
     #[test]

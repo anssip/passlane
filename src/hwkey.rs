@@ -1,21 +1,22 @@
 use keepass_ng::{ChallengeResponseKey, ChallengeResponseKeyError, DatabaseKeyError};
+use serde::{Deserialize, Serialize};
 
-use crate::store;
 use crate::ui::input::{ask_password, ask_with_options};
 use crate::vault::entities::Error;
 
-/// Enrolled hardware-key configuration for the main vault: which HMAC-SHA1
+/// Enrolled hardware-key configuration for a vault: which HMAC-SHA1
 /// challenge-response slot to use, plus the serial number of the enrolled key
 /// (stored only to disambiguate when several keys are connected).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HwKeyConfig {
     pub slot: u8,
     pub serial: Option<u32>,
 }
 
 impl HwKeyConfig {
-    /// Parse the `~/.passlane/.hwkey` content: a `slot=` line (required, 1 or
-    /// 2) and an optional `serial=` line.
+    /// Parse the legacy `~/.passlane/.hwkey` content, used when migrating an
+    /// existing installation to the vault registry: a `slot=` line (required,
+    /// 1 or 2) and an optional `serial=` line.
     pub fn parse(content: &str) -> Result<HwKeyConfig, Error> {
         let mut slot: Option<u8> = None;
         let mut serial: Option<u32> = None;
@@ -52,55 +53,17 @@ impl HwKeyConfig {
             serial,
         })
     }
-
-    fn to_file_content(&self) -> String {
-        match self.serial {
-            Some(serial) => format!("slot={}\nserial={}", self.slot, serial),
-            None => format!("slot={}", self.slot),
-        }
-    }
 }
 
-/// Load the enrolled config. `Ok(None)` when no hardware key is enrolled.
-/// A config file that exists but cannot be read is a hard error: reporting
-/// "not enrolled" would make unlock skip the factor and fail with a
-/// misleading wrong-key error instead of the real cause.
-pub fn load_config() -> Result<Option<HwKeyConfig>, Error> {
-    match store::read_hwkey_config() {
-        None => {
-            if store::has_hwkey_config() {
-                Err(Error::new(
-                    "The hardware key config ~/.passlane/.hwkey exists but cannot be read. \
-                     Fix its permissions and try again.",
-                ))
-            } else {
-                Ok(None)
-            }
-        }
-        Some(content) => Ok(Some(HwKeyConfig::parse(&content)?)),
-    }
-}
-
-pub fn save_config(config: &HwKeyConfig) -> Result<(), Error> {
-    store::save_hwkey_config(&config.to_file_content())
-}
-
-pub fn clear_config() -> Result<(), Error> {
-    store::clear_hwkey_config()
-}
-
-/// Build the challenge-response key from the stored config, resolving the
-/// connected device. `Ok(None)` when no hardware key is enrolled.
-pub fn configured_challenge_response_key() -> Result<Option<ChallengeResponseKey>, Error> {
-    let Some(config) = load_config()? else {
-        return Ok(None);
-    };
+/// Build the challenge-response key from an enrolled config, resolving the
+/// connected device.
+pub fn configured_challenge_response_key(config: &HwKeyConfig) -> Result<ChallengeResponseKey, Error> {
     let device =
         ChallengeResponseKey::get_yubikey(config.serial).map_err(friendly_device_error)?;
-    Ok(Some(ChallengeResponseKey::YubikeyChallenge(
+    Ok(ChallengeResponseKey::YubikeyChallenge(
         device,
         config.slot.to_string(),
-    )))
+    ))
 }
 
 /// List connected hardware keys and ask which slot to enroll (unless `slot`
@@ -225,15 +188,5 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_keys() {
         assert!(HwKeyConfig::parse("slot=1\nfoo=bar").is_err());
-    }
-
-    #[test]
-    fn file_content_roundtrip() {
-        let config = HwKeyConfig {
-            slot: 2,
-            serial: Some(42),
-        };
-        let parsed = HwKeyConfig::parse(&config.to_file_content()).unwrap();
-        assert_eq!(config, parsed);
     }
 }

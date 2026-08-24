@@ -3,9 +3,7 @@ use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
 use serde::{Deserialize, Serialize};
-use std::fs::create_dir;
 use std::fs::OpenOptions;
-use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -65,14 +63,57 @@ fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
-fn dir_path() -> PathBuf {
+/// The passlane config directory (~/.passlane), created on first use. Vault
+/// locations live in the registry (see vault_registry.rs); this module keeps
+/// the low-level file helpers and the CSV import/export.
+pub(crate) fn dir_path() -> PathBuf {
     let dir_path = home_dir().join(".passlane");
-    let exists = Path::new(&dir_path).exists();
-    if !exists {
-        create_dir(&dir_path).expect("Unable to create .passlane dir");
+    if !dir_path.exists() {
+        if let Err(e) = create_private_dir(&dir_path) {
+            // A concurrent passlane may have created the directory between
+            // the exists() check and the create; that race is benign.
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                panic!("Unable to create .passlane dir: {}", e);
+            }
+        }
     }
+    tighten_dir_permissions(&dir_path);
     dir_path
 }
+
+/// Create the config directory owner-only. It holds sensitive metadata (the
+/// vault registry, the active-vault pointer, per-vault completion caches):
+/// other local users must not even see the filenames.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    tighten_dir_permissions(path);
+    Ok(())
+}
+
+/// Pre-existing directories get their permissions tightened too, since they
+/// are about to receive fresh sensitive content — mirroring what
+/// create_private_file does for files. Non-Unix platforms keep the platform
+/// default ACLs. Best-effort: a failure warns instead of aborting.
+#[cfg(unix)]
+pub(crate) fn tighten_dir_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        eprintln!(
+            "Warning: could not restrict permissions on '{}': {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn tighten_dir_permissions(_path: &Path) {}
 
 #[derive(Debug, Deserialize)]
 struct CsvImportRow {
@@ -195,67 +236,6 @@ pub fn read_from_csv(file_path: &str) -> anyhow::Result<Vec<Credential>> {
     Ok(credentials)
 }
 
-/// Read the trimmed content of a config file in ~/.passlane/, or None if it
-/// does not exist or cannot be read. An unreadable config (bad permissions,
-/// partial write) must not panic the CLI — treat it as not configured and
-/// warn, so the user can fix the file.
-fn read_config_file(path_config_file: &str) -> Option<String> {
-    let path = dir_path().join(path_config_file);
-    if !path.exists() {
-        return None;
-    }
-    match std::fs::read_to_string(&path) {
-        Ok(content) => Some(content.trim().to_string()),
-        Err(e) => {
-            eprintln!(
-                "Warning: could not read config file {}: {}",
-                path.display(),
-                e
-            );
-            None
-        }
-    }
-}
-
-fn resolve_keyfile_path(path_config_file: &str) -> Option<String> {
-    read_config_file(path_config_file)
-}
-
-pub fn get_keyfile_path() -> Option<String> {
-    resolve_keyfile_path(".keyfile_path")
-}
-
-pub(crate) fn get_totp_keyfile_path() -> Option<String> {
-    resolve_keyfile_path(".totp_keyfile_path")
-}
-
-/// Resolve a vault path from its config file, falling back to the default
-/// when the config is missing, unreadable, or empty. Like the other config
-/// readers, an unreadable file must not panic the CLI.
-fn resolve_vault_path(default_filename: &str, path_config_filename: &str) -> String {
-    let default_path = dir_path()
-        .join(default_filename)
-        .to_str()
-        .unwrap()
-        .to_string();
-    let configured = read_config_file(path_config_filename)
-        .filter(|content| !content.is_empty())
-        .unwrap_or(default_path);
-    configured.trim().to_string()
-}
-
-fn config_file_exists(path_config_filename: &str) -> bool {
-    dir_path().join(path_config_filename).exists()
-}
-
-pub(crate) fn get_vault_path() -> String {
-    resolve_vault_path("store.kdbx", ".vault_path")
-}
-
-pub(crate) fn get_totp_vault_path() -> String {
-    resolve_vault_path("totp.kdbx", ".totp_vault_path")
-}
-
 /// Create (or truncate) a file that will hold sensitive data. On Unix the file
 /// is restricted to owner-only access (0o600), and existing files get their
 /// permissions tightened too, since they are about to receive fresh sensitive
@@ -342,82 +322,6 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
     Ok(notes.len() as i64)
 }
 
-pub fn save_config_path(config_file: &str, path: &str) -> Result<(), Error> {
-    let config_path = dir_path().join(config_file);
-    let exists = config_path.exists();
-    let mut file = OpenOptions::new()
-        .create(!exists)
-        .write(true)
-        .truncate(true)
-        .open(config_path)?;
-    file.write_all(String::from(path).as_bytes())?;
-    Ok(())
-}
-
-pub(crate) fn save_vault_path(path: &str) -> Result<(), Error> {
-    save_config_path(".vault_path", path)
-}
-
-pub(crate) fn save_totp_vault_path(path: &str) -> Result<(), Error> {
-    save_config_path(".totp_vault_path", path)
-}
-
-pub(crate) fn save_keyfile_path(path: &str) -> Result<(), Error> {
-    save_config_path(".keyfile_path", path)
-}
-
-pub(crate) fn save_totp_keyfile_path(path: &str) -> Result<(), Error> {
-    save_config_path(".totp_keyfile_path", path)
-}
-
-pub fn has_vault_path() -> bool {
-    config_file_exists(".vault_path")
-}
-
-pub fn has_totp_vault_path() -> bool {
-    config_file_exists(".totp_vault_path")
-}
-
-pub fn has_keyfile_path() -> bool {
-    config_file_exists(".keyfile_path")
-}
-
-/// Hardware-key (challenge-response) enrollment for the main vault. The file
-/// holds the raw "slot=...\nserial=..." content; parsing lives in hwkey.rs.
-pub(crate) fn read_hwkey_config() -> Option<String> {
-    read_config_file(".hwkey")
-}
-
-/// Owner-only permissions like other sensitive outputs: a tampered config
-/// breaks vault access (wrong slot/serial), so other users must not write it.
-pub(crate) fn save_hwkey_config(content: &str) -> Result<(), Error> {
-    let path = dir_path().join(".hwkey");
-    let mut file = create_private_file(&path)?;
-    file.write_all(content.as_bytes())?;
-    Ok(())
-}
-
-pub fn has_hwkey_config() -> bool {
-    config_file_exists(".hwkey")
-}
-
-/// Remove the hardware key config. Failing to remove it must be a hard
-/// error, not a warning: a leftover config makes passlane demand a key the
-/// vault no longer requires, locking the user out until the file is gone.
-pub(crate) fn clear_hwkey_config() -> Result<(), Error> {
-    let path = dir_path().join(".hwkey");
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(Error::new(&format!(
-            "The vault no longer uses the hardware key, but passlane could not remove the config file {}: {}. \
-             Passlane will keep asking for the key until the file is deleted — remove it manually and re-run 'passlane hwkey remove'.",
-            path.display(),
-            e
-        ))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +351,25 @@ mod tests {
         create_private_file(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("passlane-home");
+        // A pre-existing directory with loose permissions gets tightened...
+        std::fs::create_dir(&config).unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+        tighten_dir_permissions(&config);
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // ...and a fresh one is created owner-only from the start.
+        let fresh = dir.path().join("passlane-home2");
+        create_private_dir(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]

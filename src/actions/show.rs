@@ -277,7 +277,6 @@ pub struct ShowAction {
     pub grep: Option<String>,
     pub verbose: bool,
     pub item_type: ItemType,
-    pub is_totp: bool,
     pub stdout_only: bool,
     pub plain: bool,
     pub once: bool,
@@ -289,7 +288,6 @@ impl ShowAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
             verbose: matches.get_one::<bool>("verbose").map_or(false, |v| *v),
             item_type: ItemType::new_from_args(matches),
-            is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
             stdout_only: matches.get_one::<bool>("out").map_or(false, |v| *v),
             plain: matches.get_one::<bool>("plain").map_or(false, |v| *v),
             once: matches.get_one::<bool>("once").map_or(false, |v| *v),
@@ -326,10 +324,6 @@ impl ShowAction {
 }
 
 impl UnlockingAction for ShowAction {
-    fn is_totp_vault(&self) -> bool {
-        self.is_totp
-    }
-
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         match self.item_type {
             ItemType::Credential => {
@@ -400,7 +394,6 @@ mod tests {
             grep: None,
             verbose: false,
             item_type: ItemType::Totp,
-            is_totp: true,
             stdout_only: false,
             plain: false,
             once: true,

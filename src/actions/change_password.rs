@@ -1,75 +1,36 @@
-use clap::ArgMatches;
-use keepass_ng::ChallengeResponseKey;
-
 use crate::actions::Action;
 use crate::keychain;
-use crate::store;
-use crate::ui::input::{ask_master_password, ask_new_master_password, ask_totp_master_password};
+use crate::ui::input::{ask_master_password, ask_new_master_password};
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
+use crate::vault_registry;
 
-pub struct ChangePasswordAction {
-    pub totp: bool,
-}
+pub struct ChangePasswordAction {}
 
 impl ChangePasswordAction {
-    pub fn new(matches: &ArgMatches) -> ChangePasswordAction {
-        ChangePasswordAction {
-            totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
-        }
-    }
-
-    fn vault_paths(&self) -> (String, Option<String>) {
-        if self.totp {
-            (store::get_totp_vault_path(), store::get_totp_keyfile_path())
-        } else {
-            (store::get_vault_path(), store::get_keyfile_path())
-        }
-    }
-
-    fn ask_current_password(&self) -> String {
-        if self.totp {
-            ask_totp_master_password()
-        } else {
-            ask_master_password(Some("Please enter current master password"))
-        }
-    }
-
-    fn challenge_response_key(&self) -> Result<Option<ChallengeResponseKey>, Error> {
-        if self.totp {
-            Ok(None)
-        } else {
-            crate::hwkey::configured_challenge_response_key()
-        }
-    }
-
-    fn update_keychain_if_stored(&self, new_password: &str) -> Result<(), Error> {
-        let stored = if self.totp {
-            keychain::get_totp_master_password()
-        } else {
-            keychain::get_master_password()
-        };
-        if stored.is_ok() {
-            if self.totp {
-                keychain::save_totp_master_password(new_password)?;
-            } else {
-                keychain::save_master_password(new_password)?;
-            }
-        }
-        Ok(())
+    pub fn new() -> ChangePasswordAction {
+        ChangePasswordAction {}
     }
 }
 
 impl Action for ChangePasswordAction {
     fn run(&self) -> Result<String, Error> {
-        let (filepath, keyfile_path) = self.vault_paths();
-        let current_pwd = self.ask_current_password();
-        let challenge_response = self.challenge_response_key()?;
+        let config = vault_registry::current()?;
+        let current_pwd = ask_master_password(Some(&format!(
+            "Please enter current master password of vault '{}'",
+            config.name
+        )));
+        let challenge_response = match config.hwkey {
+            Some(ref hwkey_config) => {
+                Some(crate::hwkey::configured_challenge_response_key(hwkey_config)?)
+            }
+            None => None,
+        };
 
         let mut vault = KeepassVault::open(
             &current_pwd,
-            &filepath,
-            keyfile_path,
+            &config.path,
+            config.keyfile,
             challenge_response.as_ref(),
         )?;
 
@@ -81,8 +42,24 @@ impl Action for ChangePasswordAction {
         }
 
         vault.change_master_password(new_pwd.clone())?;
-        self.update_keychain_if_stored(&new_pwd)?;
+        // Keep the keychain entry in sync only when a password was stored.
+        // A keychain error must not silently skip a still-present entry —
+        // that would leave the stored password stale.
+        match keychain::has_master_password(&config.name) {
+            Ok(true) => {
+                keychain::save_master_password(&config.name, &new_pwd)?;
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!(
+                "Warning: could not check whether vault '{}' has a stored master password ({}). \
+                 If one is stored it is now stale — fix the keychain and re-run 'passlane unlock'.",
+                config.name, e
+            ),
+        }
 
-        Ok("Master password changed".to_string())
+        Ok(format!(
+            "Master password of vault '{}' changed",
+            config.name
+        ))
     }
 }

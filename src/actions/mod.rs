@@ -13,11 +13,11 @@ pub mod list;
 pub mod lock;
 pub mod show;
 pub mod unlock;
+pub mod vault;
 
 use crate::keychain;
-use crate::store;
 
-use crate::ui::input::{ask_master_password, ask_totp_master_password};
+use crate::ui::input::ask_master_password;
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
@@ -67,48 +67,43 @@ pub trait Action {
     }
 }
 
-/// The main vault's master password: from the keychain when unlocked, else
-/// prompted for.
-pub(crate) fn get_vault_password() -> String {
-    keychain::get_master_password().unwrap_or_else(|_| ask_master_password(None))
+/// The current vault's master password: from the keychain when unlocked,
+/// else prompted for.
+pub(crate) fn get_vault_password(vault_name: &str) -> String {
+    keychain::get_master_password(vault_name).unwrap_or_else(|_| {
+        ask_master_password(Some(&format!(
+            "Please enter master password of vault '{}'",
+            vault_name
+        )))
+    })
 }
 
 type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
 
 fn get_vault_properties() -> Result<VaultProperties, Error> {
-    let mut master_pwd = get_vault_password();
-    let challenge_response = match crate::hwkey::configured_challenge_response_key() {
-        Ok(cr) => cr,
-        Err(e) => {
-            // The key not being connected lands here; keep the password
-            // zeroize discipline on this early return too.
-            master_pwd.zeroize();
-            return Err(e);
+    let config = crate::vault_registry::current()?;
+    let mut master_pwd = get_vault_password(&config.name);
+    let challenge_response = match config.hwkey {
+        Some(ref hwkey_config) => {
+            match crate::hwkey::configured_challenge_response_key(hwkey_config) {
+                Ok(cr) => Some(cr),
+                Err(e) => {
+                    // The key not being connected lands here; keep the password
+                    // zeroize discipline on this early return too.
+                    master_pwd.zeroize();
+                    return Err(e);
+                }
+            }
         }
+        None => None,
     };
-    Ok((
-        master_pwd,
-        store::get_vault_path(),
-        store::get_keyfile_path(),
-        challenge_response,
-    ))
+    Ok((master_pwd, config.path, config.keyfile, challenge_response))
 }
 
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
     let (mut master_pwd, filepath, keyfile_path, challenge_response) = get_vault_properties()?;
     println!("Unlocking vault...");
     let vault = get_vault(&master_pwd, &filepath, keyfile_path, challenge_response.as_ref());
-    master_pwd.zeroize();
-    vault
-}
-
-fn unlock_totp_vault() -> Result<Box<dyn Vault>, Error> {
-    let stored_password = keychain::get_totp_master_password();
-    let mut master_pwd = stored_password.unwrap_or_else(|_| ask_totp_master_password());
-    let filepath = store::get_totp_vault_path();
-    let keyfile_path = store::get_totp_keyfile_path();
-    println!("Unlocking TOTP vault...");
-    let vault = get_vault(&master_pwd, &filepath, keyfile_path, None);
     master_pwd.zeroize();
     vault
 }
@@ -185,18 +180,10 @@ pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
 
 pub trait UnlockingAction {
     fn execute(&self) -> Result<Option<String>, Error> {
-        if self.is_totp_vault() {
-            self.run_with_vault(&mut unlock_totp_vault()?)
-        } else {
-            let mut vault = unlock()?;
-            // Ensure completion cache exists when vault is open
-            crate::completion_cache::ensure_cache_from_vault(&vault);
-            self.run_with_vault(&mut vault)
-        }
-    }
-
-    fn is_totp_vault(&self) -> bool {
-        false
+        let mut vault = unlock()?;
+        // Ensure completion cache exists when vault is open
+        crate::completion_cache::ensure_cache_from_vault(&vault);
+        self.run_with_vault(&mut vault)
     }
 
     fn run_with_vault(&self, _: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {

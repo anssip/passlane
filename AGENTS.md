@@ -55,15 +55,17 @@ src/
 │   ├── export.rs       # Export to CSV
 │   ├── generate.rs     # Generate passwords
 │   ├── import.rs       # Import from CSV
-│   ├── init.rs         # First-time setup
+│   ├── init.rs         # First-time setup (creates the first vault)
 │   ├── lock.rs         # Lock vaults (remove from keychain)
 │   ├── show.rs         # Display entries
-│   └── unlock.rs       # Unlock vaults (store in keychain)
+│   ├── unlock.rs       # Unlock vaults (store in keychain)
+│   └── vault.rs        # Manage vaults: list/add/use/remove/rename/info
 ├── vault/               # Vault abstraction layer
 │   ├── vault_trait.rs  # Traits: Vault, PasswordVault, PaymentVault, NoteVault, TotpVault
 │   ├── keepass_vault.rs # Keepass implementation (only implementation currently)
 │   └── entities.rs     # Data models: Credential, PaymentCard, Note, Totp, Error
-├── store.rs            # File I/O: CSV operations, vault path resolution
+├── vault_registry.rs    # Named-vault registry (vaults.json), active vault, current-vault global, migration
+├── store.rs            # File I/O: CSV operations, low-level config-dir helpers
 ├── keychain.rs         # OS keychain integration for master password storage
 ├── crypto.rs           # Cryptographic utilities
 └── ui/                 # User interface components
@@ -71,21 +73,16 @@ src/
     └── output.rs       # Formatted output and table rendering
 ```
 
-### Vault Separation
+### Multiple Vaults
 
-Passlane uses **two separate vaults**:
-1. **Main vault** (`~/.passlane/store.kdbx` by default): Stores credentials, payment cards, and secure notes
-2. **TOTP vault** (`~/.passlane/totp.json` by default): Stores one-time password seeds
-
-This separation provides true two-factor authentication - the TOTP secrets are not in the same database as passwords. Each vault has its own master password that can be stored independently in the OS keychain.
+Passlane manages any number of **named vaults**; each is one kdbx file plus optional keyfile and hardware-key factors, and any vault can hold all entry types (credentials, payment cards, notes, TOTP). Vault configurations live in `~/.passlane/vaults.json`; the vault used by default is the **active vault**, recorded in `~/.passlane/.active_vault`. Every command accepts a global `--vault <NAME>` flag (or `PASSLANE_VAULT` env var) to target another vault; `main.rs` resolves the target before dispatch and stores it in the process-global current vault (`vault_registry::current()`), which `unlock()` and friends read. `unlock -o`/`passwd -o` are legacy aliases for `--vault totp` (the migrated TOTP vault). On first run after upgrading, the pre-multi-vault dot-file config is migrated automatically (main vault → `default`, TOTP vault → `totp`).
 
 ### Configuration Files
 
 Passlane stores configuration in `~/.passlane/`:
-- `.vault_path`: Override default vault file location
-- `.totp_vault_path`: Override default TOTP vault location
-- `.keyfile_path`: Path to Keepass key file for main vault
-- `.totp_keyfile_path`: Path to Keepass key file for TOTP vault
+- `vaults.json`: The vault registry — `[{name, path, keyfile?, hwkey?}]` per vault
+- `.active_vault`: Name of the vault commands use by default
+- `.completion_cache.<name>`: Per-vault shell-completion caches (entry titles/usernames)
 
 ### Vault Trait System
 
@@ -100,20 +97,20 @@ This design allows for potential alternative storage backends beyond Keepass, th
 
 ### Action Execution Flow
 
-1. `main.rs` parses CLI arguments using clap
+1. `main.rs` parses CLI arguments using clap, migrates legacy config if needed, and resolves the target vault (`--vault`/env/active) into the current-vault global
 2. Subcommand is matched to an Action implementation
-3. Actions are categorized as `VaultAction::Action` or `VaultAction::UnlockingAction`
-4. `UnlockingAction` types automatically unlock the appropriate vault before execution
+3. Actions are categorized as `RoutedAction::Action` or `RoutedAction::UnlockingAction`
+4. `UnlockingAction` types automatically unlock the current vault before execution
 5. Vault unlocking checks OS keychain first, prompts for password if not found
 6. Actions use the `MatchHandlerTemplate` pattern to handle single vs. multiple search results uniformly
 
 ### ItemType Pattern
 
-Commands that work with different entry types (credentials, payments, notes, TOTP) use the `ItemType` enum to determine which vault trait methods to call. This is determined from command-line flags (`-p` for payments, `-n` for notes, `-o` for OTP).
+Commands that work with different entry types (credentials, payments, notes, TOTP) use the `ItemType` enum to determine which vault trait methods to call. This is determined from command-line flags (`-p` for payments, `-n` for notes, `-o` for OTP); the entries live in whatever vault the command targets.
 
 ### Master Password Storage
 
-The `keychain` module uses the OS keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux) to securely store master passwords. Users can "unlock" vaults to store passwords, enabling seamless access, or "lock" them to remove the stored passwords and require manual entry.
+The `keychain` module uses the OS keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux) to securely store master passwords — one entry per vault (`passlane_master_pwd` service, vault name as the account). Users can "unlock" vaults to store passwords, enabling seamless access, or "lock" them to remove the stored passwords and require manual entry; several vaults can be unlocked at once (`lock` targets one vault, `lock --all` locks everything).
 
 ## Key Dependencies
 
@@ -129,7 +126,7 @@ The `keychain` module uses the OS keychain (Keychain on macOS, Credential Manage
 
 ## Development Notes
 
-- The CLI defaults to generating a password when run without arguments
+- The CLI starts the interactive REPL when run without arguments
 - All entry types (credentials, payments, notes, TOTP) use UUIDs for identification
 - Search functionality uses regex patterns
 - Clipboard integration automatically copies passwords/OTPs when displaying single results

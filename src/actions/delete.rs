@@ -195,7 +195,6 @@ impl<'a> MatchHandlerTemplate for DeleteTotpTemplate<'a> {
 pub struct DeleteAction {
     pub grep: Option<String>,
     pub item_type: ItemType,
-    pub is_totp: bool,
 }
 
 impl DeleteAction {
@@ -203,16 +202,11 @@ impl DeleteAction {
         DeleteAction {
             grep: matches.get_one::<String>("REGEXP").cloned(),
             item_type: ItemType::new_from_args(matches),
-            is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
         }
     }
 }
 
 impl UnlockingAction for DeleteAction {
-    fn is_totp_vault(&self) -> bool {
-        self.is_totp
-    }
-
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let result = match self.item_type {
             ItemType::Credential => {

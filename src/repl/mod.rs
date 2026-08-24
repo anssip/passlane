@@ -16,10 +16,11 @@ use crate::actions::import::ImportCsvAction;
 use crate::actions::init::InitAction;
 use crate::actions::lock::LockAction;
 use crate::actions::unlock::UnlockAction;
+use crate::actions::vault::{VaultAction, VaultCommand};
 use crate::actions::show::ShowAction;
 use crate::actions::{Action, ItemType, UnlockingAction};
 use crate::completion_cache;
-use crate::{keychain, store};
+use crate::vault_registry;
 
 use commands::{parse_input, ReplCommand};
 use completer::ReplHelper;
@@ -50,14 +51,26 @@ fn print_banner() {
 }
 
 pub fn start_repl() {
-    // First-run detection
-    if !store::has_vault_path() {
+    // First-run detection. A registry that exists but cannot be read must
+    // not be mistaken for a fresh install — surface the error instead of
+    // offering init over a possibly corrupt configuration.
+    let vaults = match vault_registry::load() {
+        Ok(vaults) => vaults,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return;
+        }
+    };
+    if vaults.is_empty() {
         println!("Welcome to Passlane! No vault configured — let's set one up.\n");
         let init = InitAction {};
         match init.run() {
             Ok(msg) => println!("{}", msg),
             Err(e) => eprintln!("Init error: {}", e),
         }
+        // The session was resolved before the first vault existed; pick up
+        // the vault init just created so the following commands work on it.
+        let _ = vault_registry::init_current(None);
         println!();
     }
 
@@ -138,19 +151,18 @@ fn is_vault_modifying(command: &ReplCommand) -> bool {
             | ReplCommand::Edit { .. }
             | ReplCommand::Delete { .. }
             | ReplCommand::Import { .. }
-            | ReplCommand::Unlock { .. }
+            | ReplCommand::Unlock
+            | ReplCommand::VaultUse { .. }
     )
 }
 
 fn dispatch(command: ReplCommand) -> Result<(), String> {
     match command {
         ReplCommand::Show { item_type, grep } => {
-            let is_totp = item_type == ItemType::Totp;
             let action = ShowAction {
                 grep,
                 verbose: false,
                 item_type,
-                is_totp,
                 stdout_only: false,
                 plain: false,
                 once: false,
@@ -162,12 +174,10 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Add { item_type } => {
-            let is_totp = item_type == ItemType::Totp;
             let action = AddAction {
                 generate: false,
                 clipboard: false,
                 item_type,
-                is_totp,
             };
             match action.run() {
                 Ok(msg) => println!("{}", msg),
@@ -178,11 +188,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             if item_type == ItemType::Credential && grep.is_none() {
                 return Err("Usage: edit <pattern> — a search pattern is required for credentials".to_string());
             }
-            let is_totp = item_type == ItemType::Totp;
             let action = EditAction {
                 grep,
                 item_type,
-                is_totp,
             };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
@@ -194,11 +202,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             if item_type == ItemType::Credential && grep.is_none() {
                 return Err("Usage: delete <pattern> — a search pattern is required for credentials".to_string());
             }
-            let is_totp = item_type == ItemType::Totp;
             let action = DeleteAction {
                 grep,
                 item_type,
-                is_totp,
             };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
@@ -237,16 +243,42 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Lock => {
-            let action = LockAction {};
+            let action = LockAction::new(false);
             match action.run() {
                 Ok(msg) => println!("{}", msg),
                 Err(e) => return Err(e.message),
             }
         }
-        ReplCommand::Unlock { totp } => {
-            let action = UnlockAction { totp };
+        ReplCommand::Unlock => {
+            let action = UnlockAction::new();
             match action.run() {
                 Ok(msg) => println!("{}", msg),
+                Err(e) => return Err(e.message),
+            }
+        }
+        ReplCommand::VaultList => {
+            let action = VaultAction {
+                command: VaultCommand::List,
+            };
+            match action.run() {
+                Ok(msg) => println!("{}", msg),
+                Err(e) => return Err(e.message),
+            }
+        }
+        ReplCommand::VaultUse { name } => {
+            let action = VaultAction {
+                command: VaultCommand::Use { name: name.clone() },
+            };
+            match action.run() {
+                Ok(msg) => {
+                    println!("{}", msg);
+                    // The rest of this REPL session now works on the new
+                    // active vault.
+                    match vault_registry::resolve(Some(&name)) {
+                        Ok(vault) => vault_registry::set_current(vault),
+                        Err(e) => return Err(e.message),
+                    }
+                }
                 Err(e) => return Err(e.message),
             }
         }
@@ -258,6 +290,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         }
         ReplCommand::Help { command } => {
             help::print_help(command.as_deref());
+        }
+        ReplCommand::Hint(message) => {
+            println!("{}", message);
         }
         ReplCommand::Unknown(cmd) => {
             return Err(format!("Unknown command: '{}'. Type 'help' for available commands.", cmd));
@@ -292,12 +327,41 @@ Note: the REPL already has built-in tab completion for commands and types."#;
 }
 
 fn print_status() {
-    let vault_path = store::get_vault_path();
-    let totp_vault_path = store::get_totp_vault_path();
-
-    let vault_unlocked = keychain::get_master_password().is_ok();
-    let totp_unlocked = keychain::get_totp_master_password().is_ok();
-
-    println!("Vault:      {} ({})", vault_path, if vault_unlocked { "unlocked" } else { "locked" });
-    println!("TOTP Vault: {} ({})", totp_vault_path, if totp_unlocked { "unlocked" } else { "locked" });
+    let vaults = match vault_registry::load() {
+        Ok(vaults) if !vaults.is_empty() => vaults,
+        Ok(_) => {
+            println!("No vaults configured. Run 'init' to create one.");
+            return;
+        }
+        // A registry that exists but cannot be read must not be reported as
+        // "no vaults configured" — surface the real error.
+        Err(e) => {
+            println!("Error: {}", e);
+            return;
+        }
+    };
+    let active = vault_registry::get_active();
+    for vault in &vaults {
+        // A keychain error is not "locked": report it instead of guessing.
+        let state = match crate::keychain::has_master_password(&vault.name) {
+            Ok(true) => "unlocked",
+            Ok(false) => "locked",
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not read the keychain state of vault '{}': {}",
+                    vault.name, e
+                );
+                "unknown"
+            }
+        };
+        let marker = if active.as_deref() == Some(vault.name.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        println!(
+            "{} {:<12} {} ({})",
+            marker, vault.name, vault.path, state
+        );
+    }
 }

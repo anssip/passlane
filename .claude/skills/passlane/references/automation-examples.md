@@ -1,7 +1,8 @@
 # passlane automation examples
 
 Ready-to-adapt patterns for using passlane in automations. All examples assume the vault is
-unlocked (`passlane unlock`, plus `passlane unlock -o` for TOTP). Replace placeholder service names
+unlocked (`passlane unlock`, plus `passlane unlock --vault totp` when 2FA secrets live in a
+separate vault). Replace placeholder service names
 and selectors with the real ones.
 
 ## 1. API login: basic auth + TOTP header
@@ -96,4 +97,5 @@ a file or log.
   one entry. `show -o --once` and `show --out` error on multiple matches.
 - **Re-fetch TOTP codes per attempt.** They expire within seconds; never cache or reuse a code.
 - **If the vault is locked,** the right fix is for the user to run `passlane unlock` (and
-  `passlane unlock -o`). The agent cannot supply the master password non-interactively.
+  `passlane unlock --vault totp` when needed). The agent cannot supply the master password
+  non-interactively.

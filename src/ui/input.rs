@@ -501,18 +501,6 @@ pub fn ask_new_master_password() -> String {
     ask_new_master_password_with(|q| ask_password(q, None))
 }
 
-pub fn ask_new_totp_master_password() -> String {
-    println!("Choose a master password for the One Time Passwords vault");
-    ask_new_master_password_with(|q| ask_password(&format!("{} (TOTP vault)", q), None))
-}
-
-pub(crate) fn ask_totp_master_password() -> String {
-    ask_password(
-        "Please enter master password of the One Time Passwords vault",
-        None,
-    )
-}
-
 pub fn ask_index(
     question: &str,
     max_index: i16,
@@ -722,22 +710,19 @@ pub fn ask_vault_path(current_path: &str) -> String {
     )
 }
 
-pub fn ask_totp_vault_path(current_path: &str) -> String {
-    ask_path(
-        "Enter vault location for Timed One Time Passwords, a.k.a. TOTPs",
-        current_path,
-        "totp.kdbx",
-        Some(VAULT_HELP_MESSAGE),
-    )
-}
-
 pub fn ask_path(
     question: &str,
     default_answer: &str,
     default_filename: &str,
     help_message: Option<&str>,
 ) -> String {
-    let location = ask_with_initial(question, Some(default_answer), help_message);
+    // Expand ~ and make the answer absolute: the registry stores absolute
+    // paths, and Path-based validation below cannot resolve a raw "~".
+    let location = crate::vault_registry::absolutize(&ask_with_initial(
+        question,
+        Some(default_answer),
+        help_message,
+    ));
     if !parent_path_exists(&location) {
         println!("'{}' does not exist, please try again", &location);
         ask_path(question, default_answer, default_filename, help_message)
@@ -747,9 +732,13 @@ pub fn ask_path(
 }
 
 pub fn ask_existing_path() -> String {
-    let location = ask_with_initial("Enter path to existing vault file", None, None);
+    let location = crate::vault_registry::absolutize(&ask_with_initial(
+        "Enter path to existing vault file",
+        None,
+        None,
+    ));
     if !Path::new(&location).is_file() {
-        println!("File '{}' does not exist, please try again", &location);
+        println!("File '{}' does not exist, please try again", location);
         ask_existing_path()
     } else {
         location
@@ -790,6 +779,7 @@ pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
         Some("The keyfile should be created with KeepassXC. To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles"),
         true,
     )
+    .map(|path| crate::vault_registry::absolutize(&path))
 }
 
 pub fn newline() {
@@ -805,11 +795,35 @@ pub fn ask_store_master_password() -> bool {
     .unwrap()
 }
 
-pub fn ask_store_totp_master_password() -> bool {
-    Confirm::new(
-        "Store the TOTP vault's master password in keychain? You can also save it later by unlocking the TOTP vault ('unlock -o' from the CLI, 'unlock otp' in the REPL).",
+pub fn ask_vault_name() -> String {
+    ask_with_initial(
+        "Enter a name for the vault",
+        Some("default"),
+        Some("A short name like 'personal', 'work' or 'family'. Used to pick the vault: --vault <name>."),
     )
-    .with_default(true)
+}
+
+pub fn ask_existing_vault_uses_hwkey() -> bool {
+    Confirm::new("Does this vault require a hardware key (e.g. a YubiKey) to open?")
+        .with_default(false)
+        .with_help_message("Answer yes if the vault was protected with a challenge-response key elsewhere (e.g. on another machine). The key must be connected now to verify the unlock.")
+        .prompt()
+        .unwrap()
+}
+
+pub fn ask_make_vault_active(name: &str) -> bool {
+    Confirm::new(&format!("Make '{}' the active vault?", name))
+        .with_default(true)
+        .prompt()
+        .unwrap()
+}
+
+pub fn ask_remove_vault(name: &str) -> bool {
+    Confirm::new(&format!(
+        "Remove vault '{}' from passlane? The vault file itself is not deleted.",
+        name
+    ))
+    .with_default(false)
     .prompt()
     .unwrap()
 }
@@ -827,16 +841,6 @@ pub fn ask_store_hwkey() -> bool {
 pub fn ask_open_existing_vault() -> bool {
     Select::new(
         "Do you want to create a new vault or open an existing one?",
-        vec!["New", "Existing"],
-    )
-    .prompt()
-    .unwrap()
-        == "Existing"
-}
-
-pub fn ask_open_existing_totp_vault() -> bool {
-    Select::new(
-        "Do you want to create a new TOTP vault or open an existing one?",
         vec!["New", "Existing"],
     )
     .prompt()
