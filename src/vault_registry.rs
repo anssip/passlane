@@ -298,15 +298,29 @@ pub fn get_active_from(dir: &Path) -> Option<String> {
 }
 
 /// Write (or, with None, remove) the active-vault pointer. The name is not
-/// re-validated; callers pass a name from the registry.
+/// re-validated; callers pass a name from the registry. The write is atomic
+/// like the registry's: a crash mid-write must not leave an empty pointer
+/// file behind (shell completions resolve it).
 fn write_active_to(dir: &Path, name: Option<&str>) -> Result<(), Error> {
     let path = active_vault_path(dir);
     match name {
         Some(name) => {
             use std::io::Write;
-            let mut out = store::create_private_file(&path)?;
+            let tmp = dir.join(format!(
+                "{}.{}.tmp",
+                ACTIVE_VAULT_FILENAME,
+                std::process::id()
+            ));
+            let mut out = store::create_private_file(&tmp)?;
             out.write_all(name.as_bytes())?;
             out.flush()?;
+            fs::rename(&tmp, &path).map_err(|e| {
+                Error::new(&format!(
+                    "Could not save the active vault pointer {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
         }
         None => {
             fs::remove_file(&path).or_else(|e| {

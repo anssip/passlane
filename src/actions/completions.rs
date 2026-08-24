@@ -113,17 +113,19 @@ fn generate_cache() -> Result<usize, Error> {
 
 /// Shell expression that resolves the active vault's completion cache at
 /// completion time — the active vault can change between shell invocations.
-/// Falls back to the migrated 'default' vault when no active vault is set.
+/// Falls back to the migrated 'default' vault when no active vault is set or
+/// the pointer file is empty (e.g. truncated by a crash).
 fn cache_file_expr(shell: Shell) -> String {
     match shell {
         // Command substitution inside double quotes evaluates at completion
-        // time in bash and zsh.
+        // time in bash and zsh; ${v:-default} covers both a missing file and
+        // an empty one.
         Shell::Bash | Shell::Zsh => {
-            r#"$HOME/.passlane/.completion_cache.$(cat "$HOME/.passlane/.active_vault" 2>/dev/null || echo default)"#
+            r#"$HOME/.passlane/.completion_cache.$(v=$(cat "$HOME/.passlane/.active_vault" 2>/dev/null); echo ${v:-default})"#
                 .to_string()
         }
         Shell::Fish => {
-            r#"~/.passlane/.completion_cache.(cat ~/.passlane/.active_vault 2>/dev/null; or echo default)"#
+            r#"~/.passlane/.completion_cache.(begin; set -l v (cat ~/.passlane/.active_vault 2>/dev/null); if test -n "$v"; echo $v; else; echo default; end; end)"#
                 .to_string()
         }
         _ => String::new(),
@@ -476,12 +478,12 @@ complete -c passlane -n "__fish_seen_subcommand_from add" -F"#;
     fn test_cache_file_expr_resolves_active_vault() {
         let bash = cache_file_expr(Shell::Bash);
         assert!(bash.contains(".active_vault"));
-        assert!(bash.contains("|| echo default"));
+        assert!(bash.contains("${v:-default}"));
         let zsh = cache_file_expr(Shell::Zsh);
         assert!(zsh.contains(".active_vault"));
         let fish = cache_file_expr(Shell::Fish);
         assert!(fish.contains(".active_vault"));
-        assert!(fish.contains("; or echo default"));
+        assert!(fish.contains("else; echo default"));
     }
 
     #[test]

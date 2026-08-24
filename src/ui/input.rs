@@ -803,6 +803,14 @@ pub fn ask_vault_name() -> String {
     )
 }
 
+pub fn ask_existing_vault_uses_hwkey() -> bool {
+    Confirm::new("Does this vault require a hardware key (e.g. a YubiKey) to open?")
+        .with_default(false)
+        .with_help_message("Answer yes if the vault was protected with a challenge-response key elsewhere (e.g. on another machine). The key must be connected now to verify the unlock.")
+        .prompt()
+        .unwrap()
+}
+
 pub fn ask_make_vault_active(name: &str) -> bool {
     Confirm::new(&format!("Make '{}' the active vault?", name))
         .with_default(true)

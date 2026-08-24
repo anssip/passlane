@@ -6,9 +6,9 @@ use crate::actions::Action;
 use crate::completion_cache;
 use crate::keychain;
 use crate::ui::input::{
-    ask_existing_path, ask_keyfile_path, ask_make_vault_active, ask_master_password,
-    ask_new_master_password, ask_open_existing_vault, ask_remove_vault, ask_store_hwkey,
-    ask_store_master_password, ask_vault_name, ask_vault_path, newline,
+    ask_existing_path, ask_existing_vault_uses_hwkey, ask_keyfile_path, ask_make_vault_active,
+    ask_master_password, ask_new_master_password, ask_open_existing_vault, ask_remove_vault,
+    ask_store_hwkey, ask_store_master_password, ask_vault_name, ask_vault_path, newline,
 };
 use crate::vault::entities::Error;
 use crate::vault::keepass_vault::KeepassVault;
@@ -300,14 +300,22 @@ pub fn setup_vault(name_arg: Option<String>) -> Result<String, Error> {
     let mut created_vault: Option<KeepassVault> = None;
 
     if open_existing {
-        println!("Verifying that the vault opens with the given password and keyfile...");
         password = ask_master_password(Some(&format!(
             "Please enter master password of the vault at {}",
             path
         )));
-        // A hardware key protecting an existing vault is enrolled afterwards
-        // with 'passlane hwkey add', once the vault is registered.
-        KeepassVault::open(&password, &path, keyfile.clone(), None)?;
+        // The vault may already be protected by a hardware key (e.g.
+        // registered on another machine): record the factor and verify all
+        // unlock factors together — opening without the challenge-response
+        // would fail with a misleading wrong-password error.
+        let mut challenge_response = None;
+        if ask_existing_vault_uses_hwkey() {
+            let (cr, config) = crate::hwkey::resolve_new_key(None, None)?;
+            challenge_response = Some(cr);
+            hwkey_config = Some(config);
+        }
+        println!("Verifying that the vault opens with the given password and factors...");
+        KeepassVault::open(&password, &path, keyfile.clone(), challenge_response.as_ref())?;
     } else {
         let (hwkey_key, config) = if ask_store_hwkey() {
             let (key, config) = crate::hwkey::resolve_new_key(None, None)?;

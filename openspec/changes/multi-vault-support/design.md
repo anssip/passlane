@@ -34,7 +34,7 @@ Each registered vault is `{name, path, keyfile?, hwkey?}`. TOTP entries live whe
 Vault names are validated to `[A-Za-z0-9_-]{1,64}` and must be unique — they become keychain account names and cache filename suffixes.
 
 ### Resolution: explicit → active → single
-`resolve(explicit)`: an explicit name (from `--vault`/`PASSLANE_VAULT`, or the legacy `unlock -o`/`passwd -o` alias mapping to `totp`) must exist or the command aborts with an error listing the configured names. Without one, the active vault wins; a stale pointer warns and is ignored; exactly one registered vault is used implicitly; otherwise the command errors telling the user to pick.
+`resolve(explicit)`: an explicit name (from `--vault`/`PASSLANE_VAULT`, or the legacy `unlock -o`/`passwd -o` alias mapping to `totp`) must exist or vault-content commands abort with an error listing the configured names. Vault-management commands (`vault`), vault-independent commands (`init`, `gen`, `completions`) and the REPL are exempt: they warn and fall back to the active (or only) vault, so a stale name cannot lock the user out of the commands that fix it. Without an explicit name, the active vault wins; a stale pointer warns and is ignored; exactly one registered vault is used implicitly; otherwise the command errors telling the user to pick.
 
 The resolved vault is stored in a process-global (`RwLock<Option<VaultConfig>>`) set once in `main()` before dispatch (and re-set by the REPL on `vault use`). This preserves the existing parameterless lookups (`store::get_vault_path()` call sites became `vault_registry::current()`) without threading a parameter through every action and both dispatch paths (clap + REPL struct literals).
 
@@ -56,11 +56,11 @@ Triggered when `vaults.json` is absent and any legacy dot-file exists, before an
 ### `vault add` and `init` share one flow
 `setup_vault(name)` (in `actions/vault.rs`) drives both: name prompt/validation → new vs existing → location (default `~/.passlane/<name>.kdbx`) → keyfile → password (new: double entry; existing: single entry + open-verify) → optional hwkey enrollment for new vaults → registry write (with hwkey rollback if it fails) → optional make-active → optional keychain store. `init` is that flow with an empty registry; otherwise it reports the configured vaults.
 
-An existing vault that needs a hardware key is registered by password-verify first and enrolled afterwards via `hwkey add` — verification cannot include an unknown factor.
+An existing vault protected by a hardware key is registered by asking for the factor up front (slot + connected key, recorded via the same enrollment helper) and verifying password and key together; the recorded config is persisted with the registry entry. Opening without the challenge-response would fail with a misleading wrong-password error, so verification cannot skip the factor.
 
 ## Risks / Trade-offs
 
 - **Process-global current vault** hides the data flow slightly; accepted because the codebase already used parameterless globals for the same purpose, and both dispatch surfaces (clap, REPL) needed the value without signature churn. `current()` returns a helpful error when unset rather than panicking.
 - **Migration is one-way**: older passlane versions cannot read `vaults.json`. The migration prints a notice naming the registry file.
 - **Best-effort keychain migration** can leave the old entry behind if the keychain is unavailable; that is the pre-migration status quo and no weaker.
-- `--vault` with an unknown name aborts even for vault-independent commands (`gen`); predictable and cheap to avoid.
+- `--vault` with an unknown name aborts vault-content commands (and the REPL) with the unknown-vault error; vault-management, vault-independent commands and the bare REPL warn and fall back to the active vault — a stale `PASSLANE_VAULT` must not lock the user out of recovery.
