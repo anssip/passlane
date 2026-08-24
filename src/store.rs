@@ -99,9 +99,9 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 /// Pre-existing directories get their permissions tightened too, since they
 /// are about to receive fresh sensitive content — mirroring what
 /// create_private_file does for files. Non-Unix platforms keep the platform
-/// default ACLs.
+/// default ACLs. Best-effort: a failure warns instead of aborting.
 #[cfg(unix)]
-fn tighten_dir_permissions(path: &Path) {
+pub(crate) fn tighten_dir_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
         eprintln!(

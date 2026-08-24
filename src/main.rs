@@ -305,10 +305,13 @@ fn main() {
     // commands fall back to the active (or only) vault when the explicit
     // name doesn't resolve.
     let subcommand = matches.subcommand().map(|(name, _)| name);
-    let is_bare_repl = subcommand.is_none() && env::args().len() == 1;
-    let needs_vault =
-        !matches!(subcommand, Some("vault" | "init" | "gen" | "completions" | "repl"))
-            && !is_bare_repl;
+    // No subcommand at all means help output (or the bare REPL): never gate
+    // that on vault resolution, so 'passlane --vault bogus' still shows help.
+    let needs_vault = match subcommand {
+        Some("vault" | "init" | "gen" | "completions" | "repl") => false,
+        Some(_) => true,
+        None => false,
+    };
     if let Some(name) = explicit_vault(&matches) {
         if let Err(e) = vault_registry::init_current(Some(name.as_str())) {
             if needs_vault {

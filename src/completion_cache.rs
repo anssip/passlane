@@ -163,9 +163,12 @@ fn collect_entry_names(vault: &Box<dyn Vault>) -> Vec<String> {
 }
 
 fn write_cache(path: &Path, entries: &[String]) -> std::io::Result<()> {
-    // Ensure parent directory exists
+    // Ensure parent directory exists; it may have been created by
+    // create_dir_all with platform-default permissions, which is too loose
+    // for the cache's service:username pairs.
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        crate::store::tighten_dir_permissions(parent);
     }
     // Owner-only: the cache leaks service:username pairs on shared machines.
     let mut file = crate::store::create_private_file(path)?;
