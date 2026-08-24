@@ -1,31 +1,23 @@
-use clap::ArgMatches;
-use crate::actions::{Action, unlock, unlock_totp_vault};
+use crate::actions::{unlock, Action};
 use crate::completion_cache;
 use crate::keychain;
 use crate::vault::entities::Error;
+use crate::vault_registry;
 
-pub struct UnlockAction {
-    pub totp: bool,
-}
+pub struct UnlockAction {}
 
 impl UnlockAction {
-    pub fn new(matches: &ArgMatches) -> UnlockAction {
-        UnlockAction {
-            totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
-        }
+    pub fn new() -> UnlockAction {
+        UnlockAction {}
     }
 }
 
 impl Action for UnlockAction {
     fn run(&self) -> Result<String, Error> {
-        if self.totp {
-            let vault = unlock_totp_vault()?;
-            keychain::save_totp_master_password(&vault.get_master_password())?;
-        } else {
-            let vault = unlock()?;
-            keychain::save_master_password(&vault.get_master_password())?;
-            completion_cache::update_cache(&vault);
-        }
-        Ok("Vault unlocked".to_string())
+        let config = vault_registry::current()?;
+        let vault = unlock()?;
+        keychain::save_master_password(&config.name, &vault.get_master_password())?;
+        completion_cache::update_cache(&vault);
+        Ok(format!("Vault '{}' unlocked", config.name))
     }
 }

@@ -12,9 +12,9 @@ encrypted format. It holds **credentials** (service/username/password), **paymen
 output (`--json`, `--out`, `--once`, `--code`) so agents can read secrets and feed them into
 automations without touching the clipboard or any interactive UI.
 
-There are **two separate vaults**, each with its own master password:
-- the **main vault** — credentials, payment cards, secure notes
-- the **TOTP vault** — authenticator secrets (addressed with the `-o` flag on most commands)
+Data lives in one or more **named vaults**, each with its own master password. Any vault can hold all
+entry types; the `-o` flag selects the TOTP entries of the vault a command targets (by default the
+active vault — `passlane vault list` shows them all).
 
 ## Prerequisite: the vault must be unlocked
 
@@ -22,17 +22,17 @@ Non-interactive use requires the master password to be stored in the OS keychain
 these one-time, interactive setup commands themselves:
 
 ```bash
-passlane unlock      # store the main vault master password in the OS keychain
-passlane unlock -o   # store the TOTP vault master password in the OS keychain
-passlane lock        # remove stored master passwords (re-locks)
+passlane unlock               # store the active vault's master password in the OS keychain
+passlane unlock --vault totp  # same for another vault (e.g. one holding 2FA secrets)
+passlane lock                 # remove the stored master password (re-locks)
 ```
 
 There is **no environment variable or stdin** to supply the master password. If the vault is locked,
 passlane will **block on an interactive prompt** — which hangs unattended automation. So:
 
 > If a `passlane` command blocks or fails because the vault is locked, **stop and ask the user to
-> run `passlane unlock` (and `passlane unlock -o` for 2FA codes)**. Do not try to supply the
-> master password yourself.
+> run `passlane unlock` (and `passlane unlock --vault totp` for 2FA codes in a separate vault)**.
+> Do not try to supply the master password yourself.
 
 ## Reading secrets (the core of automation)
 

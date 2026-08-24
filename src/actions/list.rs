@@ -42,7 +42,6 @@ pub struct ListAction {
     pub search_pattern: Option<String>,
     pub json_output: bool,
     pub verbose: bool,
-    pub is_totp: bool,
     pub code: bool,
 }
 
@@ -53,7 +52,6 @@ impl ListAction {
             search_pattern: matches.get_one::<String>("REGEXP").cloned(),
             json_output: matches.get_one::<bool>("json").map_or(false, |v| *v),
             verbose: matches.get_one::<bool>("verbose").map_or(false, |v| *v),
-            is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
             code: matches.get_one::<bool>("code").map_or(false, |v| *v),
         }
     }
@@ -228,10 +226,6 @@ impl ListAction {
 }
 
 impl UnlockingAction for ListAction {
-    fn is_totp_vault(&self) -> bool {
-        self.is_totp
-    }
-
     fn run_with_vault(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         match self.item_type {
             ItemType::Credential => self.list_credentials(vault),

@@ -226,7 +226,7 @@ KeepassXC's database security settings. On Linux, USB access to the key requires
 
 ### Locking and unlocking the vault
 
-Use the unlock command to store the master password in your computer's keychain. This way you don't have to enter the
+Use the unlock command to store the active vault's master password in your computer's keychain. This way you don't have to enter the
 master password every time you access your passwords and other vault contents. On Macs you can then use biometric authentication
 to gain access to the keychain and further to the vault without typing any passwords.
 
@@ -234,16 +234,8 @@ to gain access to the keychain and further to the vault without typing any passw
 passlane unlock
 ```
 
-You can later remove the master password from the keychain with the lock command.
-
-The one time passwords (OTPs) are stored in a separate vault file. You can unlock it with the same command
-accompanied with the -o option.
-
-```bash
-passlane unlock -o
-```
-
-To lock the vaults use the lock command. This locks both the password vault and the OTP vault:
+You can later remove the master password from the keychain with the lock command. It locks the vault given
+with `--vault`, or the active vault; `passlane lock --all` locks every configured vault.
 
 ```bash
 passlane lock
@@ -259,39 +251,80 @@ Rotate the master password of the vault with the `passwd` command. You'll be pro
 passlane passwd
 ```
 
-To change the master password of the separate OTP vault, pass `-o`:
+To change the master password of another vault, target it with `--vault`:
 
 ```bash
-passlane passwd -o
+passlane passwd --vault work
 ```
+
+### Multiple vaults
+
+Passlane can manage any number of named vaults — for example personal, work and family. Each vault is a
+separate Keepass file with its own location, master password, optional keyfile and optional hardware-key
+(YubiKey) protection. Any vault can hold credentials, payment cards, secure notes **and** one time
+passwords.
+
+Vaults are registered in `~/.passlane/vaults.json`; one vault is marked as the **active vault** and is
+used by all commands by default.
+
+```bash
+# List vaults (the * marks the active one) and their lock state
+passlane vault list
+
+# Create a new vault, or register an existing Keepass file, interactively
+passlane vault add work
+
+# Switch the active vault
+passlane vault use work
+
+# Show details of one vault
+passlane vault info work
+
+# Rename or deregister (the vault file is never deleted)
+passlane vault rename work company
+passlane vault remove work
+```
+
+Every command accepts the global `--vault <name>` flag (or the `PASSLANE_VAULT` environment variable)
+to operate on another vault without switching:
+
+```bash
+passlane --vault work show google
+PASSLANE_VAULT=work passlane list --json
+```
+
+Each vault is unlocked and locked separately, so your personal vault can stay unlocked while the work
+vault stays locked (`passlane unlock --vault work`, `passlane lock --vault work`).
 
 ```bash
 ➜ passlane -h
 
 A password manager using Keepass as the storage backend.
 
-Usage: passlane [COMMAND]
+Usage: passlane [OPTIONS] [COMMAND]
 
 Commands:
-  init    Initialize passlane. Walks you through the configuration process.
-  add     Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.
-  edit    Edit an entry.
-  csv     Imports credentials from a CSV file.
-  delete  Deletes one or more entries.
-  show    Shows one or more entries.
-  list    Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.
-  lock    Lock the vaults to prevent all access
-  unlock  Opens the vaults and grants access to the entries
-  passwd  Change the master password of the vault.
-  hwkey   Manage the hardware key (e.g. a YubiKey) that protects the main vault with challenge-response.
-  export  Exports the vault contents to a CSV file.
-  gen     Generate a random password and copy it to the clipboard.
-  repl    Launch the interactive REPL session.
+  init       Initialize passlane. Walks you through the configuration process.
+  vault      Manage vaults: list them, add one, switch the active vault, remove or rename.
+  add        Adds an item to the vault. Without arguments adds a new credential, use -p to add a payment card and -n to add a secure note.
+  edit       Edit an entry.
+  csv        Imports credentials from a CSV file.
+  delete     Deletes one or more entries.
+  show       Shows one or more entries.
+  list       Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.
+  lock       Lock a vault by removing its stored master password. Use --all to lock every vault.
+  unlock     Unlock a vault: open it and store the master password in the keychain.
+  passwd     Change the master password of the vault.
+  hwkey      Manage the hardware key (e.g. a YubiKey) that protects a vault with challenge-response.
+  export     Exports the vault contents to a CSV file.
+  gen        Generate a random password and copy it to the clipboard.
+  repl       Launch the interactive REPL session.
   completions  Generate shell completions and save to ~/.passlane/. Shows the line to add to your shell rc file.
-  help    Print this message or the help of the given subcommand(s)
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help  Print help
+      --vault <NAME>  Name of the vault to use for this command. Defaults to $PASSLANE_VAULT, then the active vault (see 'passlane vault use'). [env: PASSLANE_VAULT=]
+  -h, --help          Print help
 ```
 
 ### Generating and saving passwords
@@ -432,33 +465,29 @@ passlane show -n
 
 ### Authenticator functionality
 
-By default, Passlane stores the Timed One Time Passwords in a file named `totp.json` in the `~/.passlane/` directory.
-You can change the location by storing the file path in a text file called `.totp_vault_path` in the `~/.passlane/` directory.
-**We recommend that you store the file in a separate location that is different from the main vault file.** This way
-you gain the benefit of two-factor authentication. You don't want to store these eggs in the same basket.
-
-Here is an example where teh totp vault file is stored in Dropbox:
+One time passwords (OTPs) are entries in a vault, just like credentials, cards and notes — any vault
+can hold them. Fresh installs get a single vault; if you want the two-factor-authentication benefit of
+keeping the OTP seeds in a different file (and behind a different password) than your passwords,
+create a second vault for them:
 
 ```bash
-~/.passlane > cat .totp_vault_path
-/Users/anssi/Dropbox/stuff/totp.kdbx
+passlane vault add totp
 ```
 
-The TOTP vault has a separate master password that you need to enter when you access the one time passwords.
-You can also store the master password in your computer's keychain to avoid typing it every time. Use
-the unlock command with the `-o` option for this purpose.
+That vault gets its own master password, which you can store in your computer's keychain to avoid
+typing it every time:
 
 ```bash
-passlane unlock -o
+passlane unlock --vault totp
 ```
 
-To add a new one time password authentication entry:
+To add a new one time password authentication entry to the current vault:
 
 ```bash
 passlane add -o
 ```
 
-Use -o to show the one time passwords. Following lists all OTP entries in the vault:
+Use -o to show the one time passwords. Following lists all OTP entries in the active vault:
 
 ```bash
 passlane show -o
@@ -473,7 +502,7 @@ passlane show -o heroku
 the output will be:
 
 ```bash
-Unlocking TOTP vault...
+Unlocking vault...
 Found 1 matching OTP authorizers:
 
 Code 447091 (also copied to clipboard). Press q to exit.
@@ -485,6 +514,11 @@ Next code in 30 seconds
 ..............................
 ...
 ```
+
+Upgrading from an older Passlane that had a separate TOTP vault file? The first run of the new version
+migrates it automatically: the old TOTP vault becomes a regular vault named `totp`, and the old
+password vault becomes the vault named `default`. `passlane unlock -o` keeps working as an alias for
+`passlane --vault totp unlock`.
 
 #### Getting a single code for scripts
 
@@ -653,8 +687,8 @@ cp -r /path/to/passlane/.claude/skills/passlane <your-project>/.claude/skills/
 ```
 
 The agent can only read your vault non-interactively while it is unlocked — run `passlane unlock`
-(and `passlane unlock -o` for TOTP codes) first, since there is no way to supply the master password
-unattended.
+first (and `passlane unlock --vault totp` if your OTP entries live in a separate vault), since there
+is no way to supply the master password unattended.
 
 ### Shell Completion
 
@@ -692,7 +726,7 @@ Add the printed `source` line to your rc file (`~/.zshrc`, `~/.bashrc`, or `~/.c
 
 #### Dynamic completions
 
-When your vault is unlocked, Passlane maintains a lightweight completion cache at `~/.passlane/.completion_cache` containing entry titles and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands.
+When your vault is unlocked, Passlane maintains a lightweight completion cache per vault at `~/.passlane/.completion_cache.<name>` containing entry titles and usernames (no passwords or secrets). This enables dynamic tab completions for `show`, `edit`, `delete`, and `list` commands; the completions follow the active vault.
 
 The cache is automatically:
 
@@ -737,17 +771,12 @@ When the vault is locked (cache file doesn't exist), completions fall back to su
 
 ## Syncing data to your devices
 
-You can place the vault file to a cloud storage service like Dropbox, Google Drive, or iCloud Drive.
+You can place vault files in a cloud storage service like Dropbox, Google Drive, or iCloud Drive.
 This way you can access your passwords from all your devices.
-By default, Passlane assumes that the file is located at `~/.passlane/store.kdbx`.
-You can change the location by storing the file path in a text file called `.vault_path` at the `~/.passlane/` directory.
-
-For example, this shows how John has stored the path `/Users/john/Dropbox/Stuff/store.kdbx` to the `.vault_path` file:
-
-```bash
-➜  ~ cat ~/.passlane/.vault_path
-/Users/john/Dropbox/Stuff/store.kdbx
-```
+By default, Passlane creates new vaults in the `~/.passlane/` directory; when adding a vault you can
+point it at any location (e.g. a folder inside Dropbox). Existing vault files are registered the same
+way with `passlane vault add` — or, since vaults are plain Keepass databases, moved and re-registered
+at any time.
 
 ## Security
 

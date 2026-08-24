@@ -17,8 +17,10 @@ Available commands:
   gen                     Generate a random password
   import <file>           Import credentials from a CSV file
   export [type] <file>    Export entries to a CSV file
-  unlock [otp]            Store master password in keychain
-  lock                    Remove master passwords from keychain
+  unlock                  Store the active vault's master password in keychain
+  lock                    Remove the active vault's master password from keychain
+  vault [list]            List configured vaults
+  vault use <name>        Switch the active vault
   status                  Show vault status
   completions             Show how to install shell completions
   help [command]          Show help (or help for a specific command)
@@ -98,24 +100,34 @@ export [type] <file> — Export entries to a CSV file
         ),
         "lock" => println!(
             r#"
-lock — Lock the vaults
+lock — Lock the active vault
 
-  Removes stored master passwords from the OS keychain for both the main
-  vault and the TOTP vault."#
+  Removes the active vault's stored master password from the OS keychain.
+  Use 'passlane lock --all' from the terminal to lock every vault."#
         ),
         "unlock" => println!(
             r#"
-unlock [otp] — Unlock a vault
+unlock — Unlock the active vault
 
-  unlock       Unlock the main vault (store password in keychain)
-  unlock otp   Unlock the TOTP vault"#
+  Opens the active vault and stores its master password in the keychain.
+  Switch vaults first with 'vault use <name>'."#
+        ),
+        "vault" => println!(
+            r#"
+vault — Work with multiple vaults
+
+  vault / vault list   List configured vaults and their state
+  vault use <name>     Make a vault the active one (also switch this session)
+
+  Add, remove or rename vaults from the terminal with 'passlane vault add',
+  'passlane vault remove' and 'passlane vault rename'."#
         ),
         "status" => println!(
             r#"
 status — Show vault status
 
-  Displays whether each vault is unlocked (password stored in keychain)
-  or locked, and shows the configured vault file paths."#
+  Lists all configured vaults, marks the active one with *, and shows
+  whether each is unlocked (password stored in keychain) or locked."#
         ),
         "completions" => println!(
             r#"

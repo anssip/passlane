@@ -7,30 +7,39 @@ use std::time::{Duration, SystemTime};
 use log::debug;
 
 use crate::keychain;
-use crate::store;
 use crate::vault::keepass_vault::KeepassVault;
 use crate::vault::vault_trait::Vault;
+use crate::vault_registry;
 
-const CACHE_FILENAME: &str = ".completion_cache";
+const CACHE_FILENAME_PREFIX: &str = ".completion_cache";
 const STALE_DAYS: u64 = 7;
 
-fn cache_path() -> PathBuf {
+/// One cache file per vault: `~/.passlane/.completion_cache.<name>`.
+pub(crate) fn cache_path(vault_name: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".passlane").join(CACHE_FILENAME)
+    home.join(".passlane")
+        .join(format!("{}.{}", CACHE_FILENAME_PREFIX, vault_name))
+}
+
+fn current_cache_path() -> Option<PathBuf> {
+    vault_registry::current().ok().map(|v| cache_path(&v.name))
 }
 
 /// Reads all credentials from the vault, extracts deduplicated service names
-/// and usernames, and writes them one per line to the cache file.
+/// and usernames, and writes them one per line to the current vault's cache.
 pub fn update_cache(vault: &Box<dyn Vault>) {
+    let Some(path) = current_cache_path() else {
+        return;
+    };
     let entries = collect_entry_names(vault);
-    if let Err(e) = write_cache(&entries) {
+    if let Err(e) = write_cache(&path, &entries) {
         debug!("Failed to write completion cache: {}", e);
     }
 }
 
-/// Deletes the completion cache file. No error if the file is missing.
-pub fn clear_cache() {
-    let path = cache_path();
+/// Deletes a vault's completion cache file. No error if the file is missing.
+pub fn clear_cache_for(vault_name: &str) {
+    let path = cache_path(vault_name);
     if path.exists() {
         if let Err(e) = fs::remove_file(&path) {
             debug!("Failed to remove completion cache: {}", e);
@@ -38,9 +47,12 @@ pub fn clear_cache() {
     }
 }
 
-/// Reads entry names from the cache file. Returns an empty vec if the file is missing.
+/// Reads entry names from the current vault's cache file. Returns an empty
+/// vec if the file is missing or no vault is selected.
 pub fn read_cache() -> Vec<String> {
-    let path = cache_path();
+    let Some(path) = current_cache_path() else {
+        return Vec::new();
+    };
     match fs::read_to_string(&path) {
         Ok(contents) => contents
             .lines()
@@ -55,7 +67,9 @@ pub fn read_cache() -> Vec<String> {
 /// Only writes if the cache file is missing. Called from UnlockingAction::execute()
 /// so any command that opens the vault also creates the cache.
 pub fn ensure_cache_from_vault(vault: &Box<dyn Vault>) {
-    let path = cache_path();
+    let Some(path) = current_cache_path() else {
+        return;
+    };
     if path.exists() {
         return;
     }
@@ -63,10 +77,13 @@ pub fn ensure_cache_from_vault(vault: &Box<dyn Vault>) {
     update_cache(vault);
 }
 
-/// Checks if the cache file is older than 7 days. If so, and the vault is
-/// unlocked (master password in keychain), silently refreshes the cache.
+/// Checks if the current vault's cache file is older than 7 days. If so, and
+/// the vault is unlocked (master password in keychain), silently refreshes
+/// the cache.
 pub fn refresh_if_stale() {
-    let path = cache_path();
+    let Some(path) = current_cache_path() else {
+        return;
+    };
     if !path.exists() {
         return;
     }
@@ -92,17 +109,20 @@ pub fn refresh_if_stale() {
     create_cache_from_keychain();
 }
 
-/// Opens the vault using the keychain password and writes the cache.
+/// Opens the current vault using the keychain password and writes the cache.
 /// Does nothing if the vault is locked (no password in keychain), or if the
 /// vault is protected by a hardware key: opening it needs a physical touch
 /// nobody is around to provide in this silent background path.
 fn create_cache_from_keychain() {
-    if store::has_hwkey_config() {
+    let Ok(config) = vault_registry::current() else {
+        return;
+    };
+    if config.hwkey.is_some() {
         debug!("Hardware key enrolled, skipping silent cache refresh");
         return;
     }
 
-    let master_pwd = match keychain::get_master_password() {
+    let master_pwd = match keychain::get_master_password(&config.name) {
         Ok(pwd) => pwd,
         Err(_) => {
             debug!("Vault is locked, skipping cache creation");
@@ -110,10 +130,7 @@ fn create_cache_from_keychain() {
         }
     };
 
-    let filepath = store::get_vault_path();
-    let keyfile_path = store::get_keyfile_path();
-
-    match KeepassVault::open(&master_pwd, &filepath, keyfile_path, None) {
+    match KeepassVault::open(&master_pwd, &config.path, config.keyfile, None) {
         Ok(vault) => {
             let boxed: Box<dyn Vault> = Box::new(vault);
             update_cache(&boxed);
@@ -121,7 +138,7 @@ fn create_cache_from_keychain() {
         }
         Err(e) => {
             debug!("Failed to open vault for cache: {}", e);
-        }
+        },
     }
 }
 
@@ -137,14 +154,13 @@ fn collect_entry_names(vault: &Box<dyn Vault>) -> Vec<String> {
     pairs.into_iter().collect()
 }
 
-fn write_cache(entries: &[String]) -> std::io::Result<()> {
-    let path = cache_path();
+fn write_cache(path: &PathBuf, entries: &[String]) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     // Owner-only: the cache leaks service:username pairs on shared machines.
-    let mut file = crate::store::create_private_file(&path)?;
+    let mut file = crate::store::create_private_file(path)?;
     for entry in entries {
         writeln!(file, "{}", entry)?;
     }
@@ -154,71 +170,52 @@ fn write_cache(entries: &[String]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    /// These tests share the real ~/.passlane/.completion_cache file, so they
-    /// must not run concurrently: e.g. clear_cache() deleting the file between
-    /// another test's write and read makes it fail spuriously.
-    fn cache_file_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    /// Acquire the shared lock, ignoring poisoning: a poisoned lock only
-    /// means another test failed while holding it, and cascading poison
-    /// errors would hide this test's own result.
-    fn cache_file_guard() -> std::sync::MutexGuard<'static, ()> {
-        cache_file_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
 
     #[test]
-    fn test_read_cache_missing_file() {
-        let _guard = cache_file_guard();
-        // read_cache should return empty vec for missing file
-        // We can't easily test with the real path, but we test the logic
-        let entries = read_cache();
-        // This may or may not be empty depending on state, but should not panic
-        let _ = entries;
-    }
-
-    #[test]
-    fn test_cache_path_is_in_passlane_dir() {
-        let path = cache_path();
+    fn test_cache_path_is_per_vault() {
+        let path = cache_path("work");
         let path_str = path.to_string_lossy();
         assert!(path_str.contains(".passlane"));
-        assert!(path_str.ends_with(".completion_cache"));
+        assert!(path_str.ends_with(".completion_cache.work"));
+        assert_ne!(cache_path("work"), cache_path("personal"));
     }
 
     #[test]
-    fn test_write_and_read_cache() {
-        let _guard = cache_file_guard();
+    fn test_write_and_read_cache_for_vault() {
         let entries = vec![
             "github".to_string(),
             "google".to_string(),
             "alice".to_string(),
         ];
-        // Write to the real cache path (we'll restore later)
-        let path = cache_path();
+        let path = cache_path("test-write-and-read");
         let backup = fs::read_to_string(&path).ok();
 
-        write_cache(&entries).unwrap();
-        let result = read_cache();
-        assert_eq!(result, entries);
+        write_cache(&path, &entries).unwrap();
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let read: Vec<String> = contents
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect();
+                assert_eq!(read, entries);
+            }
+            Err(e) => panic!("expected cache file to exist: {}", e),
+        }
 
         // Restore original or clean up
         match backup {
             Some(content) => fs::write(&path, content).unwrap(),
-            None => { let _ = fs::remove_file(&path); }
+            None => {
+                let _ = fs::remove_file(&path);
+            }
         }
     }
 
     #[test]
-    fn test_clear_cache_no_error_when_missing() {
-        let _guard = cache_file_guard();
+    fn test_clear_cache_for_missing_vault_no_error() {
         // Should not panic even if file doesn't exist
-        clear_cache();
+        clear_cache_for("test-clear-missing");
     }
 
     #[test]
@@ -229,13 +226,6 @@ mod tests {
         pairs.insert("github:alice".to_string()); // duplicate
         pairs.insert("github:bob".to_string());
         let result: Vec<String> = pairs.into_iter().collect();
-        assert_eq!(result, vec!["github:alice", "github:bob"]);
-    }
-
-    #[test]
-    fn test_refresh_if_stale_no_panic_when_no_cache() {
-        let _guard = cache_file_guard();
-        // Should silently return when cache file doesn't exist
-        refresh_if_stale();
+        assert_eq!(result, vec!["github:alice".to_string(), "github:bob".to_string()]);
     }
 }

@@ -6,7 +6,6 @@ use clap_complete::{generate, Shell};
 
 use crate::actions::Action;
 use crate::completion_cache;
-use crate::store;
 use crate::vault::entities::Error;
 
 pub struct CompletionsAction {
@@ -73,32 +72,37 @@ fn rc_file(shell: Shell) -> &'static str {
     }
 }
 
-/// Try to open the vault and generate the completion cache.
-/// Uses keychain password if available, otherwise prompts the user.
+/// Try to open the current vault and generate its completion cache.
+/// Uses the keychain password if available, otherwise prompts the user.
 fn generate_cache() -> Result<usize, Error> {
     use crate::keychain;
     use crate::ui::input::ask_master_password;
     use crate::vault::keepass_vault::KeepassVault;
     use crate::vault::vault_trait::{PasswordVault, Vault};
 
-    let master_pwd = match keychain::get_master_password() {
+    let config = crate::vault_registry::current()?;
+    let master_pwd = match keychain::get_master_password(&config.name) {
         Ok(pwd) => pwd,
         Err(_) => {
-            println!("\nTo enable dynamic completions, enter your vault master password.");
+            println!(
+                "\nTo enable dynamic completions, enter the master password of vault '{}'.",
+                config.name
+            );
             println!("(This is only used to read service names — the password is not stored.)\n");
             ask_master_password(None)
         }
     };
+    let challenge_response = config
+        .hwkey
+        .as_ref()
+        .map(crate::hwkey::configured_challenge_response_key)
+        .transpose()?;
 
-    let filepath = store::get_vault_path();
-    let keyfile_path = store::get_keyfile_path();
-    let challenge_response = crate::hwkey::configured_challenge_response_key()?;
-
-    println!("Opening vault to build completion cache...");
+    println!("Opening vault '{}' to build completion cache...", config.name);
     let vault = KeepassVault::open(
         &master_pwd,
-        &filepath,
-        keyfile_path,
+        &config.path,
+        config.keyfile,
         challenge_response.as_ref(),
     )?;
     let count = vault.grep(None).len();
@@ -107,11 +111,23 @@ fn generate_cache() -> Result<usize, Error> {
     Ok(count)
 }
 
-fn cache_file_path() -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|| "~".to_string());
-    format!("{}/.passlane/.completion_cache", home)
+/// Shell expression that resolves the active vault's completion cache at
+/// completion time — the active vault can change between shell invocations.
+/// Falls back to the migrated 'default' vault when no active vault is set.
+fn cache_file_expr(shell: Shell) -> String {
+    match shell {
+        // Command substitution inside double quotes evaluates at completion
+        // time in bash and zsh.
+        Shell::Bash | Shell::Zsh => {
+            r#"$HOME/.passlane/.completion_cache.$(cat "$HOME/.passlane/.active_vault" 2>/dev/null || echo default)"#
+                .to_string()
+        }
+        Shell::Fish => {
+            r#"~/.passlane/.completion_cache.(cat ~/.passlane/.active_vault 2>/dev/null; or echo default)"#
+                .to_string()
+        }
+        _ => String::new(),
+    }
 }
 
 /// Post-process the generated completion script to replace default/file completions
@@ -119,7 +135,7 @@ fn cache_file_path() -> String {
 fn patch_script(shell: Shell, script: &str) -> String {
     match shell {
         Shell::Zsh => patch_zsh(script),
-        Shell::Bash => patch_bash(script),
+        Shell::Bash => patch_bash(script, &cache_file_expr(shell)),
         Shell::Fish => patch_fish(script),
         _ => script.to_string(),
     }
@@ -142,8 +158,7 @@ fn patch_zsh(script: &str) -> String {
         .join("\n")
 }
 
-fn patch_bash(script: &str) -> String {
-    let cache_path = cache_file_path();
+fn patch_bash(script: &str, cache_path: &str) -> String {
     // In bash completions, each subcommand case ends with:
     //   COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
     //   return 0
@@ -222,7 +237,7 @@ fn patch_fish(script: &str) -> String {
 }
 
 fn dynamic_completion_script(shell: Shell) -> String {
-    let cache_path = cache_file_path();
+    let cache_path = cache_file_expr(shell);
     match shell {
         Shell::Zsh => format!(
             r#"
@@ -307,7 +322,7 @@ impl Action for CompletionsAction {
         let source_cmd = source_command(shell, &path_str);
 
         // Try to generate the completion cache so dynamic completions work immediately
-        let cache_msg = if store::has_vault_path() {
+        let cache_msg = if crate::vault_registry::current().is_ok() {
             match generate_cache() {
                 Ok(count) => format!("\nCompletion cache created with {} entries.", count),
                 Err(e) => format!("\nNote: Could not create completion cache: {}", e),
@@ -403,7 +418,7 @@ mod tests {
                     ;;
             esac
             ;;"#;
-        let result = patch_bash(input);
+        let result = patch_bash(input, "$HOME/.passlane/.completion_cache.work");
         // show section should have cache-based COMPREPLY
         assert!(result.contains("completion_cache"));
         // add section should still have original COMPREPLY
@@ -455,6 +470,18 @@ complete -c passlane -n "__fish_seen_subcommand_from add" -F"#;
         assert_eq!(completions_filename(Shell::Bash), "completions.bash");
         assert_eq!(completions_filename(Shell::Zsh), "completions.zsh");
         assert_eq!(completions_filename(Shell::Fish), "completions.fish");
+    }
+
+    #[test]
+    fn test_cache_file_expr_resolves_active_vault() {
+        let bash = cache_file_expr(Shell::Bash);
+        assert!(bash.contains(".active_vault"));
+        assert!(bash.contains("|| echo default"));
+        let zsh = cache_file_expr(Shell::Zsh);
+        assert!(zsh.contains(".active_vault"));
+        let fish = cache_file_expr(Shell::Fish);
+        assert!(fish.contains(".active_vault"));
+        assert!(fish.contains("; or echo default"));
     }
 
     #[test]

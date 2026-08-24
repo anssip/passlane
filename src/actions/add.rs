@@ -1,4 +1,4 @@
-use crate::actions::{copy_to_clipboard_timed, unlock, unlock_totp_vault, Action, ItemType};
+use crate::actions::{copy_to_clipboard_timed, unlock, Action, ItemType};
 use crate::completion_cache;
 use crate::vault::entities::Error;
 use crate::vault::vault_trait::Vault;
@@ -10,7 +10,6 @@ pub struct AddAction {
     pub generate: bool,
     pub clipboard: bool,
     pub item_type: ItemType,
-    pub is_totp: bool,
 }
 
 impl AddAction {
@@ -19,7 +18,6 @@ impl AddAction {
             generate: matches.get_one::<bool>("generate").map_or(false, |v| *v),
             clipboard: matches.get_one::<bool>("clipboard").map_or(false, |v| *v),
             item_type: ItemType::new_from_args(matches),
-            is_totp: matches.get_one::<bool>("otp").map_or(false, |v| *v),
         }
     }
     fn password_from_clipboard(&self) -> Result<String, Error> {
@@ -43,11 +41,7 @@ impl AddAction {
         }
     }
     fn get_vault(&self) -> Result<Box<dyn Vault>, Error> {
-        if self.is_totp {
-            unlock_totp_vault()
-        } else {
-            unlock()
-        }
+        unlock()
     }
     fn add_credential(&self) -> Result<String, Error> {
         let password = self.get_password()?;

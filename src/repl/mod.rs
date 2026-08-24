@@ -16,10 +16,11 @@ use crate::actions::import::ImportCsvAction;
 use crate::actions::init::InitAction;
 use crate::actions::lock::LockAction;
 use crate::actions::unlock::UnlockAction;
+use crate::actions::vault::{VaultAction, VaultCommand};
 use crate::actions::show::ShowAction;
 use crate::actions::{Action, ItemType, UnlockingAction};
 use crate::completion_cache;
-use crate::{keychain, store};
+use crate::vault_registry;
 
 use commands::{parse_input, ReplCommand};
 use completer::ReplHelper;
@@ -51,7 +52,8 @@ fn print_banner() {
 
 pub fn start_repl() {
     // First-run detection
-    if !store::has_vault_path() {
+    let no_vaults = vault_registry::load().map(|vaults| vaults.is_empty()).unwrap_or(true);
+    if no_vaults {
         println!("Welcome to Passlane! No vault configured — let's set one up.\n");
         let init = InitAction {};
         match init.run() {
@@ -138,19 +140,18 @@ fn is_vault_modifying(command: &ReplCommand) -> bool {
             | ReplCommand::Edit { .. }
             | ReplCommand::Delete { .. }
             | ReplCommand::Import { .. }
-            | ReplCommand::Unlock { .. }
+            | ReplCommand::Unlock
+            | ReplCommand::VaultUse { .. }
     )
 }
 
 fn dispatch(command: ReplCommand) -> Result<(), String> {
     match command {
         ReplCommand::Show { item_type, grep } => {
-            let is_totp = item_type == ItemType::Totp;
             let action = ShowAction {
                 grep,
                 verbose: false,
                 item_type,
-                is_totp,
                 stdout_only: false,
                 plain: false,
                 once: false,
@@ -162,12 +163,10 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Add { item_type } => {
-            let is_totp = item_type == ItemType::Totp;
             let action = AddAction {
                 generate: false,
                 clipboard: false,
                 item_type,
-                is_totp,
             };
             match action.run() {
                 Ok(msg) => println!("{}", msg),
@@ -178,11 +177,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             if item_type == ItemType::Credential && grep.is_none() {
                 return Err("Usage: edit <pattern> — a search pattern is required for credentials".to_string());
             }
-            let is_totp = item_type == ItemType::Totp;
             let action = EditAction {
                 grep,
                 item_type,
-                is_totp,
             };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
@@ -194,11 +191,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             if item_type == ItemType::Credential && grep.is_none() {
                 return Err("Usage: delete <pattern> — a search pattern is required for credentials".to_string());
             }
-            let is_totp = item_type == ItemType::Totp;
             let action = DeleteAction {
                 grep,
                 item_type,
-                is_totp,
             };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
@@ -237,16 +232,42 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Lock => {
-            let action = LockAction {};
+            let action = LockAction::new(false);
             match action.run() {
                 Ok(msg) => println!("{}", msg),
                 Err(e) => return Err(e.message),
             }
         }
-        ReplCommand::Unlock { totp } => {
-            let action = UnlockAction { totp };
+        ReplCommand::Unlock => {
+            let action = UnlockAction::new();
             match action.run() {
                 Ok(msg) => println!("{}", msg),
+                Err(e) => return Err(e.message),
+            }
+        }
+        ReplCommand::VaultList => {
+            let action = VaultAction {
+                command: VaultCommand::List,
+            };
+            match action.run() {
+                Ok(msg) => println!("{}", msg),
+                Err(e) => return Err(e.message),
+            }
+        }
+        ReplCommand::VaultUse { name } => {
+            let action = VaultAction {
+                command: VaultCommand::Use { name: name.clone() },
+            };
+            match action.run() {
+                Ok(msg) => {
+                    println!("{}", msg);
+                    // The rest of this REPL session now works on the new
+                    // active vault.
+                    match vault_registry::resolve(Some(&name)) {
+                        Ok(vault) => vault_registry::set_current(vault),
+                        Err(e) => return Err(e.message),
+                    }
+                }
                 Err(e) => return Err(e.message),
             }
         }
@@ -258,6 +279,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         }
         ReplCommand::Help { command } => {
             help::print_help(command.as_deref());
+        }
+        ReplCommand::Hint(message) => {
+            println!("{}", message);
         }
         ReplCommand::Unknown(cmd) => {
             return Err(format!("Unknown command: '{}'. Type 'help' for available commands.", cmd));
@@ -292,12 +316,27 @@ Note: the REPL already has built-in tab completion for commands and types."#;
 }
 
 fn print_status() {
-    let vault_path = store::get_vault_path();
-    let totp_vault_path = store::get_totp_vault_path();
-
-    let vault_unlocked = keychain::get_master_password().is_ok();
-    let totp_unlocked = keychain::get_totp_master_password().is_ok();
-
-    println!("Vault:      {} ({})", vault_path, if vault_unlocked { "unlocked" } else { "locked" });
-    println!("TOTP Vault: {} ({})", totp_vault_path, if totp_unlocked { "unlocked" } else { "locked" });
+    let vaults = match vault_registry::load() {
+        Ok(vaults) if !vaults.is_empty() => vaults,
+        _ => {
+            println!("No vaults configured. Run 'init' to create one.");
+            return;
+        }
+    };
+    let active = vault_registry::get_active();
+    for vault in &vaults {
+        let unlocked = crate::keychain::get_master_password(&vault.name).is_ok();
+        let marker = if active.as_deref() == Some(vault.name.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        println!(
+            "{} {:<12} {} ({})",
+            marker,
+            vault.name,
+            vault.path,
+            if unlocked { "unlocked" } else { "locked" }
+        );
+    }
 }
