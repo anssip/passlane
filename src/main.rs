@@ -298,19 +298,28 @@ fn main() {
     // works on the same vault. An explicitly named vault must resolve or the
     // command aborts; the implicit (active) vault may be missing for commands
     // like init or gen, which surface the error later via current().
-    // Vault-management and vault-independent commands are exempt: a stale
-    // --vault/PASSLANE_VAULT name must not lock the user out of the very
-    // commands ('vault list', 'vault add', 'init') that fix the situation.
-    let needs_vault = !matches!(
-        matches.subcommand().map(|(name, _)| name),
-        Some("vault" | "init" | "gen" | "completions")
-    );
+    // Vault-management commands, vault-independent commands and the REPL are
+    // exempt: a stale --vault/PASSLANE_VAULT name must not lock the user out
+    // of the very commands ('vault list', 'vault add', 'init') that fix the
+    // situation — and inside the REPL, 'vault use <name>' recovers. Exempted
+    // commands fall back to the active (or only) vault when the explicit
+    // name doesn't resolve.
+    let subcommand = matches.subcommand().map(|(name, _)| name);
+    let is_bare_repl = subcommand.is_none() && env::args().len() == 1;
+    let needs_vault =
+        !matches!(subcommand, Some("vault" | "init" | "gen" | "completions" | "repl"))
+            && !is_bare_repl;
     if let Some(name) = explicit_vault(&matches) {
         if let Err(e) = vault_registry::init_current(Some(name.as_str())) {
             if needs_vault {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
+            eprintln!(
+                "Warning: ignoring the unknown vault '{}' — using the active vault instead.",
+                name
+            );
+            let _ = vault_registry::init_current(None);
         }
     } else {
         let _ = vault_registry::init_current(None);

@@ -60,6 +60,9 @@ pub fn start_repl() {
             Ok(msg) => println!("{}", msg),
             Err(e) => eprintln!("Init error: {}", e),
         }
+        // The session was resolved before the first vault existed; pick up
+        // the vault init just created so the following commands work on it.
+        let _ = vault_registry::init_current(None);
         println!();
     }
 
