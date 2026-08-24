@@ -78,6 +78,12 @@ pub fn find<'a>(vaults: &'a [VaultConfig], name: &str) -> Option<&'a VaultConfig
 }
 
 fn unknown_vault_error(name: &str, vaults: &[VaultConfig]) -> Error {
+    if vaults.is_empty() {
+        return Error::new(
+            "No vaults are configured. Run 'passlane init' to create one, \
+             or 'passlane vault add' to register an existing vault file.",
+        );
+    }
     let names: Vec<&str> = vaults.iter().map(|v| v.name.as_str()).collect();
     Error::new(&format!(
         "No vault named '{}'. Configured vaults: {}. \
@@ -727,6 +733,16 @@ mod tests {
         // Unknown explicit name lists the configured vaults.
         let err = resolve_from(dir.path(), Some("nope")).unwrap_err();
         assert!(err.message.contains("work, home"));
+    }
+
+    #[test]
+    fn unknown_vault_on_empty_registry_gives_setup_guidance() {
+        let dir = tempdir().unwrap();
+        let err = resolve_from(dir.path(), Some("ghost")).unwrap_err();
+        assert!(err.message.contains("passlane init"), "{}", err.message);
+        assert!(!err.message.contains("Configured vaults: ."), "{}", err.message);
+        let err = set_active_to(dir.path(), "ghost").unwrap_err();
+        assert!(err.message.contains("passlane vault add"), "{}", err.message);
     }
 
     #[test]

@@ -298,16 +298,22 @@ fn main() {
     // works on the same vault. An explicitly named vault must resolve or the
     // command aborts; the implicit (active) vault may be missing for commands
     // like init or gen, which surface the error later via current().
-    match explicit_vault(&matches) {
-        Some(name) => {
-            if let Err(e) = vault_registry::init_current(Some(name.as_str())) {
+    // Vault-management and vault-independent commands are exempt: a stale
+    // --vault/PASSLANE_VAULT name must not lock the user out of the very
+    // commands ('vault list', 'vault add', 'init') that fix the situation.
+    let needs_vault = !matches!(
+        matches.subcommand().map(|(name, _)| name),
+        Some("vault" | "init" | "gen" | "completions")
+    );
+    if let Some(name) = explicit_vault(&matches) {
+        if let Err(e) = vault_registry::init_current(Some(name.as_str())) {
+            if needs_vault {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
         }
-        None => {
-            let _ = vault_registry::init_current(None);
-        }
+    } else {
+        let _ = vault_registry::init_current(None);
     }
     completion_cache::refresh_if_stale();
 
