@@ -79,7 +79,10 @@ pub fn find<'a>(vaults: &'a [VaultConfig], name: &str) -> Option<&'a VaultConfig
     vaults.iter().find(|v| v.name == name)
 }
 
-fn unknown_vault_error(name: &str, vaults: &[VaultConfig]) -> Error {
+/// The standard unknown-vault error: setup guidance when the registry is
+/// empty, the configured names otherwise. Shared with the vault-management
+/// actions so their messages stay consistent.
+pub fn unknown_vault_error(name: &str, vaults: &[VaultConfig]) -> Error {
     if vaults.is_empty() {
         return Error::new(
             "No vaults are configured. Run 'passlane init' to create one, \

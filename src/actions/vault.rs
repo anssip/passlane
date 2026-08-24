@@ -132,11 +132,7 @@ impl VaultAction {
     fn remove(&self, name: &str) -> Result<String, Error> {
         let vaults = vault_registry::load()?;
         if vault_registry::find(&vaults, name).is_none() {
-            return Err(Error::new(&format!(
-                "No vault named '{}'. Configured vaults: {}",
-                name,
-                vault_names(&vaults)
-            )));
+            return Err(vault_registry::unknown_vault_error(name, &vaults));
         }
         if !ask_remove_vault(name) {
             return Ok("Aborted".to_string());
@@ -194,13 +190,9 @@ impl VaultAction {
         let config = match name {
             Some(name) => {
                 let vaults = vault_registry::load()?;
-                vault_registry::find(&vaults, name).cloned().ok_or_else(|| {
-                    Error::new(&format!(
-                        "No vault named '{}'. Configured vaults: {}",
-                        name,
-                        vault_names(&vaults)
-                    ))
-                })?
+                vault_registry::find(&vaults, name)
+                    .cloned()
+                    .ok_or_else(|| vault_registry::unknown_vault_error(name, &vaults))?
             }
             None => vault_registry::current()?,
         };

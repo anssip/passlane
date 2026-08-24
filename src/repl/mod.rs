@@ -51,9 +51,17 @@ fn print_banner() {
 }
 
 pub fn start_repl() {
-    // First-run detection
-    let no_vaults = vault_registry::load().map(|vaults| vaults.is_empty()).unwrap_or(true);
-    if no_vaults {
+    // First-run detection. A registry that exists but cannot be read must
+    // not be mistaken for a fresh install — surface the error instead of
+    // offering init over a possibly corrupt configuration.
+    let vaults = match vault_registry::load() {
+        Ok(vaults) => vaults,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return;
+        }
+    };
+    if vaults.is_empty() {
         println!("Welcome to Passlane! No vault configured — let's set one up.\n");
         let init = InitAction {};
         match init.run() {
