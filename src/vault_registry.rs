@@ -42,6 +42,8 @@ pub struct VaultConfig {
     /// registration time (see `absolutize`).
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Stored absolute like `path`: a relative keyfile would resolve against
+    /// whatever directory passlane runs from.
     pub keyfile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwkey: Option<HwKeyConfig>,
@@ -311,6 +313,7 @@ pub fn set_active_to(dir: &Path, name: &str) -> Result<(), Error> {
 pub fn add_vault_to(dir: &Path, mut config: VaultConfig) -> Result<(), Error> {
     validate_name(&config.name)?;
     config.path = absolutize(&config.path);
+    config.keyfile = config.keyfile.as_deref().map(absolutize);
     let mut vaults = load_from(dir)?;
     if find(&vaults, &config.name).is_some() {
         return Err(Error::new(&format!(
@@ -498,7 +501,7 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 &read_trimmed(dir, ".vault_path")
                     .unwrap_or_else(|| dir.join("store.kdbx").to_string_lossy().to_string()),
             ),
-            keyfile: read_trimmed(dir, ".keyfile_path"),
+            keyfile: read_trimmed(dir, ".keyfile_path").as_deref().map(absolutize),
             hwkey: read_legacy_hwkey(dir)?,
         });
     }
@@ -509,7 +512,7 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 &read_trimmed(dir, ".totp_vault_path")
                     .unwrap_or_else(|| dir.join("totp.kdbx").to_string_lossy().to_string()),
             ),
-            keyfile: read_trimmed(dir, ".totp_keyfile_path"),
+            keyfile: read_trimmed(dir, ".totp_keyfile_path").as_deref().map(absolutize),
             hwkey: None,
         });
     }
@@ -902,6 +905,37 @@ mod tests {
         let vaults = load_from(dir.path()).unwrap();
         assert!(Path::new(&vaults[0].path).is_absolute());
         assert!(vaults[0].path.ends_with("some/vault.kdbx"));
+    }
+
+    #[test]
+    fn add_vault_to_stores_absolute_keyfile() {
+        let dir = tempdir().unwrap();
+        add_vault_to(
+            dir.path(),
+            VaultConfig {
+                name: "rel".to_string(),
+                path: "/abs/vault.kdbx".to_string(),
+                keyfile: Some("keys/keyfile".to_string()),
+                hwkey: None,
+            },
+        )
+        .unwrap();
+        let vaults = load_from(dir.path()).unwrap();
+        let keyfile = Path::new(vaults[0].keyfile.as_deref().unwrap());
+        assert!(keyfile.is_absolute());
+        assert!(keyfile.ends_with("keys/keyfile"));
+    }
+
+    #[test]
+    fn migrate_makes_relative_keyfile_absolute() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".vault_path", "/old/store.kdbx\n");
+        write(dir.path(), ".keyfile_path", "keys/keyfile\n");
+        migrate_files_from(dir.path()).unwrap();
+        let vaults = load_from(dir.path()).unwrap();
+        let keyfile = Path::new(vaults[0].keyfile.as_deref().unwrap());
+        assert!(keyfile.is_absolute());
+        assert!(keyfile.ends_with("keys/keyfile"));
     }
 
     #[test]

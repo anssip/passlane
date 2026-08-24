@@ -716,7 +716,13 @@ pub fn ask_path(
     default_filename: &str,
     help_message: Option<&str>,
 ) -> String {
-    let location = ask_with_initial(question, Some(default_answer), help_message);
+    // Expand ~ and make the answer absolute: the registry stores absolute
+    // paths, and Path-based validation below cannot resolve a raw "~".
+    let location = crate::vault_registry::absolutize(&ask_with_initial(
+        question,
+        Some(default_answer),
+        help_message,
+    ));
     if !parent_path_exists(&location) {
         println!("'{}' does not exist, please try again", &location);
         ask_path(question, default_answer, default_filename, help_message)
@@ -726,9 +732,13 @@ pub fn ask_path(
 }
 
 pub fn ask_existing_path() -> String {
-    let location = ask_with_initial("Enter path to existing vault file", None, None);
+    let location = crate::vault_registry::absolutize(&ask_with_initial(
+        "Enter path to existing vault file",
+        None,
+        None,
+    ));
     if !Path::new(&location).is_file() {
-        println!("File '{}' does not exist, please try again", &location);
+        println!("File '{}' does not exist, please try again", location);
         ask_existing_path()
     } else {
         location
@@ -769,6 +779,7 @@ pub fn ask_keyfile_path(current_path: Option<&str>) -> Option<String> {
         Some("The keyfile should be created with KeepassXC. To learn more about keyfiles, visit: https://keepass.info/help/base/keys.html#keyfiles"),
         true,
     )
+    .map(|path| crate::vault_registry::absolutize(&path))
 }
 
 pub fn newline() {
