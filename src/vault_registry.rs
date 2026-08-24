@@ -37,7 +37,9 @@ const LEGACY_CONFIG_FILES: [&str; 5] = [
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub name: String,
-    /// Absolute path of the kdbx file.
+    /// Path of the kdbx file. Stored absolute — passlane expands `~` and
+    /// resolves relative input against the working directory at
+    /// registration time (see `absolutize`).
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyfile: Option<String>,
@@ -184,21 +186,74 @@ pub fn save_to(dir: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
         out.flush()?;
     }
     // rename replaces the destination on Unix and (via MoveFileEx) on
-    // Windows; fall back to an explicit replace if a platform still
-    // refuses. The temp file survives a failed rename, so the new content
-    // is never lost — mention it for manual recovery.
-    if fs::rename(&tmp, &path).is_err() {
-        let _ = fs::remove_file(&path);
-        fs::rename(&tmp, &path).map_err(|e| {
-            Error::new(&format!(
+    // Windows; fall back to a two-step swap for platforms that refuse. The
+    // previous registry is only given up once the new one is in place, and
+    // the temp file always holds the new content for manual recovery.
+    if let Err(e) = fs::rename(&tmp, &path) {
+        if !path.exists() {
+            return Err(Error::new(&format!(
                 "Could not save {}: {}. The new content is preserved in {}.",
                 path.display(),
                 e,
                 tmp.display()
+            )));
+        }
+        let backup = dir.join(format!("{}.{}.bak", REGISTRY_FILENAME, std::process::id()));
+        fs::rename(&path, &backup).map_err(|swap_err| {
+            Error::new(&format!(
+                "Could not save {}: {}; moving the existing registry aside failed: {}. \
+                 The new content is preserved in {}.",
+                path.display(),
+                e,
+                swap_err,
+                tmp.display()
             ))
         })?;
+        if let Err(place_err) = fs::rename(&tmp, &path) {
+            let restore_result = fs::rename(&backup, &path);
+            return Err(Error::new(&format!(
+                "Could not save {}: {}. {}",
+                path.display(),
+                place_err,
+                match restore_result {
+                    Ok(()) => format!(
+                        "The previous registry is unchanged; the new content is preserved in {}.",
+                        tmp.display()
+                    ),
+                    Err(restore_err) => format!(
+                        "Restoring the previous registry also failed: {}; it is preserved in {}.",
+                        restore_err,
+                        backup.display()
+                    ),
+                }
+            )));
+        }
+        let _ = fs::remove_file(&backup);
     }
     Ok(())
+}
+
+/// Vault paths are stored absolute: a relative path (typed at a prompt or
+/// found in a legacy config file) would otherwise resolve against whatever
+/// directory passlane happens to run from. A leading `~` is expanded to the
+/// home directory.
+pub(crate) fn absolutize(path: &str) -> String {
+    let trimmed = path.trim();
+    let expanded = if trimmed == "~" {
+        dirs::home_dir().map(|h| h.to_string_lossy().to_string())
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir().map(|h| h.join(rest).to_string_lossy().to_string())
+    } else {
+        None
+    };
+    let candidate = expanded.unwrap_or_else(|| trimmed.to_string());
+    if Path::new(&candidate).is_absolute() {
+        candidate
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&candidate).to_string_lossy().to_string())
+            .unwrap_or(candidate)
+    }
 }
 
 pub fn get_active_from(dir: &Path) -> Option<String> {
@@ -241,8 +296,9 @@ pub fn set_active_to(dir: &Path, name: &str) -> Result<(), Error> {
     write_active_to(dir, Some(name))
 }
 
-pub fn add_vault_to(dir: &Path, config: VaultConfig) -> Result<(), Error> {
+pub fn add_vault_to(dir: &Path, mut config: VaultConfig) -> Result<(), Error> {
     validate_name(&config.name)?;
+    config.path = absolutize(&config.path);
     let mut vaults = load_from(dir)?;
     if find(&vaults, &config.name).is_some() {
         return Err(Error::new(&format!(
@@ -410,8 +466,10 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
         };
         vaults.push(VaultConfig {
             name: LEGACY_MAIN_VAULT_NAME.to_string(),
-            path: read_trimmed(dir, ".vault_path")
-                .unwrap_or_else(|| dir.join("store.kdbx").to_string_lossy().to_string()),
+            path: absolutize(
+                &read_trimmed(dir, ".vault_path")
+                    .unwrap_or_else(|| dir.join("store.kdbx").to_string_lossy().to_string()),
+            ),
             keyfile: read_trimmed(dir, ".keyfile_path"),
             hwkey,
         });
@@ -419,8 +477,10 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
     if totp_configured {
         vaults.push(VaultConfig {
             name: LEGACY_TOTP_VAULT_NAME.to_string(),
-            path: read_trimmed(dir, ".totp_vault_path")
-                .unwrap_or_else(|| dir.join("totp.kdbx").to_string_lossy().to_string()),
+            path: absolutize(
+                &read_trimmed(dir, ".totp_vault_path")
+                    .unwrap_or_else(|| dir.join("totp.kdbx").to_string_lossy().to_string()),
+            ),
             keyfile: read_trimmed(dir, ".totp_keyfile_path"),
             hwkey: None,
         });
@@ -771,5 +831,49 @@ mod tests {
         let main = find(&vaults, "default").unwrap();
         assert!(main.path.ends_with("store.kdbx"));
         assert_eq!(main.keyfile.as_deref(), Some("/old/keyfile"));
+    }
+
+    #[test]
+    fn absolutize_resolves_relative_and_home_paths() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            Path::new(&absolutize("vaults/x.kdbx")),
+            cwd.join("vaults/x.kdbx")
+        );
+        assert_eq!(absolutize("/abs/store.kdbx"), "/abs/store.kdbx");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            Path::new(&absolutize("~/store.kdbx")),
+            home.join("store.kdbx")
+        );
+    }
+
+    #[test]
+    fn add_vault_to_stores_absolute_path() {
+        let dir = tempdir().unwrap();
+        add_vault_to(
+            dir.path(),
+            VaultConfig {
+                name: "rel".to_string(),
+                path: "some/vault.kdbx".to_string(),
+                keyfile: None,
+                hwkey: None,
+            },
+        )
+        .unwrap();
+        let vaults = load_from(dir.path()).unwrap();
+        assert!(Path::new(&vaults[0].path).is_absolute());
+        assert!(vaults[0].path.ends_with("some/vault.kdbx"));
+    }
+
+    #[test]
+    fn migrate_makes_relative_legacy_paths_absolute() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".vault_path", "relative/store.kdbx\n");
+        let names = migrate_files_from(dir.path()).unwrap().unwrap();
+        assert_eq!(names, vec!["default"]);
+        let vaults = load_from(dir.path()).unwrap();
+        assert!(Path::new(&vaults[0].path).is_absolute());
+        assert!(vaults[0].path.ends_with("relative/store.kdbx"));
     }
 }
