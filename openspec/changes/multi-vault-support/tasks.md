@@ -40,7 +40,7 @@
 - [x] 6.1 `setup_vault` shared by `init` and `vault add`: name validation, new/existing choice, default path `~/.passlane/<name>.kdbx`, keyfile, password prompts, existing-vault open-verification, optional hwkey enrollment with registry-rollback
 - [x] 6.2 `init`: no-op message when vaults exist; otherwise first-vault setup
 - [x] 6.3 `vault remove`: confirmation, keychain + cache cleanup, active-pointer handover; never deletes vault files
-- [x] 6.4 `vault rename`: keychain entry move before registry rename; active pointer follows
+- [x] 6.4 `vault rename`: preconditions validated up front (check_rename); registry renamed before the keychain entry move, so a keychain failure degrades to a one-time re-prompt instead of orphaning the stored password; active pointer follows
 
 ## 7. Completion cache & REPL
 

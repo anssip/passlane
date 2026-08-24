@@ -127,7 +127,41 @@ pub fn load_from(dir: &Path) -> Result<Vec<VaultConfig>, Error> {
             file.version
         )));
     }
+    validate_entries(&path, &file.vaults)?;
     Ok(file.vaults)
+}
+
+/// The registry is normally only written by passlane, but it is a
+/// hand-editable JSON file and vault names end up in keychain account names
+/// and completion-cache filenames — so entries are validated on load too.
+fn validate_entries(path: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for vault in vaults {
+        if let Err(e) = validate_name(&vault.name) {
+            return Err(Error::new(&format!(
+                "{}: vault entry '{}' has an invalid name ({}). \
+                 Fix the file or remove the entry.",
+                path.display(),
+                vault.name,
+                e.message
+            )));
+        }
+        if vault.path.trim().is_empty() {
+            return Err(Error::new(&format!(
+                "{}: vault '{}' has no path. Fix the file or remove the entry.",
+                path.display(),
+                vault.name
+            )));
+        }
+        if !seen.insert(vault.name.as_str()) {
+            return Err(Error::new(&format!(
+                "{}: more than one vault named '{}'. Fix the file or remove the duplicate.",
+                path.display(),
+                vault.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Save the registry atomically (temp file + rename) so a crash mid-write
@@ -138,7 +172,10 @@ pub fn save_to(dir: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
         vaults: vaults.to_vec(),
     };
     let path = registry_path(dir);
-    let tmp = dir.join(format!("{}.tmp", REGISTRY_FILENAME));
+    // The temp name is unique per process: concurrent passlane invocations
+    // must not fight over one temp file. Each rename then atomically
+    // replaces the previous registry (last writer wins).
+    let tmp = dir.join(format!("{}.{}.tmp", REGISTRY_FILENAME, std::process::id()));
     let content = serde_json::to_string_pretty(&file)?;
     {
         use std::io::Write;
@@ -146,8 +183,22 @@ pub fn save_to(dir: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
         out.write_all(content.as_bytes())?;
         out.flush()?;
     }
-    fs::rename(&tmp, &path)
-        .map_err(|e| Error::new(&format!("Could not save {}: {}", path.display(), e)))
+    // rename replaces the destination on Unix and (via MoveFileEx) on
+    // Windows; fall back to an explicit replace if a platform still
+    // refuses. The temp file survives a failed rename, so the new content
+    // is never lost — mention it for manual recovery.
+    if fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&path);
+        fs::rename(&tmp, &path).map_err(|e| {
+            Error::new(&format!(
+                "Could not save {}: {}. The new content is preserved in {}.",
+                path.display(),
+                e,
+                tmp.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 pub fn get_active_from(dir: &Path) -> Option<String> {
@@ -507,6 +558,48 @@ mod tests {
         ];
         save_to(dir.path(), &vaults).unwrap();
         assert_eq!(load_from(dir.path()).unwrap(), vaults);
+        // Saving again must replace the existing registry, not fail on it.
+        save_to(dir.path(), &vaults).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), vaults);
+        // Temp files must not linger next to the registry.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("vaults.json."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {:?}", leftovers);
+    }
+
+    #[test]
+    fn load_rejects_hand_edited_registry_entries() {
+        let dir = tempdir().unwrap();
+        let path = registry_path(dir.path());
+        // Unsafe name: path separators would leak into keychain accounts and
+        // completion-cache filenames.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"../evil","path":"/x.kdbx"}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("../evil"), "{}", err.message);
+
+        // Duplicate names.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx"},{"name":"a","path":"/b.kdbx"}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("more than one vault named 'a'"), "{}", err.message);
+
+        // Missing path.
+        std::fs::write(&path, r#"{"version":1,"vaults":[{"name":"a","path":""}]}"#).unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("has no path"), "{}", err.message);
+
+        // Every error points the user at the registry file.
+        assert!(err.message.contains(path.file_name().unwrap().to_string_lossy().as_ref()));
     }
 
     #[test]
