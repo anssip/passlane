@@ -178,7 +178,13 @@ pub fn save_to(dir: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
     // must not fight over one temp file. Each rename then atomically
     // replaces the previous registry (last writer wins).
     let tmp = dir.join(format!("{}.{}.tmp", REGISTRY_FILENAME, std::process::id()));
-    let content = serde_json::to_string_pretty(&file)?;
+    let content = serde_json::to_string_pretty(&file).map_err(|e| {
+        Error::new(&format!(
+            "Could not serialize the vault registry {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
     {
         use std::io::Write;
         let mut out = store::create_private_file(&tmp)?;
@@ -441,6 +447,26 @@ fn read_trimmed(dir: &Path, filename: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Read the legacy `~/.passlane/.hwkey` enrollment. A file that exists but
+/// cannot be read is a hard error: migrating the vault without the factor
+/// would let passlane drop it from every future unlock, locking the user out
+/// of a hardware-key-protected vault with a misleading wrong-password error.
+fn read_legacy_hwkey(dir: &Path) -> Result<Option<HwKeyConfig>, Error> {
+    let path = dir.join(".hwkey");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|e| {
+        Error::new(&format!(
+            "The hardware key config {} exists but cannot be read: {}. \
+             Fix its permissions and run passlane again to retry the migration.",
+            path.display(),
+            e
+        ))
+    })?;
+    Ok(Some(HwKeyConfig::parse(&content)?))
+}
+
 /// Migrate the pre-multi-vault dot-files into the registry. Pure file work,
 /// no keychain access, so it is unit-testable. Returns the names of the
 /// vaults created, or None when there was nothing to migrate.
@@ -460,10 +486,6 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
 
     let mut vaults = Vec::new();
     if main_configured {
-        let hwkey = match read_trimmed(dir, ".hwkey") {
-            Some(content) => Some(HwKeyConfig::parse(&content)?),
-            None => None,
-        };
         vaults.push(VaultConfig {
             name: LEGACY_MAIN_VAULT_NAME.to_string(),
             path: absolutize(
@@ -471,7 +493,7 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                     .unwrap_or_else(|| dir.join("store.kdbx").to_string_lossy().to_string()),
             ),
             keyfile: read_trimmed(dir, ".keyfile_path"),
-            hwkey,
+            hwkey: read_legacy_hwkey(dir)?,
         });
     }
     if totp_configured {
@@ -875,5 +897,23 @@ mod tests {
         let vaults = load_from(dir.path()).unwrap();
         assert!(Path::new(&vaults[0].path).is_absolute());
         assert!(vaults[0].path.ends_with("relative/store.kdbx"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_fails_hard_on_unreadable_hwkey_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".vault_path", "/old/store.kdbx\n");
+        let hwkey = dir.path().join(".hwkey");
+        std::fs::write(&hwkey, "slot=2\n").unwrap();
+        std::fs::set_permissions(&hwkey, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let err = migrate_files_from(dir.path()).unwrap_err();
+        assert!(err.message.contains(".hwkey"), "{}", err.message);
+        // The migration aborted without touching anything.
+        assert!(!registry_path(dir.path()).exists());
+        assert!(hwkey.exists());
+        assert!(dir.path().join(".vault_path").exists());
     }
 }
