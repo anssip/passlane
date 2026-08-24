@@ -166,12 +166,31 @@ fn validate_entries(path: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
                 vault.name
             )));
         }
-        if vault.keyfile.as_deref().map(str::trim) == Some("") {
+        if !Path::new(&vault.path).is_absolute() {
             return Err(Error::new(&format!(
-                "{}: vault '{}' has an empty keyfile path. Remove the \"keyfile\" field or set a real path.",
+                "{}: vault '{}' has a relative path ({}). Registry paths must be absolute — \
+                 a relative path would resolve against whatever directory passlane runs from.",
                 path.display(),
-                vault.name
+                vault.name,
+                vault.path
             )));
+        }
+        if let Some(keyfile) = vault.keyfile.as_deref() {
+            if keyfile.trim().is_empty() {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has an empty keyfile path. Remove the \"keyfile\" field or set a real path.",
+                    path.display(),
+                    vault.name
+                )));
+            }
+            if !Path::new(keyfile).is_absolute() {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has a relative keyfile path ({}). Registry paths must be absolute.",
+                    path.display(),
+                    vault.name,
+                    keyfile
+                )));
+            }
         }
         if let Some(hwkey) = &vault.hwkey {
             if hwkey.slot != 1 && hwkey.slot != 2 {
@@ -750,6 +769,22 @@ mod tests {
         .unwrap();
         let err = load_from(dir.path()).unwrap_err();
         assert!(err.message.contains("slot 7"), "{}", err.message);
+
+        // Relative paths resolve against the working directory — rejected.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"relative/a.kdbx"}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("must be absolute"), "{}", err.message);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","keyfile":"keys/keyfile"}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("relative keyfile"), "{}", err.message);
 
         // Every error points the user at the registry file.
         assert!(err.message.contains(path.file_name().unwrap().to_string_lossy().as_ref()));

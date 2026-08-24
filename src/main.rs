@@ -321,8 +321,14 @@ fn main() {
             );
             let _ = vault_registry::init_current(None);
         }
-    } else {
-        let _ = vault_registry::init_current(None);
+    } else if let Err(e) = vault_registry::init_current(None) {
+        // Fail fast with the actionable resolution error (e.g. "several
+        // vaults are configured and none is active") instead of letting the
+        // command die later on the generic "No vault selected".
+        if needs_vault {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
     }
     completion_cache::refresh_if_stale();
 
