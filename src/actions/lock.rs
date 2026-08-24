@@ -16,14 +16,20 @@ impl LockAction {
 }
 
 /// A vault is locked when its master password is gone from the keychain.
+/// "No entry" is the normal already-locked case; any other error means the
+/// stored password may still be there and must not be reported as locked.
 /// Cache removal is best-effort: a leftover cache only leaks service names.
 fn lock_vault(name: &str) -> String {
-    match keychain::delete_master_password(name) {
-        Ok(()) => {
+    match keychain::delete_master_password_if_stored(name) {
+        Ok(true) => {
             completion_cache::clear_cache_for(name);
             format!("Vault '{}' locked", name)
         }
-        Err(_) => format!("Vault '{}' was already locked", name),
+        Ok(false) => format!("Vault '{}' was already locked", name),
+        Err(e) => format!(
+            "Warning: could not lock vault '{}': {} — its stored master password may still be in the keychain",
+            name, e
+        ),
     }
 }
 

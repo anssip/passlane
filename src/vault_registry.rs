@@ -163,6 +163,23 @@ fn validate_entries(path: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
                 vault.name
             )));
         }
+        if vault.keyfile.as_deref().map(str::trim) == Some("") {
+            return Err(Error::new(&format!(
+                "{}: vault '{}' has an empty keyfile path. Remove the \"keyfile\" field or set a real path.",
+                path.display(),
+                vault.name
+            )));
+        }
+        if let Some(hwkey) = &vault.hwkey {
+            if hwkey.slot != 1 && hwkey.slot != 2 {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has an invalid hardware key slot {} (must be 1 or 2).",
+                    path.display(),
+                    vault.name,
+                    hwkey.slot
+                )));
+            }
+        }
         if !seen.insert(vault.name.as_str()) {
             return Err(Error::new(&format!(
                 "{}: more than one vault named '{}'. Fix the file or remove the duplicate.",
@@ -688,6 +705,24 @@ mod tests {
         std::fs::write(&path, r#"{"version":1,"vaults":[{"name":"a","path":""}]}"#).unwrap();
         let err = load_from(dir.path()).unwrap_err();
         assert!(err.message.contains("has no path"), "{}", err.message);
+
+        // Empty keyfile string.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","keyfile":""}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("empty keyfile"), "{}", err.message);
+
+        // Hardware key slot outside 1..=2.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","hwkey":{"slot":7}}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("slot 7"), "{}", err.message);
 
         // Every error points the user at the registry file.
         assert!(err.message.contains(path.file_name().unwrap().to_string_lossy().as_ref()));

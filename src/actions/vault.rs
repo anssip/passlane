@@ -144,7 +144,12 @@ impl VaultAction {
         let removed = vault_registry::remove_vault(name)?;
         // Lock it too: a stored master password for an unregistered vault
         // would linger in the keychain forever.
-        let _ = keychain::delete_master_password(name);
+        if let Err(e) = keychain::delete_master_password_if_stored(name) {
+            eprintln!(
+                "Warning: could not remove the stored master password of vault '{}': {}",
+                name, e
+            );
+        }
         completion_cache::clear_cache_for(name);
         Ok(format!(
             "Vault '{}' removed. The vault file {} was NOT deleted.",
@@ -167,9 +172,10 @@ impl VaultAction {
 
         let mut warning = String::new();
         if let Some(password) = &password {
-            if let Err(e) = keychain::save_master_password(new_name, password)
-                .and_then(|()| keychain::delete_master_password(old_name))
-            {
+            let result = keychain::save_master_password(new_name, password).and_then(|()| {
+                keychain::delete_master_password_if_stored(old_name).map(|_| ())
+            });
+            if let Err(e) = result {
                 eprintln!(
                     "Warning: could not move the stored master password of vault '{}' to its new name ({}). \
                      You will be asked for the password at the next unlock.",
