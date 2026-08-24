@@ -113,7 +113,7 @@ pub(crate) fn tighten_dir_permissions(path: &Path) {
 }
 
 #[cfg(not(unix))]
-fn tighten_dir_permissions(_path: &Path) {}
+pub(crate) fn tighten_dir_permissions(_path: &Path) {}
 
 #[derive(Debug, Deserialize)]
 struct CsvImportRow {
