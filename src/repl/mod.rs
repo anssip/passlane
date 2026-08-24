@@ -329,8 +329,14 @@ Note: the REPL already has built-in tab completion for commands and types."#;
 fn print_status() {
     let vaults = match vault_registry::load() {
         Ok(vaults) if !vaults.is_empty() => vaults,
-        _ => {
+        Ok(_) => {
             println!("No vaults configured. Run 'init' to create one.");
+            return;
+        }
+        // A registry that exists but cannot be read must not be reported as
+        // "no vaults configured" — surface the real error.
+        Err(e) => {
+            println!("Error: {}", e);
             return;
         }
     };
