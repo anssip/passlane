@@ -30,6 +30,17 @@ pub fn get_master_password(vault: &str) -> Result<String, Error> {
     Ok(entry(vault)?.get_password()?)
 }
 
+/// Whether a master password is stored for the vault. `Ok(false)` means
+/// genuinely absent; keychain backend errors propagate so callers can tell
+/// "locked" from "keychain unavailable".
+pub fn has_master_password(vault: &str) -> Result<bool, Error> {
+    match entry(vault)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Delete a vault's stored master password. `Ok(false)` when nothing was
 /// stored; real errors propagate so callers can tell "already locked" from
 /// "could not lock".

@@ -43,8 +43,18 @@ impl Action for ChangePasswordAction {
 
         vault.change_master_password(new_pwd.clone())?;
         // Keep the keychain entry in sync only when a password was stored.
-        if keychain::get_master_password(&config.name).is_ok() {
-            keychain::save_master_password(&config.name, &new_pwd)?;
+        // A keychain error must not silently skip a still-present entry —
+        // that would leave the stored password stale.
+        match keychain::has_master_password(&config.name) {
+            Ok(true) => {
+                keychain::save_master_password(&config.name, &new_pwd)?;
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!(
+                "Warning: could not check whether vault '{}' has a stored master password ({}). \
+                 If one is stored it is now stale — fix the keychain and re-run 'passlane unlock'.",
+                config.name, e
+            ),
         }
 
         Ok(format!(

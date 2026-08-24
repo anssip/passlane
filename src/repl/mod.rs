@@ -336,7 +336,18 @@ fn print_status() {
     };
     let active = vault_registry::get_active();
     for vault in &vaults {
-        let unlocked = crate::keychain::get_master_password(&vault.name).is_ok();
+        // A keychain error is not "locked": report it instead of guessing.
+        let state = match crate::keychain::has_master_password(&vault.name) {
+            Ok(true) => "unlocked",
+            Ok(false) => "locked",
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not read the keychain state of vault '{}': {}",
+                    vault.name, e
+                );
+                "unknown"
+            }
+        };
         let marker = if active.as_deref() == Some(vault.name.as_str()) {
             "*"
         } else {
@@ -344,10 +355,7 @@ fn print_status() {
         };
         println!(
             "{} {:<12} {} ({})",
-            marker,
-            vault.name,
-            vault.path,
-            if unlocked { "unlocked" } else { "locked" }
+            marker, vault.name, vault.path, state
         );
     }
 }

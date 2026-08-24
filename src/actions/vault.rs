@@ -240,10 +240,17 @@ fn yes_no(flag: bool) -> String {
 }
 
 fn lock_state(name: &str) -> String {
-    if keychain::get_master_password(name).is_ok() {
-        "unlocked".to_string()
-    } else {
-        "locked".to_string()
+    match keychain::has_master_password(name) {
+        Ok(true) => "unlocked".to_string(),
+        Ok(false) => "locked".to_string(),
+        // A keychain error is not "locked": report it instead of guessing.
+        Err(e) => {
+            eprintln!(
+                "Warning: could not read the keychain state of vault '{}': {}",
+                name, e
+            );
+            "unknown".to_string()
+        }
     }
 }
 

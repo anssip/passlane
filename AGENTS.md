@@ -126,7 +126,7 @@ The `keychain` module uses the OS keychain (Keychain on macOS, Credential Manage
 
 ## Development Notes
 
-- The CLI defaults to generating a password when run without arguments
+- The CLI starts the interactive REPL when run without arguments
 - All entry types (credentials, payments, notes, TOTP) use UUIDs for identification
 - Search functionality uses regex patterns
 - Clipboard integration automatically copies passwords/OTPs when displaying single results
