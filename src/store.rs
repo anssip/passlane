@@ -69,7 +69,13 @@ fn home_dir() -> PathBuf {
 pub(crate) fn dir_path() -> PathBuf {
     let dir_path = home_dir().join(".passlane");
     if !dir_path.exists() {
-        create_private_dir(&dir_path).expect("Unable to create .passlane dir");
+        if let Err(e) = create_private_dir(&dir_path) {
+            // A concurrent passlane may have created the directory between
+            // the exists() check and the create; that race is benign.
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                panic!("Unable to create .passlane dir: {}", e);
+            }
+        }
     }
     tighten_dir_permissions(&dir_path);
     dir_path
