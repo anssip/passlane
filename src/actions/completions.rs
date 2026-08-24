@@ -113,8 +113,10 @@ fn generate_cache() -> Result<usize, Error> {
 
 /// Shell expression that resolves the active vault's completion cache at
 /// completion time — the active vault can change between shell invocations.
-/// Falls back to the migrated 'default' vault when no active vault is set or
-/// the pointer file is empty (e.g. truncated by a crash).
+/// The pointer self-heals (resolve_from persists the single vault when no
+/// active vault is set), so the 'default' fallback only covers degenerate
+/// states (zero vaults, hand-broken config) where there is nothing to
+/// complete anyway.
 fn cache_file_expr(shell: Shell) -> String {
     match shell {
         // Command substitution inside double quotes evaluates at completion

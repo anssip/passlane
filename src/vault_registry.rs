@@ -440,6 +440,16 @@ pub fn resolve_from(dir: &Path, explicit: Option<&str>) -> Result<VaultConfig, E
         );
     }
     if vaults.len() == 1 {
+        // Self-heal: with a single vault there is no ambiguity, so persist
+        // it as the active vault. Tools that only read the config (shell
+        // completions resolve .active_vault) then see a valid name even if
+        // the user never ran 'vault use' or declined make-active at init.
+        if write_active_to(dir, Some(&vaults[0].name)).is_err() {
+            eprintln!(
+                "Warning: could not record vault '{}' as the active vault.",
+                vaults[0].name
+            );
+        }
         return Ok(vaults[0].clone());
     }
     if vaults.is_empty() {
@@ -774,6 +784,10 @@ mod tests {
         let single = tempdir().unwrap();
         add_vault_to(single.path(), sample_vault("only")).unwrap();
         assert_eq!(resolve_from(single.path(), None).unwrap().name, "only");
+        // Resolving the implicit single vault persists it as active, so
+        // completion scripts (which only read .active_vault) see a valid
+        // name even if the user never picked one.
+        assert_eq!(get_active_from(single.path()), Some("only".to_string()));
 
         // Several vaults, no active: explicit still works, bare resolve errors.
         let err = resolve_from(dir.path(), None).unwrap_err();
