@@ -1,7 +1,6 @@
 ---
 name: passlane-release
 description: Publish a new version of passlane — determine the next semantic version, update CHANGELOG.md and Cargo.toml, commit, create the git tag (vX.Y.Z) that triggers the GitHub release build, and publish to crates.io once the build succeeds. Use when the user wants to release, publish, ship, cut, or tag a new version of passlane, or bump its version.
-allowed-tools: Bash(git:*), Bash(cargo:*), Bash(gh:*), Read, Edit
 ---
 
 # passlane-release

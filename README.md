@@ -14,7 +14,7 @@ Passlane is written in Rust.
 
 ### [v4.0.0](https://github.com/anssip/passlane/releases/tag/v4.0.0)
 
-- **Breaking:** Add multi-vault support: manage any number of named vaults (`vault add`, `vault list`, `vault use`, `vault remove`, `vault rename`, `vault info`), switch with the global `--vault <NAME>` flag or `PASSLANE_VAULT` env var, and track the active vault. All entry types (credentials, payment cards, notes, TOTP) can now live in any vault. The pre-multi-vault config is migrated automatically on first run (main vault → `default`, TOTP vault → `totp`); `unlock -o`/`passwd -o` remain as legacy aliases for `--vault totp`
+- Add multi-vault support: manage any number of named vaults (`vault add`, `vault list`, `vault use`, `vault remove`, `vault rename`, `vault info`), switch with the global `--vault <NAME>` flag or `PASSLANE_VAULT` env var, and track the active vault. All entry types (credentials, payment cards, notes, TOTP) can now live in any vault. The pre-multi-vault config is migrated automatically on first run (main vault → `default`, TOTP vault → `totp`); `unlock -o`/`passwd -o` remain as legacy aliases for `--vault totp`
 - Add hardware key (YubiKey) challenge-response as an additional unlock factor for the main vault
 - Align the stored entry format with the KeePass entry model: credentials and payment cards are stored in custom fields instead of notes, improving compatibility with other KeePass clients
 - Upgrade keepass-ng from 0.9 to 0.11. Existing vaults are upgraded in memory from KDBX 4.0 to KDBX 4.1 on open, so the first save after upgrading works (keepass-ng 0.11 only writes KDBX 4.1; the format is a superset of 4.0 that all current KeePass clients read). Verified round-trip with KeePassXC, including TOTP entries
