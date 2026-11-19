@@ -9,26 +9,30 @@ agent = never | ask | allow      (default: never)
 
 Because it is an ordinary custom attribute, it round-trips through other
 KeePass clients (KeePassXC, KeePassium, StrongBox) and can be edited there.
-In passlane, `edit` → *advanced fields* → *custom attributes* offers the
-same thing. Missing or unrecognized values read as `never` — a typo never
-widens access.
+In passlane, credentials can carry it via `edit` → *advanced fields* →
+*custom attributes*; the other entry types get it from a KeePass client.
+Missing or unrecognized values read as `never` — a typo never widens
+access.
 
 ### Changing the policy
 
 Setting or changing the attribute goes through the same gates as
 revealing:
 
-- `passlane edit <pattern>` → *advanced fields* → *custom attributes*
-  adds or updates `agent`. The edit prompts pre-fill the entry's current
-  secret fields, so the edit itself runs the approval gate: restricted
-  (`never`/`ask`) entries are refused outright in agent-facing contexts,
-  and `ask` entries prompt the owner first. An agent cannot flip a
-  restricted entry to `allow` for itself.
+- For **credentials**, `passlane edit <pattern>` → *advanced fields* →
+  *custom attributes* adds or updates `agent`. The edit prompts pre-fill
+  the entry's current secret fields, so the edit itself runs the approval
+  gate: restricted (`never`/`ask`) entries are refused outright in
+  agent-facing contexts, and `ask` entries prompt the owner first. An
+  agent cannot flip a restricted entry to `allow` for itself.
+- For **cards, notes and TOTP entries** passlane's edit prompts do not
+  offer custom attributes — set `agent` on those in another KeePass
+  client. (Passlane's edits of those types leave the attribute untouched.)
 - Any KeePass client can edit the attribute directly on the vault file —
   as with everything cooperative, a process with write access to the
   vault can always change it.
 - `passlane csv` import accepts an `agent=…` value in the
-  `custom_attributes` column.
+  `custom_attributes` column (credentials).
 
 Within the cooperative model an agent may still *edit* entries whose
 policy is `allow` (the edit gate passes for them) — including changing

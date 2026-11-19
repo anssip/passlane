@@ -136,8 +136,11 @@ attribute. **All stdout reading commands honor it** (`show --out`, `show -o --on
   covers only their own invocation — do **not** retry the read afterwards; it will just record
   another pending request and fail again. If you should have durable access, ask the owner to
   set the entry's `agent` attribute to `allow`.
-- Checking which entries you may read without triggering anything: `passlane list` (plain, no
-  `-v`/`--json`) shows each entry's custom attributes, including `agent`.
+- Checking which entries you may read: `passlane list` (plain, no `-v`/`--json`) shows each
+  allowed entry's custom attributes, including `agent`; restricted entries show only the
+  policy attribute. This is not fully side-effect free — when such a listing redacts a
+  restricted entry's note or custom attributes, `agent=ask` entries record an approval
+  request (one per run).
 
 For `list` commands, restricted entries are **redacted, not omitted**: the secret fields
 (`password`, `secret`, `content`, `number`/`cvv`/cardholder/billing address, `code`) come
