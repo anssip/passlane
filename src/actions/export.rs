@@ -58,6 +58,16 @@ impl ExportAction {
         }
     }
     pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> Result<i64, Error> {
+        self.export_csv_with_log(vault, &crate::agent::ApprovalLog::default_path())
+    }
+
+    /// [`export_csv`] with the approval log injected, so tests never touch
+    /// the developer's real `~/.passlane/approvals.log`.
+    pub fn export_csv_with_log(
+        &self,
+        vault: &mut Box<dyn Vault>,
+        approval_log: &crate::agent::ApprovalLog,
+    ) -> Result<i64, Error> {
         debug!("exporting to csv");
         if self.item_type == ItemType::Credential {
             let creds = vault.grep(None);
@@ -70,7 +80,8 @@ impl ExportAction {
             let include = confirm_include_restricted(restricted_count);
             // Ask entries enter the approval flow in either outcome;
             // `never` entries have no ask flow.
-            crate::agent::log_bulk_ask_requests(
+            crate::agent::log_bulk_ask_requests_with(
+                approval_log,
                 creds
                     .iter()
                     .map(|c| (c.title().to_string(), c.agent_policy())),
@@ -98,7 +109,8 @@ impl ExportAction {
             let restricted_count =
                 restricted(&cards.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
             let include = confirm_include_restricted(restricted_count);
-            crate::agent::log_bulk_ask_requests(
+            crate::agent::log_bulk_ask_requests_with(
+                approval_log,
                 cards.iter().map(|c| (c.name().to_string(), c.agent_policy())),
                 "number",
                 include,
@@ -118,7 +130,8 @@ impl ExportAction {
             let restricted_count =
                 restricted(&notes.iter().map(|n| n.agent_policy()).collect::<Vec<_>>());
             let include = confirm_include_restricted(restricted_count);
-            crate::agent::log_bulk_ask_requests(
+            crate::agent::log_bulk_ask_requests_with(
+                approval_log,
                 notes.iter().map(|n| (n.title().to_string(), n.agent_policy())),
                 "content",
                 include,
@@ -255,6 +268,16 @@ mod tests {
         }
     }
 
+    fn export_with_temp_log(
+        action: &ExportAction,
+        vault: &mut Box<dyn Vault>,
+    ) -> (Result<i64, Error>, Option<tempfile::TempDir>) {
+        // Tests must never append to the developer's real approval log.
+        let dir = tempfile::tempdir().unwrap();
+        let log = crate::agent::ApprovalLog::at(dir.path().join("approvals.log"));
+        (action.export_csv_with_log(vault, &log), Some(dir))
+    }
+
     fn cred(title: &str, agent: Option<&str>) -> Credential {
         let mut c = Credential::new(None, "pw", title, "user", None, None);
         if let Some(agent) = agent {
@@ -281,9 +304,7 @@ mod tests {
         let mut vault: Box<dyn Vault> = Box::new(StubVault {
             credentials: vec![cred("root", None)],
         });
-        export_action(path.to_str().unwrap())
-            .export_csv(&mut vault)
-            .unwrap();
+        export_with_temp_log(&export_action(path.to_str().unwrap()), &mut vault).0.unwrap();
         let fresh = std::fs::read_to_string(&path).unwrap();
         assert!(!fresh.contains("github.com"), "stale secrets survived");
         assert!(!fresh.contains("root"), "restricted entry leaked");
@@ -302,10 +323,15 @@ mod tests {
                 cred("stripe", Some("ask")),
             ],
         });
-        let count = export_action(path.to_str().unwrap())
-            .export_csv(&mut vault)
-            .unwrap();
-        assert_eq!(count, 1);
+        let (count, log_dir) =
+            export_with_temp_log(&export_action(path.to_str().unwrap()), &mut vault);
+        assert_eq!(count.unwrap(), 1);
+        // The withheld ask entry entered the ask flow in the *injected* log.
+        let logged = std::fs::read_to_string(
+            log_dir.unwrap().path().join("approvals.log"),
+        )
+        .unwrap();
+        assert!(logged.contains("\"entry\":\"stripe\""));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("github.com"));
         assert!(!content.contains("stripe"));
