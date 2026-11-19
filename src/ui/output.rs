@@ -62,7 +62,21 @@ pub fn show_credentials_table(
             if table_note_visible(creds.agent_policy(), agent_context) {
                 lines.push(format!("📝 {}", note));
             } else {
-                lines.push(format!("📝 [withheld: agent={}]", creds.agent_policy().as_str()));
+                lines.push(format!(
+                    "📝 [withheld: agent={}]",
+                    creds.agent_policy().as_str()
+                ));
+                // A withheld read is an audit event: in an agent-facing
+                // context an `ask` entry's redacted note enters the ask
+                // flow like every other withheld field (never entries have
+                // no ask flow). Covers the show, edit and delete tables.
+                if agent_context && creds.agent_policy() == AgentPolicy::Ask {
+                    crate::agent::log_bulk_ask_requests(
+                        std::iter::once((creds.title().to_string(), creds.agent_policy())),
+                        "note",
+                        false,
+                    );
+                }
             }
         }
         lines.push(format!("🕐 {}", modified));
