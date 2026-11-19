@@ -5,8 +5,8 @@ use std::io::IsTerminal;
 use crate::actions::{ItemType, UnlockingAction};
 use crate::agent::{decide, RevealContext, RevealDecision};
 use crate::store;
-use crate::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard};
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard};
+use passlane_core::vault::vault_trait::Vault;
 
 pub struct ExportAction {
     pub file_path: String,

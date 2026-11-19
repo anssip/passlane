@@ -1,6 +1,6 @@
 use clap::Command;
 use crate::actions::Action;
-use crate::vault::entities::Error;
+use passlane_core::vault::entities::Error;
 
 pub struct PrintHelpAction {
     cli: Command,

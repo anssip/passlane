@@ -1,7 +1,7 @@
 use crate::actions::Action;
 use crate::completion_cache;
 use crate::keychain;
-use crate::vault::entities::Error;
+use passlane_core::vault::entities::Error;
 use crate::vault_registry;
 
 pub struct LockAction {

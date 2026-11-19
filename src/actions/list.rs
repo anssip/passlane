@@ -1,8 +1,8 @@
 use crate::actions::{ItemType, UnlockingAction};
 use crate::agent::{decide, RevealContext, RevealDecision};
-use crate::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
-use crate::vault::vault_trait::Vault;
 use chrono::{DateTime, Utc};
+use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use serde::Serialize;
 
@@ -120,11 +120,11 @@ struct ListedPayment {
     name_on_card: String,
     number: Option<String>,
     cvv: Option<String>,
-    expiry: crate::vault::entities::Expiry,
+    expiry: passlane_core::vault::entities::Expiry,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    billing_address: Option<crate::vault::entities::Address>,
+    billing_address: Option<passlane_core::vault::entities::Address>,
     agent: String,
     last_modified: DateTime<Utc>,
 }
@@ -529,7 +529,7 @@ impl UnlockingAction for ListAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::entities::{Address, Expiry};
+    use passlane_core::vault::entities::{Address, Expiry};
     use chrono::Utc;
     use uuid::Uuid;
 

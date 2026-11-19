@@ -1,6 +1,6 @@
 use comfy_table::*;
 
-use crate::vault::entities::{Credential, Note, PaymentCard, Totp};
+use passlane_core::vault::entities::{Credential, Note, PaymentCard, Totp};
 
 pub fn show_credentials_table(credentials: &[Credential], show_password: bool, plain: bool) {
     let mut table = Table::new();

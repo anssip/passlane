@@ -79,8 +79,11 @@ Guidelines for the bullets:
 
 ## 5. Bump Cargo.toml (and Cargo.lock)
 
-Edit the `version = "X.Y.Z"` line in `Cargo.toml` to the new version. Then refresh the lockfile so
-its `passlane` entry matches (avoids a dirty lockfile on the next build):
+Edit the `version = "X.Y.Z"` line in `Cargo.toml` to the new version. The workspace has two
+publishable packages that stay in lockstep: also bump `version` in `crates/passlane-core/Cargo.toml`
+and the `passlane-core = { path = ..., version = "X.Y.Z" }` dependency in the root `Cargo.toml`
+(`cargo publish` rewrites that path dependency to the registry version). Then refresh the lockfile so
+its entries match (avoids a dirty lockfile on the next build):
 
 ```bash
 cargo update -p passlane --precise X.Y.Z 2>/dev/null || cargo build
@@ -99,7 +102,7 @@ bullets as the changelog section from step 4. Keep the closing
 Stage the release files and commit:
 
 ```bash
-git add README.md CHANGELOG.md Cargo.toml Cargo.lock
+git add README.md CHANGELOG.md Cargo.toml Cargo.lock crates/passlane-core/Cargo.toml
 git commit -m "Release vX.Y.Z"
 ```
 
@@ -139,13 +142,21 @@ patch release rather than by re-tagging.
 failed, the fix lands in a follow-up patch release, and publishing the broken version to crates.io
 would just spread it (crates.io versions cannot be replaced, only yanked).
 
+The workspace has two publishable packages; publish in dependency order, from the repo root:
+
 ```bash
-cargo publish
+cargo publish -p passlane-core   # first: the core lib the CLI depends on
+cargo publish                    # then: the CLI (its path dep on passlane-core is rewritten to the registry)
 ```
 
 `cargo publish` re-verifies the package by building it before uploading, so this also serves as a
 final sanity check. If it fails on authentication, the user needs to run `cargo login` themselves —
 don't ask for the token.
+
+Note: while the interim `[patch.crates-io]` keepass-ng git pin is in place (passlane#47), publishing
+fails because the fork's `challenge_response_usb` feature is not on crates.io yet. That is expected;
+publishing becomes possible once keepass-ng releases the feature split upstream and the pin is
+dropped.
 
 ## Quick reference
 

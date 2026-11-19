@@ -1,8 +1,9 @@
 use crate::actions::{copy_to_clipboard_timed, unlock, Action, ItemType};
 use crate::completion_cache;
-use crate::vault::entities::Error;
-use crate::vault::vault_trait::Vault;
-use crate::{crypto, ui};
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::vault_trait::Vault;
+use crate::ui;
+use passlane_core::generator;
 use clap::ArgMatches;
 use arboard::Clipboard;
 
@@ -26,14 +27,14 @@ impl AddAction {
         let value = ctx
             .get_text()
             .map_err(|e| Error::new(&format!("Unable to retrieve value from clipboard: {}", e)))?;
-        if !crypto::validate_password(&value) {
+        if !generator::validate_password(&value) {
             return Err(Error::new("The text in clipboard is not a valid password"));
         }
         Ok(value)
     }
     fn get_password(&self) -> Result<String, Error> {
         if self.generate {
-            Ok(crypto::generate())
+            Ok(generator::generate())
         } else if self.clipboard {
             self.password_from_clipboard()
         } else {

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::time::SystemTimeError;
 use uuid::Uuid;
 
-use crate::crypto::SPECIAL;
+use crate::generator::SPECIAL;
 
 #[derive(Debug)]
 pub struct Error {

@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use passlane_approval::message::{Body, Operation, Scope};
 
-use crate::vault::entities::{AgentPolicy, Error};
+use passlane_core::vault::entities::{AgentPolicy, Error};
 
 /// The approval log file name inside the passlane config directory.
 const APPROVAL_LOG_FILENAME: &str = "approvals.log";

@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 use log::debug;
 
 use crate::keychain;
-use crate::vault::keepass_vault::KeepassVault;
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::keepass_vault::KeepassVault;
+use passlane_core::vault::vault_trait::Vault;
 use crate::vault_registry;
 
 const CACHE_FILENAME_PREFIX: &str = ".completion_cache";

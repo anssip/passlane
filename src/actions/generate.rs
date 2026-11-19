@@ -1,6 +1,6 @@
 use crate::actions::{copy_to_clipboard_timed, Action};
-use crate::crypto;
-use crate::vault::entities::Error;
+use passlane_core::generator;
+use passlane_core::vault::entities::Error;
 use clap::ArgMatches;
 
 pub struct GeneratePasswordAction {
@@ -17,7 +17,7 @@ impl GeneratePasswordAction {
 
 impl Action for GeneratePasswordAction {
     fn run(&self) -> Result<String, Error> {
-        let password = crypto::generate();
+        let password = generator::generate();
         if self.stdout_only {
             Ok(password)
         } else {
