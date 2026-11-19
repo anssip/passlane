@@ -290,13 +290,19 @@ fn is_transient_read_error(e: &std::io::Error) -> bool {
 /// known synced folder, where the usual culprit is the sync client's file
 /// provider rather than the disk.
 fn sync_folder_hint(filepath: &str) -> &'static str {
-    const SYNCED_MARKERS: [&str; 4] = [
-        "/Dropbox/",
-        "/OneDrive/",
-        "/Google Drive/",
-        "/Library/Mobile Documents/",
+    // Normalize separators and case so native Windows paths
+    // (C:\Users\x\OneDrive\...) match too. Registry paths are absolute in
+    // practice, so matching on "/<folder>/" is enough.
+    let normalized = filepath.replace('\\', "/").to_lowercase();
+    const SYNCED_MARKERS: [&str; 6] = [
+        "/dropbox/",
+        "/onedrive/",
+        "/google drive/",
+        "/googledrive/", // ~/Library/CloudStorage/GoogleDrive-<account>
+        "/mobile documents/",
+        "/cloudstorage/", // macOS File Provider mounts: Dropbox-, OneDrive-, ...
     ];
-    if SYNCED_MARKERS.iter().any(|m| filepath.contains(m)) {
+    if SYNCED_MARKERS.iter().any(|m| normalized.contains(m)) {
         " The vault is in a synced folder; the sync client may be busy, updating or \
          unresponsive. Retry in a moment or restart the sync client. Opening the \
          vault once in another app (Finder preview or KeePassXC) forces the sync \
@@ -1697,25 +1703,45 @@ mod tests {
         assert!(!sync_folder_hint("/Users/x/Dropbox/Documents/store.kdbx").is_empty());
         assert!(!sync_folder_hint("/Users/x/OneDrive/store.kdbx").is_empty());
         assert!(!sync_folder_hint("/Users/x/Library/Mobile Documents/store.kdbx").is_empty());
+        // macOS File Provider mounts under ~/Library/CloudStorage.
+        assert!(!sync_folder_hint(
+            "/Users/x/Library/CloudStorage/OneDrive-Personal/store.kdbx"
+        )
+        .is_empty());
+        assert!(!sync_folder_hint(
+            "/Users/x/Library/CloudStorage/GoogleDrive-user@example.com/My Drive/store.kdbx"
+        )
+        .is_empty());
+        assert!(!sync_folder_hint(
+            "/Users/x/Library/CloudStorage/Dropbox-personal/store.kdbx"
+        )
+        .is_empty());
+        // Native Windows paths, separators and case.
+        assert!(!sync_folder_hint(r"C:\Users\x\OneDrive\store.kdbx").is_empty());
+        assert!(!sync_folder_hint(r"C:\Users\X\Dropbox\Documents\store.kdbx").is_empty());
         // A path merely containing the word is not enough...
         assert!(sync_folder_hint("/Users/x/my-dropbox-backups/store.kdbx").is_empty());
+        assert!(sync_folder_hint(r"C:\Users\x\dropbox-backups\store.kdbx").is_empty());
     }
 
     #[test]
     fn open_unreadable_vault_reports_file_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.kdbx");
-        std::fs::write(&path, b"not-a-vault").unwrap();
 
-        // Make the vault unreadable (EACCES) for anyone but root; when the
-        // test happens to run privileged the open succeeds and there is
-        // nothing to assert.
+        // A valid vault, so environments that can still read the file
+        // (Windows skips the permission change; privileged Unix ignores
+        // it) take the successful-open path and skip the assertions
+        // below instead of failing on an unparseable fixture.
+        KeepassVault::new(path.to_str().unwrap(), "fixture-pw", None, None).unwrap();
+
+        // Make the vault unreadable (EACCES) for anyone but root.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
-        let result = KeepassVault::open("any-password", path.to_str().unwrap(), None, None);
+        let result = KeepassVault::open("fixture-pw", path.to_str().unwrap(), None, None);
         if let Err(err) = result {
             assert!(
                 err.message.contains("Failed to read vault file"),
