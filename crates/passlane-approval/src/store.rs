@@ -29,6 +29,17 @@ struct IdentityFile {
     sig_secret: String,
 }
 
+// The file payload holds complete long-term private keys in hex. Wiping on
+// drop covers every path — first-use creation, save, load, and error
+// unwinds — without relying on each call site remembering to zeroize.
+impl Drop for IdentityFile {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.enc_secret.zeroize();
+        self.sig_secret.zeroize();
+    }
+}
+
 /// Load this device's identity from `dir/approval_identity.json`,
 /// generating and persisting fresh keys on first use.
 ///
@@ -108,13 +119,12 @@ fn load_identity_file(path: &Path) -> Result<IdentityKeys> {
 pub fn save_identity(dir: &Path, keys: &IdentityKeys) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let (enc, sig) = keys.secret_bytes();
-    let mut file = IdentityFile {
+    let file = IdentityFile {
         enc_secret: crate::encoding::hex_encode(&enc),
         sig_secret: crate::encoding::hex_encode(&sig),
     };
+    // IdentityFile wipes itself on drop (see its Drop impl).
     let json = Zeroizing::new(serde_json::to_vec(&file)?);
-    file.enc_secret.zeroize();
-    file.sig_secret.zeroize();
     write_private(&dir.join("approval_identity.json"), &json)
 }
 
