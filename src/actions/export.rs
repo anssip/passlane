@@ -58,15 +58,18 @@ impl ExportAction {
         }
     }
     pub fn export_csv(&self, vault: &mut Box<dyn Vault>) -> Result<i64, Error> {
-        self.export_csv_with_log(vault, &crate::agent::ApprovalLog::default_path())
+        self.export_csv_with_log(vault, &crate::agent::ApprovalLog::default_path(), true)
     }
 
-    /// [`export_csv`] with the approval log injected, so tests never touch
-    /// the developer's real `~/.passlane/approvals.log`.
+    /// [`export_csv`] with the approval log and the interactive bulk
+    /// confirmation injected, so tests never touch the developer's real
+    /// `~/.passlane/approvals.log` and never block on a prompt when the
+    /// test runner's stdin is a terminal.
     pub fn export_csv_with_log(
         &self,
         vault: &mut Box<dyn Vault>,
         approval_log: &crate::agent::ApprovalLog,
+        prompt_for_inclusion: bool,
     ) -> Result<i64, Error> {
         debug!("exporting to csv");
         if self.item_type == ItemType::Credential {
@@ -77,7 +80,11 @@ impl ExportAction {
             }
             let restricted_count =
                 restricted(&creds.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
-            let include = confirm_include_restricted(restricted_count);
+            let include = if prompt_for_inclusion {
+                confirm_include_restricted(restricted_count)
+            } else {
+                false
+            };
             // Ask entries enter the approval flow in either outcome;
             // `never` entries have no ask flow.
             crate::agent::log_bulk_ask_requests_with(
@@ -108,7 +115,11 @@ impl ExportAction {
             let cards = vault.find_payments();
             let restricted_count =
                 restricted(&cards.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
-            let include = confirm_include_restricted(restricted_count);
+            let include = if prompt_for_inclusion {
+                confirm_include_restricted(restricted_count)
+            } else {
+                false
+            };
             crate::agent::log_bulk_ask_requests_with(
                 approval_log,
                 cards.iter().map(|c| (c.name().to_string(), c.agent_policy())),
@@ -129,7 +140,11 @@ impl ExportAction {
             let notes = vault.find_notes();
             let restricted_count =
                 restricted(&notes.iter().map(|n| n.agent_policy()).collect::<Vec<_>>());
-            let include = confirm_include_restricted(restricted_count);
+            let include = if prompt_for_inclusion {
+                confirm_include_restricted(restricted_count)
+            } else {
+                false
+            };
             crate::agent::log_bulk_ask_requests_with(
                 approval_log,
                 notes.iter().map(|n| (n.title().to_string(), n.agent_policy())),
@@ -275,7 +290,10 @@ mod tests {
         // Tests must never append to the developer's real approval log.
         let dir = tempfile::tempdir().unwrap();
         let log = crate::agent::ApprovalLog::at(dir.path().join("approvals.log"));
-        (action.export_csv_with_log(vault, &log), Some(dir))
+        (
+            action.export_csv_with_log(vault, &log, /* prompt */ false),
+            Some(dir),
+        )
     }
 
     fn cred(title: &str, agent: Option<&str>) -> Credential {

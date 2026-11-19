@@ -213,6 +213,18 @@ impl ListedTotp {
     }
 }
 
+/// The entries whose notes a non-verbose (metadata) listing redacts:
+/// restricted entries that actually carry a note. Notes are the only
+/// secret-bearing field such a listing would show, so the withholding is
+/// reported (and `ask` entries enter the ask flow) exactly like the
+/// secret-bearing listings.
+fn note_withheld_entries<'a>(entries: &'a [Credential]) -> Vec<&'a Credential> {
+    entries
+        .iter()
+        .filter(|e| e.note().is_some_and(|_| withheld_reason(e.agent_policy()).is_some()))
+        .collect()
+}
+
 #[derive(Serialize)]
 pub struct ListOutput<T: Serialize> {
     #[serde(rename = "type")]
@@ -294,7 +306,24 @@ impl ListAction {
             Ok(Some(output.to_json()?))
         } else {
             if self.verbose {
+                // Verbose plain withholds passwords and notes per entry.
                 WithheldSummary::tally(entries.iter().map(|e| e.agent_policy())).report();
+            } else {
+                // The metadata listing prints notes; when one is redacted,
+                // the withheld read is reported and ask entries enter the
+                // ask flow, exactly like the secret-bearing listings.
+                let withheld_notes = note_withheld_entries(&entries);
+                if !withheld_notes.is_empty() {
+                    WithheldSummary::tally(withheld_notes.iter().map(|e| e.agent_policy()))
+                        .report();
+                    agent::log_bulk_ask_requests(
+                        withheld_notes
+                            .into_iter()
+                            .map(|e| (e.title().to_string(), e.agent_policy())),
+                        "note",
+                        false,
+                    );
+                }
             }
             Ok(Some(Self::format_credentials_plain(&entries, self.verbose)))
         }
@@ -1044,5 +1073,27 @@ mod tests {
         assert_eq!(withheld_reason(AgentPolicy::Never), Some("agent=never"));
         let ask_reason = withheld_reason(AgentPolicy::Ask).unwrap();
         assert!(ask_reason.starts_with("agent=ask"));
+    }
+
+    #[test]
+    fn note_withheld_entries_covers_only_restricted_entries_with_notes() {
+        let with_note = |agent: Option<&str>| {
+            let mut cred = Credential::new(None, "pw", "t", "u", Some("note"), None);
+            if let Some(agent) = agent {
+                cred = cred
+                    .with_custom_attributes(&[("agent".to_string(), agent.to_string())]);
+            }
+            cred
+        };
+        let entries = vec![
+            with_note(Some("allow")),
+            with_note(Some("ask")),
+            with_note(None), // default never, with a note -> withheld
+            Credential::new(None, "pw", "t2", "u2", None, None), // never, no note
+        ];
+        let withheld = note_withheld_entries(&entries);
+        assert_eq!(withheld.len(), 2);
+        assert_eq!(withheld[0].agent_policy(), AgentPolicy::Ask);
+        assert_eq!(withheld[1].agent_policy(), AgentPolicy::Never);
     }
 }
