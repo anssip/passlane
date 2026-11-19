@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Passlane is a password manager and authenticator CLI written in Rust that uses Keepass as the storage backend. It supports storing credentials, payment cards, secure notes, and TOTP (Time-based One-Time Passwords). The application supports KDB, KDBX3, and KDBX4 file formats and can optionally use key files for additional security.
 
+## Related Repositories and Roadmap
+
+The iOS app and the phone-as-key / approval-protocol work are planned in the [passlane-ios repo](https://github.com/anssip/passlane-ios) — see its [PLAN.md](https://github.com/anssip/passlane-ios/blob/main/PLAN.md) (the roadmap of record for Phase 0, the v1 wedge, and later phases). Implementation is tracked in this repo's issues #42–54: the cargo workspace split (`passlane-core`, `passlane-ffi`), the keepass-ng challenge-response feature split (interim `[patch.crates-io]` pin on the `challenge-response-usb` branch of the keepass-ng fork), virtual and phone-held hardware keys, the approval protocol crate, link transport, and the session agent. Upcoming structural changes (crate layout, feature gates) follow that plan — read it before large refactors.
+
 ## Development Commands
 
 ### Building
