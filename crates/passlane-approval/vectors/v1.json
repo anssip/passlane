@@ -1,0 +1,116 @@
+{
+  "cases": [
+    {
+      "body": {
+        "challenge": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "operation": {
+          "kind": "unlock"
+        },
+        "requester": "anssi@macbook-pro",
+        "scope": {
+          "kind": "once"
+        },
+        "type": "approval_request",
+        "vault_id": "default",
+        "vault_name": "Main"
+      },
+      "envelope_base64url": "UExBUAEDAbIAeyJ2IjoxLCJ0IjozLCJuIjoiYTIyNDI3MjI2Mzc3Y2M4NjdkNTFhZDNmMTMwYWYwOGEiLCJ0cyI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwMzAwLCJza2lkIjoiOGFlZDgyNmRiNmM4NmEyYSIsInJraWQiOiJjY2M0NWJkNTQwMTk2ZWMzIiwicmlkIjoiZDEzNDUxZGU3MTYwZWZhMmIyMzA3NmZkNzgyZGU5NjcifUEABBnL_ekTOtjCFXzH7BZUL7fIUgrcm8PWKHcaBDAyExCWhkKnTEagjunzBciZt5uX3f4uNviCoump5W7ko2eIJPv5AAAAGx4mriqGRToAPugXfmyGmUN9CCqQYMn1TR0dELlOZApemQ9N_DBTLrXIOG2Mf5QHpXLHVKqXVKAYp_l8UGnffG8LO-pAC1Ho7fin4ctDy0J1XikZL0mgDTpntFEXuvDh7UB8w5mIaHg4H9QBFwTFhU_vKTarJf0bl2vO8UEHEp0MmVI_jWxA7DJmxO_6_uWVpWSO9ntN2I0J9CbX7nTw2Y2STjp0UBy6ZZ4T5O1W1JKgKiTDkQYuPteDUuRj9jTmHUC7wvm3qT4V1XkLFzs4C2_52fGVhKdT-Y7EPNAeUfliFUBnmCZojd9jPLTQu7ciYKHrK7VrIaXJRwAwRQIhAOBbWxKMWs01MldaURR73TMXsBWt9QBf-VdrBO6ETA54AiAm6T6yDVOOiWCMZmgzST4aAR_OA_rnP9FDml9NxYpN_w",
+      "expected_header": {
+        "exp": 1760000300,
+        "rkid": "ccc45bd540196ec3",
+        "skid": "8aed826db6c86a2a",
+        "t": 3,
+        "ts": 1760000000,
+        "v": 1
+      },
+      "name": "approval_request_unlock",
+      "now": 1760000000,
+      "policy": {
+        "max_clock_skew_secs": 120,
+        "max_session_secs": 900,
+        "max_ttl_secs": 900,
+        "ttl_secs": 300
+      },
+      "recipient": {
+        "enc_secret": "1fbec814b18b1d4c3eaa7cec41007e04bf0a98453b06ec7582aa29882c52eb7e",
+        "sig_secret": "3332b4635812333125e8b5ae3d8e7e4599a0df8274e488fc58e06320e32f28cb"
+      },
+      "sender": {
+        "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+        "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+      },
+      "sender_pin": {
+        "enc_pub": "0499a755d30983291c44d918603c0fd971f88272866cc3f7d983a27bca8b4979c51f87b3a69cb9d438891397915a9037b8340044d727fe7bf4c294e79c365e781d",
+        "label": "macbook-pro",
+        "paired_at": 1760000000,
+        "sig_pub": "0493b91141d8e52e9f38437130365d6fcc690d1d28d2955ca69a865a04fe2eab533dff2ff3ae3a6e50078cd379babe42fa3c075add6c7c8d01015352ce45fd0d69"
+      }
+    },
+    {
+      "body": {
+        "decision": "Allow",
+        "response": "7777777777777777777777777777777777777777",
+        "scope": {
+          "kind": "timed",
+          "seconds": 300
+        },
+        "type": "approval_response"
+      },
+      "envelope_base64url": "UExBUAEEAbIAeyJ2IjoxLCJ0Ijo0LCJuIjoiZWE5ZjExZjhkZmIwY2EwOGE4ODEwZjllYTM5YzNhNmEiLCJ0cyI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwMzAwLCJza2lkIjoiY2NjNDViZDU0MDE5NmVjMyIsInJraWQiOiI4YWVkODI2ZGI2Yzg2YTJhIiwicmlkIjoiZmI3ODA4NTllOGQ4YzdiYzM3Yjc4ZTJmOWI4ZDY4ZDkifUEABCBelgvbB3V3CDc518NCOuHhMphsV7nKPwSuyBz3P7ttdFBq8dC4aSbF5LA8sx1YkpYhErx_bQJeLojGZtJKH5qcAAAALiFT_e4tiaEdBqURYByUoNaAuBBl_Y2cG5vQrQZGqnPOw0jV3EzOdq1mH1eYFe_8_d3apJ4dZG9GUS3E-nJu_kk8yz4g6KkDRDojjTHrWImmRldJPtToI9ELe7xUPUXGFiPelG16izYLJTuChfDZIw_TJVNtldbDkXIR9qmp2X77EyI5CPHOs_vBF3Unx7vzhU9XPDjPRIrrFnNFRwAwRQIgftagUGSb_d3-bDlrrz-u1LV5ZE-xQuldlJB0zV_3zU8CIQCOx2O4XVe1I6Ls5Mg9-SRCOVM8IP6ZkdFwUejqSzRvOg",
+      "name": "approval_response_with_secret",
+      "now": 1760000000,
+      "policy": {
+        "max_clock_skew_secs": 120,
+        "max_session_secs": 900,
+        "max_ttl_secs": 900,
+        "ttl_secs": 300
+      },
+      "recipient": {
+        "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+        "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+      },
+      "sender": {
+        "enc_secret": "1fbec814b18b1d4c3eaa7cec41007e04bf0a98453b06ec7582aa29882c52eb7e",
+        "sig_secret": "3332b4635812333125e8b5ae3d8e7e4599a0df8274e488fc58e06320e32f28cb"
+      },
+      "sender_pin": {
+        "enc_pub": "043cf509826fd9bcb398c0f3278c4d5d930c3b1c11624693c9b27748f7967052da7d86f1bca861c839fede8a22980da8bfa45fde7376190a1b57da72d76cdceaf4",
+        "label": "anssi-iphone",
+        "paired_at": 1760000000,
+        "sig_pub": "0435af7147f6aa29b0a55eaa8f36e643e879ee25dc5d85b71075336594f805d15e036bea6376800727f945d278a9c0c51725b25b3fc0ec047be9991c306b24622e"
+      }
+    },
+    {
+      "confirmation_code": "252113-623828",
+      "derived_pin": {
+        "enc_pub": "0499a755d30983291c44d918603c0fd971f88272866cc3f7d983a27bca8b4979c51f87b3a69cb9d438891397915a9037b8340044d727fe7bf4c294e79c365e781d",
+        "label": "macbook-pro",
+        "paired_at": 1760000001,
+        "sig_pub": "0493b91141d8e52e9f38437130365d6fcc690d1d28d2955ca69a865a04fe2eab533dff2ff3ae3a6e50078cd379babe42fa3c075add6c7c8d01015352ce45fd0d69"
+      },
+      "envelope_base64url": "UExBUAEBAaIAeyJ2IjoxLCJ0IjoxLCJuIjoiNWU4MzFjYTE0NzdlOWIyMTFlM2FiYTdhMWYyMWQ1MDAiLCJ0cyI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwMzAwLCJza2lkIjoiOGFlZDgyNmRiNmM4NmEyYSIsInJraWQiOiIiLCJyaWQiOiIzN2FlNmJkMjM5MTBhMWVlMDlhYzRlOTkyZTAxOTM4MSJ9AACVAQAAUvbS3UOXAWTaP8e1n0CuhD9SZP1TIkPRe-JVFIbhwTl6qaEKW_t5wgQsXG1fcvS7mF2uvMNpGoQ4ZO6wygZdgCa7lflAQR4Tl3SYhfuncp2-w7MWxuSgQb7oYzZpqObyNOSoqzLPJwDvHBsJT3IzSRoyCrppWuwmJWTb3c0DNu_MwCD5vVN0NwoGRz9wVQuqA-IknOrmHyTlaayvb8tPa962Ltpze6av9ihGuC_G1K9bpUJBOAGZaG02JCR7pgG762Ch1CGhHzh_EHOMTZnfVCOuodJ9aU_2j26VOY7I2RXmW4H-ihehaBcpXCIV1uxBITd_IwgdeUDUzn-G90Ec9ok5w9qxWeNxhpRRwR0o0kKxV1ag9a2BvwG9zGI-3WM-kq_JXah3CgB3kNpeuOTa6ecAFwChq38FwSOKmqYBP5QXW4sKKgQJnXOljuo6GCcxaVXMJaoeBtYcLWqkLJdnqS-evjlCE3DZT6NDqEA9nPbpcOyrotc-EQMbhKOx6o_NSwoyAPWBcb41rimtY2MgTB4d3PR4RwAwRQIgXg-kwLsaVZI1FHj9StXLGGAHGra699xi82JHZGIznX0CIQDFJtJXXsVy4KTXGtgWjAVoXnaec7RvPxC5ZgvgCJCY6A",
+      "name": "pairing_request_psk",
+      "now": 1760000000,
+      "pairing_secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "policy": {
+        "max_clock_skew_secs": 120,
+        "max_session_secs": 900,
+        "max_ttl_secs": 900,
+        "ttl_secs": 300
+      },
+      "sender": {
+        "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+        "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+      }
+    }
+  ],
+  "format": "passlane-approval test vectors",
+  "note": "Open each envelope_base64url with the recipient's enc_secret and verify with sender_pin.sig_pub (hex SEC1). The ephemeral HPKE secret is inside the envelope; no RNG is needed to open.",
+  "suite": {
+    "aead": "AES-256-GCM",
+    "kdf": "HKDF-SHA256",
+    "kem": "DHKEM(P-256, HKDF-SHA256)",
+    "signature": "ECDSA-P256/SHA-256, DER"
+  },
+  "version": 1
+}

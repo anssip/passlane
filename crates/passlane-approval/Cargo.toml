@@ -1,0 +1,36 @@
+[package]
+name = "passlane-approval"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Anssi Piirainen <anssip@email.com>"]
+license = "GPL-3.0-or-later"
+description = "Message format and crypto for the passlane approval protocol (phone-as-key, agent approvals)"
+repository = "https://github.com/anssip/passlane"
+keywords = ["passlane", "approval", "hpke", "cryptography"]
+categories = ["cryptography"]
+
+[dependencies]
+# RFC 9180 HPKE: DHKEM(P-256) + HKDF-SHA256 + AES-256-GCM, RustCrypto backend.
+hpke-rs = { version = "0.8", default-features = false, features = ["rustcrypto", "std"] }
+# ECDSA P-256 signatures (sender authentication) and key derivation.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+# Pairing envelopes: HKDF-SHA256 -> AES-256-GCM under the QR-borne pairing
+# secret, plus an HMAC binding of the pairing response to that secret.
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+# Cross-platform exclusive file lock for the file-backed nonce store.
+fs4 = "1.1"
+thiserror = "2"
+rand = "0.8"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+hmac = "0.12"
+sha1 = "0.10"
