@@ -116,20 +116,27 @@ inquire/rustyline need a terminal; feeding a plain pipe hangs or panics. Wrap in
   pipe closes while passlane is still working (Argon2 unlock takes seconds), prompts see
   EOF and cancel/panic. Budget ~2 s per prompt plus ~4 s for the first unlock.
 - **`script` never forwards EOF to the pty** — anything that ends on EOF (multiline note
-  editor) hangs forever. Kill with `pkill -f passlane` and redesign the input.
-- A stuck session: `pkill -f passlane`; check leftovers with `git status`-free temp dirs.
-- Remember: under `script`, passlane's stdin **is** a TTY, so non-stdout reveals run in
-  the *owner* context (an `agent=ask` entry prompts "Approve revealing…?"). To exercise
-  the *agent* context (no prompts, refusals), run the binary with `</dev/null` stdin or a
-  stdout-revealing flag (`--out`, `--once`, `list --json`).
+  editor) hangs forever. Kill the stuck process and redesign the input.
+- A stuck session: kill it **by the test vault's unique name**, never with a bare
+  `pkill -f passlane` — that pattern also matches the *user's own* passlane processes and
+  would terminate an unrelated vault operation mid-save or mid hardware-key challenge:
+  ```bash
+  pkill -f "passlane.*--vault $NAME"; pkill -f "passlane.*vault add $NAME"
+  ```
+- Remember: under `script`, passlane's stdin and stdout **are** TTYs, so non-stdout
+  reveals run in the *owner* context (an `agent=ask` entry prompts "Approve revealing…?").
+  To exercise the *agent* context (no prompts, refusals), run the binary with `</dev/null`
+  stdin or a stdout-revealing flag (`--out`, `--once`, `list --json`), or redirect stdout.
 
 ## Gotchas
 
 - **Never run the freshly built binary against the user's real vaults.** Any
   rebuild changes the ad-hoc signature, so the first keychain access to *real*
   items (`vault list` and `status` read the lock state of every configured
-  vault!) triggers a permission popup per item. Scope every invocation to the
-  test vault (`--vault $NAME`); check registration with
+  vault!) triggers a permission popup per item — which also **blocks the run
+  until a human answers**, so an unattended verification session wedges there.
+  Scope every invocation to the test vault (`--vault $NAME`); check
+  registration with
   `python3 -c "import json; print([v['name'] for v in json.load(open('$HOME/.passlane/vaults.json'))['vaults']])"`
   instead of `vault list`, and never use `vault list`/`status`/`vault info`
   with the debug binary outside the test vault.
