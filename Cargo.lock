@@ -2299,6 +2299,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "erased-serde",
+ "fs4",
  "hex",
  "inquire",
  "keepass-ng",

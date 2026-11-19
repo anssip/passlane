@@ -263,7 +263,8 @@ fn approval_request_body(vault: &str, entry: &str, field: &str) -> Body {
 
 /// Append one line, creating the file owner-only on first use. Append
 /// mode keeps earlier events intact — the log is append-only by
-/// construction.
+/// construction — and an exclusive lock around the write keeps concurrent
+/// passlane invocations from interleaving lines.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -281,8 +282,12 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    use fs4::FileExt;
     use std::io::Write;
-    writeln!(file, "{}", line)
+    file.lock()?;
+    let result = writeln!(file, "{}", line).and_then(|()| file.flush());
+    file.unlock()?;
+    result
 }
 
 /// Best-effort identity of the local requester for the log: the user the
@@ -550,6 +555,34 @@ mod tests {
         log.log_request("default", "x", "password", AgentPolicy::Ask);
         let mode = std::fs::metadata(log.path()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn concurrent_appends_do_not_corrupt_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.log");
+        let path = std::sync::Arc::new(path);
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let log = ApprovalLog::at(path.as_ref());
+                for i in 0..25 {
+                    log.log_request("default", &format!("entry-{t}-{i}"), "password", AgentPolicy::Ask);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let contents = std::fs::read_to_string(path.as_ref()).unwrap();
+        let count = contents.lines().filter(|l| !l.is_empty()).count();
+        assert_eq!(count, 100, "every event must survive as its own line");
+        for line in contents.lines() {
+            let event: serde_json::Value =
+                serde_json::from_str(line).expect("no interleaved/corrupt lines");
+            assert_eq!(event["event"], "request");
+        }
     }
 
     #[test]
