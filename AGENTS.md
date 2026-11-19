@@ -38,6 +38,13 @@ RUST_LOG=debug cargo run
 cargo test <test_name>
 ```
 
+## Development Workflow
+
+- All new features from GitHub issues are implemented on a new branch and merged via a pull request on GitHub — never committed directly to master.
+- CoPilot reviews every PR. Use the `copilot-review-loop` skill to drive the review loop and address all review comments until the PR is approved.
+- Verification must include exercising the CLI itself with all affected options and commands — building and running the real flows, not just `cargo test` — in addition to unit tests.
+- Unit tests are added for every new feature as part of the change, not as a follow-up.
+
 ## Architecture
 
 ### Core Design Pattern: Action-Based Architecture
