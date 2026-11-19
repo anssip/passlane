@@ -141,29 +141,41 @@ characters, comfortably inside QR capacity and URL fragments.
 2. `pairing_request` travels PSK-sealed (key = `HKDF-SHA256(salt =
    "passlane-pairing/v1", ikm = secret, info = "passlane-approval/v1" ‖
    type)`), signed by the CLI's signing key (carried inside the ciphertext).
-3. Both sides display the confirmation code: six digits,
-    `format!("{:03}-{:03}", n / 1000, n % 1000)` where
-    `n = u32(HMAC-SHA256(k_display, "confirmation-code" ‖ cli_enc_pub ‖
-    cli_sig_pub))[0..4] mod 10^6` and `k_display = HKDF-SHA256(salt =
-    "passlane-pairing/v1", ikm = secret, info = "display-code")`. The code
-    is **bound to the CLI identity the QR introduces**: a swapped QR
-    carrying substituted keys yields a different code on the phone than
-    the terminal shows over its own keys, so the human comparison fails.
-    The code is a display check, not a transport secret; guessing it is
-    rate-limited by the ceremony being interactive.
+3. **First human check** — the CLI-side code. Both sides display twelve
+   digits (two six-digit groups): terminal over its own keys, phone over
+   the keys from the decrypted request.
+   `n = u64(HMAC-SHA256(k_display, "confirmation-code" ‖ cli_enc_pub ‖
+   cli_sig_pub))[0..8] mod 10^12`, `k_display = HKDF-SHA256(salt =
+   "passlane-pairing/v1", ikm = secret, info = "display-code")`,
+   formatted `123456-789012`. The identity binding catches a swapped QR
+   carrying substituted *CLI* keys.
 4. `pairing_response` is normal HPKE to the CLI's key, signed by the
    approver, **and carries a binding proof**:
    `HMAC-SHA256(k_bind, "pairing-response-bind" ‖ request.rid ‖ cli_enc_pub
    ‖ responder_enc_pub ‖ responder_sig_pub)` with `k_bind =
    HKDF-SHA256(salt = "passlane-pairing/v1", ikm = secret, info =
    "response-binding")`. The proof binds the response to the exact request
-   (by `rid`) and to **both** identities being pinned. HPKE-to-the-CLI and
-   a self-declared signing key alone would not stop an attacker who knows
-   the CLI's public keys; the proof requires the pairing secret. The
-   response echoes the request's `rid`.
-5. The CLI pins the declared keys only after the proof verified and the
-   codes matched. The secret is discarded; both sides store a `PeerPin`
+   (by `rid`) and to **both** identities being pinned.
+5. **Second human check** — the mutual code. Anyone holding the pairing
+   secret (e.g. an attacker who read the QR) can produce a valid proof for
+   *their own* keys, so cryptography alone cannot authenticate the
+   responder. After the response arrives, the terminal displays
+   `HMAC-SHA256(k_display, "mutual-confirmation-code" ‖ cli_enc_pub ‖
+   cli_sig_pub ‖ responder_enc_pub ‖ responder_sig_pub)` (same 12-digit
+   formatting) computed from the decrypted response, and the responder
+   displays the same value computed from the request. **Both codes must
+   match before either side persists its pin.**
+6. The secret is discarded; both sides store a `PeerPin`
    (`label`, `enc_pub`, `sig_pub`, `paired_at`, optional WebAuthn RP data).
+
+**Entropy honesty**: a substituted-QR attacker who can also read the
+terminal's displayed code can grind a replacement secret offline until its
+first-stage code collides — twelve digits puts that at ~2^40 HMACs (hours
+of GPU time, on top of physically swapping the QR and shoulder-surfing),
+six would have been grindable in under a second. If substitution is
+suspected, the out-of-band escape hatch is comparing full key fingerprints
+(the hex `enc_pub`/`sig_pub` of both pins) — the iOS app will later support
+scanning the responder's fingerprint QR directly.
 
 **Away-from-desk pairing is forbidden for initial pairing.** The QR scan is
 the out-of-band channel; a chat-relayed "pairing" is a social-engineering

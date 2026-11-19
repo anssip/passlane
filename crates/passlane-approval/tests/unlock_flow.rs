@@ -36,7 +36,7 @@ fn phone_held_key_unlock_flow() {
     let cli_enc = passlane_approval::encoding::hex_encode(&cli.encryption_public());
     let cli_sig = passlane_approval::encoding::hex_encode(&cli.verifying_key().to_sec1_bytes());
     let code = secret.confirmation_code(&cli_enc, &cli_sig);
-    assert_eq!(code.len(), 7, "formatted as 123-456");
+    assert_eq!(code.len(), 13, "formatted as 123456-789012");
     // A substituted identity must produce a different code (QR-swap defense).
     let impostor = IdentityKeys::generate(&mut rng).unwrap();
     let imp_enc = passlane_approval::encoding::hex_encode(&impostor.encryption_public());
@@ -131,7 +131,7 @@ fn phone_held_key_unlock_flow() {
     };
     assert_eq!(*operation, Operation::Unlock);
     let challenge = challenge.as_ref().unwrap().as_bytes().unwrap();
-    assert_eq!(challenge, vault_challenge.to_vec());
+    assert_eq!(challenge.as_slice(), vault_challenge.as_slice());
 
     // The phone computes the HMAC-SHA1 response with the held secret and
     // answers (encrypted to the CLI's pinned key), echoing the request id.
@@ -166,7 +166,10 @@ fn phone_held_key_unlock_flow() {
         panic!("expected approval response");
     };
     assert_eq!(*decision, Decision::Allow);
-    assert_eq!(got.as_ref().unwrap().as_bytes().unwrap(), response.to_vec());
+    assert_eq!(
+        got.as_ref().unwrap().as_bytes().unwrap().as_slice(),
+        response.as_slice()
+    );
 }
 
 #[test]

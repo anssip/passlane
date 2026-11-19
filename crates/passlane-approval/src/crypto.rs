@@ -188,15 +188,36 @@ fn pairing_display_key(secret: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     Zeroizing::new(key)
 }
 
-/// The six-digit confirmation code, bound to the **CLI identity being
+/// The confirmation code digits. Twelve (two six-digit groups) puts the
+/// offline grind cost for a substituted QR at ~2^40 HMACs — hours of GPU
+/// time against a code that must ALSO be shoulder-surfed live. Six digits
+/// would be grindable in under a second; see SPEC §5 for the full math
+/// and the fingerprint escape hatch.
+const CODE_DIGITS: u64 = 1_000_000_000_000;
+
+fn format_code(n: u64) -> String {
+    let d = CODE_DIGITS;
+    let a = n / 1_000_000;
+    let b = n % 1_000_000;
+    let _ = d;
+    format!("{a:06}-{b:06}")
+}
+
+/// The six-pair-digit confirmation code, bound to the **CLI identity being
 /// pinned** — not to the secret alone.
 ///
-/// Binding the identity is what defeats the QR-swap attack: an attacker
+/// Binding the identity is what defeats the naive QR-swap attack: an attacker
 /// who reads the terminal's QR and re-issues it with substituted keys
 /// produces a different code on the phone than the one the terminal shows
 /// over its own keys, so the human comparison fails. Only a phone holding
 /// the same secret *and* seeing the terminal's genuine keys can display
 /// the matching digits.
+///
+/// This is the **first** of two checks: it authenticates the CLI side.
+/// The response side needs [`pairing_mutual_confirmation_code`], because
+/// anyone holding the pairing secret can produce a valid proof for their
+/// own keys — the human must compare a value that covers the responder
+/// too before any pin is persisted.
 pub(crate) fn pairing_confirmation_code(
     secret: &[u8; 32],
     cli_enc_pub_hex: &str,
@@ -208,12 +229,46 @@ pub(crate) fn pairing_confirmation_code(
     mac.update(b"confirmation-code");
     mac.update(cli_enc_pub_hex.as_bytes());
     mac.update(cli_sig_pub_hex.as_bytes());
-    let n = u32::from_be_bytes(
-        mac.finalize().into_bytes()[..4]
+    let n = u64::from_be_bytes(
+        mac.finalize().into_bytes()[..8]
             .try_into()
-            .expect("4 bytes"),
-    ) % 1_000_000;
-    format!("{:03}-{:03}", n / 1000, n % 1000)
+            .expect("8 bytes"),
+    ) % CODE_DIGITS;
+    format_code(n)
+}
+
+/// The **mutual** confirmation code: shown on the terminal (computed from
+/// the decrypted response) and on the responder (computed from the request)
+/// after the pairing response arrives, before either side persists its pin.
+///
+/// Unlike [`pairing_confirmation_code`], this binds **both** identities: a
+/// QR-reading attacker who knows the pairing secret can still forge a
+/// perfectly valid response pinning their own keys — the cryptographic proof
+/// only proves knowledge of the secret, which they have. The mutual code is
+/// the human check that catches the substitution: the substituted response
+/// yields a different code on the terminal than the genuine responder
+/// shows. Both codes must match before a pin is saved.
+pub(crate) fn pairing_mutual_confirmation_code(
+    secret: &[u8; 32],
+    cli_enc_pub_hex: &str,
+    cli_sig_pub_hex: &str,
+    responder_enc_pub_hex: &str,
+    responder_sig_pub_hex: &str,
+) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_display_key(secret).as_ref())
+        .expect("HMAC accepts any key length");
+    mac.update(b"mutual-confirmation-code");
+    mac.update(cli_enc_pub_hex.as_bytes());
+    mac.update(cli_sig_pub_hex.as_bytes());
+    mac.update(responder_enc_pub_hex.as_bytes());
+    mac.update(responder_sig_pub_hex.as_bytes());
+    let n = u64::from_be_bytes(
+        mac.finalize().into_bytes()[..8]
+            .try_into()
+            .expect("8 bytes"),
+    ) % CODE_DIGITS;
+    format_code(n)
 }
 
 /// HMAC-SHA256 binding proof over the whole pairing context: the request

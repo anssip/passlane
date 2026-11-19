@@ -7,9 +7,9 @@
 //!
 //! - the pairing AEAD key: `HKDF-SHA256(salt = "passlane-pairing/v1",
 //!   ikm = secret, info = "passlane-approval/v1" || msg_type)`;
-//! - a six-digit **confirmation code**: the human compares `123-456` on the
-//!   phone against the same digits in the terminal, defeating a swapped-QR
-//!   attack. The code is a display check, not a cryptographic secret.
+//! - a twelve-digit **confirmation code** (two stages: a CLI-side code and
+//!   a mutual code binding both identities — see SPEC §5): the human
+//!   compares them across the devices;
 //!
 //! The flow (see SPEC.md §Pairing):
 //!
@@ -71,17 +71,42 @@ impl PairingSecret {
         Zeroizing::new(hex_encode(&self.0))
     }
 
-    /// Six-digit confirmation code (`123-456`), derived from the secret and
-    /// **bound to the CLI identity being pinned** (its public keys, as the
-    /// terminal shows them / as the decrypted request carries them).
+    /// The twelve-digit confirmation code (two six-digit groups), derived
+    /// from the secret and **bound to the CLI identity being pinned** (its
+    /// public keys, as the terminal shows them / as the decrypted request
+    /// carries them).
     ///
-    /// Both endpoints display it over the same key material; the human
-    /// compares them before continuing. The identity binding is what makes
-    /// a swapped QR (same secret, substituted keys) fail the comparison.
-    /// The code is a display check, not a transport secret; guessing it is
-    /// rate-limited by the pairing ceremony being interactive.
+    /// This is the **first** human check; it authenticates the CLI side of
+    /// the pairing. Before persisting the resulting pin, callers must also
+    /// verify [`PairingSecret::mutual_confirmation_code`] — see its docs
+    /// and SPEC §5 for why the response side needs its own check.
     pub fn confirmation_code(&self, cli_enc_pub_hex: &str, cli_sig_pub_hex: &str) -> String {
         crypto::pairing_confirmation_code(self.as_bytes(), cli_enc_pub_hex, cli_sig_pub_hex)
+    }
+
+    /// The **mutual** confirmation code (two six-digit groups), binding the
+    /// pairing secret to **both** identities: the CLI's and the responder's.
+    ///
+    /// Shown on the terminal (computed from the decrypted response keys)
+    /// and on the responder (computed from the request) after the pairing
+    /// response arrives; the human compares before either side persists
+    /// its pin. A QR-reading attacker who holds the secret can forge a
+    /// cryptographically valid response pinning their own keys — this
+    /// human comparison is what detects the substitution.
+    pub fn mutual_confirmation_code(
+        &self,
+        cli_enc_pub_hex: &str,
+        cli_sig_pub_hex: &str,
+        responder_enc_pub_hex: &str,
+        responder_sig_pub_hex: &str,
+    ) -> String {
+        crypto::pairing_mutual_confirmation_code(
+            self.as_bytes(),
+            cli_enc_pub_hex,
+            cli_sig_pub_hex,
+            responder_enc_pub_hex,
+            responder_sig_pub_hex,
+        )
     }
 }
 
@@ -215,6 +240,7 @@ pub fn open_pairing_response(
     if envelope.header.t != MessageType::PairingResponse as u8 {
         return Err(Error::MessageTypeMismatch(MessageType::PairingResponse));
     }
+    crate::envelope::validate_header_shapes(&envelope.header, false)?;
     policy.validate(&envelope.header, now)?;
     if envelope.header.rkid != kid(b"enc", &local.encryption_public()) {
         return Err(Error::WrongRecipient(envelope.header.rkid.clone()));
@@ -312,6 +338,8 @@ fn open_psk_envelope(
             "pairing envelope must not carry an HPKE enc".into(),
         ));
     }
+    // PSK pairing requests address no recipient key yet; empty rkid allowed.
+    crate::envelope::validate_header_shapes(&envelope.header, true)?;
     policy.validate(&envelope.header, now)?;
 
     let plaintext = Zeroizing::new(crypto::psk_open(
@@ -541,6 +569,63 @@ mod tests {
             open_pairing_response(&cli, &secret, &forged, 2, &policy, &mut store),
             Err(Error::Pairing(_))
         ));
+    }
+
+    #[test]
+    fn mutual_code_detects_substituted_response() {
+        // The round-3 attack: the attacker READ the QR and holds the real
+        // secret, so their forged response carries a perfectly valid proof.
+        // Cryptography cannot distinguish them — the mutual confirmation
+        // code is the human check that does.
+        let mut rng = OsRng;
+        let cli = IdentityKeys::generate(&mut rng).unwrap();
+        let phone = IdentityKeys::generate(&mut rng).unwrap();
+        let attacker = IdentityKeys::generate(&mut rng).unwrap();
+        let secret = PairingSecret::generate(&mut rng);
+        let policy = Policy::default();
+
+        let request = seal_pairing_request(
+            &mut rng,
+            &secret,
+            &cli,
+            DeviceInfo {
+                kind: "cli".into(),
+                name: "mbp".into(),
+                version: "4".into(),
+            },
+            1,
+            &policy,
+        )
+        .unwrap();
+        let mut store = InMemoryNonceStore::default();
+        let (_body, _cli_pin) =
+            open_pairing_request(&secret, &request, 2, &policy, &mut store).unwrap();
+
+        let cli_enc = hex_encode(&cli.encryption_public());
+        let cli_sig = hex_encode(&cli.verifying_key().to_sec1_bytes());
+
+        // Genuine responder shows this code; the terminal computes the
+        // same value from the genuine response keys.
+        let genuine_code = secret.mutual_confirmation_code(
+            &cli_enc,
+            &cli_sig,
+            &hex_encode(&phone.encryption_public()),
+            &hex_encode(&phone.verifying_key().to_sec1_bytes()),
+        );
+        assert_eq!(genuine_code.len(), 13, "formatted 123456-789012");
+
+        // The attacker's substituted response (valid proof — they hold
+        // the secret) produces a different code on the terminal.
+        let derived = secret.mutual_confirmation_code(
+            &cli_enc,
+            &cli_sig,
+            &hex_encode(&attacker.encryption_public()),
+            &hex_encode(&attacker.verifying_key().to_sec1_bytes()),
+        );
+        assert_ne!(
+            derived, genuine_code,
+            "substituted response must show a different mutual code"
+        );
     }
 
     #[test]

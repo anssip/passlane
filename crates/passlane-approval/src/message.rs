@@ -179,9 +179,13 @@ impl SecretHex {
         Self(crate::encoding::hex_encode(bytes))
     }
 
-    /// Decode back to raw bytes.
-    pub fn as_bytes(&self) -> Result<Vec<u8>> {
-        crate::encoding::hex_decode(&self.0)
+    /// Decode back to raw bytes. The returned buffer wipes itself on drop:
+    /// for an unlock response this is the vault-opening factor, and no
+    /// unguarded copy of it may linger in freed heap memory.
+    pub fn as_bytes(&self) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        Ok(zeroize::Zeroizing::new(crate::encoding::hex_decode(
+            &self.0,
+        )?))
     }
 
     /// The hex form.

@@ -305,6 +305,41 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Validate a random-id field: exact hex length, lower-case. Applied to
+/// caller-supplied request ids at seal time and to parsed headers at open
+/// time, so a sealed envelope can never carry header shapes the receiver
+/// would reject (or that downstream code assumes).
+pub(crate) fn validate_id_field(name: &str, value: &str, hex_len: usize) -> Result<()> {
+    let ok = value.len() == hex_len
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Malformed(format!(
+            "{name} must be {hex_len} lower-case hex characters"
+        )))
+    }
+}
+
+/// Check the header shapes every opening path relies on: 32-hex nonce and
+/// request id, 16-hex key ids (the pairing request's empty recipient id is
+/// allowed via `allow_empty_rkid`).
+pub(crate) fn validate_header_shapes(header: &Header, allow_empty_rkid: bool) -> Result<()> {
+    validate_id_field("header.n", &header.n, 32)?;
+    validate_id_field("header.rid", &header.rid, 32)?;
+    validate_id_field("header.skid", &header.skid, 16)?;
+    if header.rkid.is_empty() {
+        if !allow_empty_rkid {
+            return Err(Error::Malformed("header.rkid must not be empty".into()));
+        }
+    } else {
+        validate_id_field("header.rkid", &header.rkid, 16)?;
+    }
+    Ok(())
+}
+
 fn random_hex32(rng: &mut (impl rand::CryptoRng + rand::RngCore)) -> Result<String> {
     let mut bytes = [0u8; 16];
     rng.fill_bytes(&mut bytes); // OsRng-style fill
@@ -442,6 +477,11 @@ fn seal_inner(
         policy.validate_scope(*scope)?;
     }
     let msg_type = body.message_type();
+    if let Some(rid) = in_reply_to {
+        // A malformed reply id would embed fine but produce a header the
+        // receiver rejects (or worse, accepts with assumptions broken).
+        validate_id_field("in_reply_to", rid, 32)?;
+    }
     let header = Header {
         v: VERSION,
         t: msg_type as u8,
@@ -505,6 +545,7 @@ pub fn open(
     if envelope.header.v != VERSION {
         return Err(Error::Version(envelope.header.v));
     }
+    validate_header_shapes(&envelope.header, false)?;
     policy.validate(&envelope.header, now)?;
 
     let peer = peers

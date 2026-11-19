@@ -65,8 +65,13 @@ pub fn load_or_generate_identity(
     let json = Zeroizing::new(serde_json::to_vec(&file)?);
 
     // Publish atomically without replacing: hard-link the complete temp
-    // file into place (fails with AlreadyExists if we lost the race).
+    // file into place (fails with AlreadyExists if we lost the race). The
+    // lock is held throughout, so an abandoned temp file from a previous
+    // crashed initialization can be swept safely — otherwise it would
+    // brick every later attempt (`create_new` refuses it while the final
+    // identity is absent).
     let tmp = dir.join("approval_identity.json.new");
+    let _ = std::fs::remove_file(&tmp);
     write_new_exclusive(&tmp, &json)?;
     match std::fs::hard_link(&tmp, &path) {
         Ok(()) => {
