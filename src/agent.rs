@@ -359,12 +359,18 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
-/// Append `--vault` unless the entry's vault already is the active one
-/// (no active vault at all still needs the explicit target).
+/// Target the entry's vault with an explicit `--vault` flag unless it
+/// already is the active one (no active vault at all still needs the
+/// explicit target). The flag is inserted directly after the binary name:
+/// it must precede any trailing `-- <pattern>` separator, after which
+/// everything is a positional.
 fn with_vault_targeting(command: String, vault: &str, active: Option<&str>) -> String {
-    match active {
-        Some(active) if active == vault => command,
-        _ => format!("{command} --vault {vault}"),
+    if matches!(active, Some(active) if active == vault) {
+        return command;
+    }
+    match command.strip_prefix("passlane ") {
+        Some(rest) => format!("passlane --vault {vault} {rest}"),
+        None => format!("{command} --vault {vault}"),
     }
 }
 
@@ -907,11 +913,17 @@ mod tests {
         );
         assert_eq!(
             with_vault_targeting("passlane show 'x'".into(), "work", Some("default")),
-            "passlane show 'x' --vault work"
+            "passlane --vault work show 'x'"
         );
         assert_eq!(
             with_vault_targeting("passlane show 'x'".into(), "work", None),
-            "passlane show 'x' --vault work"
+            "passlane --vault work show 'x'"
+        );
+        // The flag must come before a `--` pattern separator, where
+        // everything after -- is positional.
+        assert_eq!(
+            with_vault_targeting("passlane show -- -root".into(), "work", Some("default")),
+            "passlane --vault work show -- -root"
         );
     }
 }
