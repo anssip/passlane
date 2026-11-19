@@ -1,6 +1,17 @@
 use comfy_table::*;
 
-use passlane_core::vault::entities::{Credential, Note, PaymentCard, Totp};
+use passlane_core::vault::entities::{AgentPolicy, Credential, Note, PaymentCard, Totp};
+
+/// Secret cell text for a cleartext table. `ask` entries stay redacted
+/// until their row is selected — the selection path runs the approval
+/// prompt (the ask flow) and only then reveals the entry in full.
+fn table_secret(value: &str, policy: AgentPolicy) -> String {
+    if policy == AgentPolicy::Ask {
+        "[agent=ask]".to_string()
+    } else {
+        value.to_string()
+    }
+}
 
 pub fn show_credentials_table(credentials: &[Credential], show_password: bool, plain: bool) {
     let mut table = Table::new();
@@ -40,7 +51,7 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(title_cell),
                 Cell::new(String::from(creds.username())),
-                Cell::new(String::from(creds.password())),
+                Cell::new(table_secret(creds.password(), creds.agent_policy())),
             ]
         } else {
             vec![
@@ -144,9 +155,9 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool, 
                 } else {
                     ""
                 })),
-                Cell::new(String::from(card.number())),
+                Cell::new(table_secret(card.number(), card.agent_policy())),
                 Cell::new(String::from(format!("{}", card.expiry()))),
-                Cell::new(String::from(card.cvv())),
+                Cell::new(table_secret(card.cvv(), card.agent_policy())),
                 Cell::new(String::from(card.name_on_card())),
                 Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
@@ -215,7 +226,7 @@ pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool, plain: bool
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(note.title()),
-                Cell::new(note.content()),
+                Cell::new(table_secret(note.content(), note.agent_policy())),
                 Cell::new(&note.last_modified().format("%Y-%m-%d %H:%M:%S").to_string()),
             ]
         } else {
@@ -265,6 +276,16 @@ pub(crate) fn show_totp_table(totps: &[Totp], plain: bool) {
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
+
+    #[test]
+    fn table_secret_redacts_ask_until_approved_selection() {
+        assert_eq!(table_secret("hunter2", AgentPolicy::Ask), "[agent=ask]");
+        assert_eq!(table_secret("hunter2", AgentPolicy::Allow), "hunter2");
+        // `never` entries never reach a cleartext table in agent contexts
+        // (the table is refused), and at the owner's terminal the owner's
+        // own view is unrestricted.
+        assert_eq!(table_secret("hunter2", AgentPolicy::Never), "hunter2");
+    }
 
     // Renders without panicking; run with --nocapture to eyeball the layout.
     #[test]
