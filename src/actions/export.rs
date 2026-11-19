@@ -67,7 +67,17 @@ impl ExportAction {
             }
             let restricted_count =
                 restricted(&creds.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
-            let exported: Vec<Credential> = if confirm_include_restricted(restricted_count) {
+            let include = confirm_include_restricted(restricted_count);
+            // Ask entries enter the approval flow in either outcome;
+            // `never` entries have no ask flow.
+            crate::agent::log_bulk_ask_requests(
+                creds
+                    .iter()
+                    .map(|c| (c.title().to_string(), c.agent_policy())),
+                "password",
+                include,
+            );
+            let exported: Vec<Credential> = if include {
                 creds
             } else {
                 skip_notice(restricted_count);
@@ -85,7 +95,13 @@ impl ExportAction {
             let cards = vault.find_payments();
             let restricted_count =
                 restricted(&cards.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
-            let exported: Vec<PaymentCard> = if confirm_include_restricted(restricted_count) {
+            let include = confirm_include_restricted(restricted_count);
+            crate::agent::log_bulk_ask_requests(
+                cards.iter().map(|c| (c.name().to_string(), c.agent_policy())),
+                "number",
+                include,
+            );
+            let exported: Vec<PaymentCard> = if include {
                 cards
             } else {
                 skip_notice(restricted_count);
@@ -99,7 +115,13 @@ impl ExportAction {
             let notes = vault.find_notes();
             let restricted_count =
                 restricted(&notes.iter().map(|n| n.agent_policy()).collect::<Vec<_>>());
-            let exported: Vec<Note> = if confirm_include_restricted(restricted_count) {
+            let include = confirm_include_restricted(restricted_count);
+            crate::agent::log_bulk_ask_requests(
+                notes.iter().map(|n| (n.title().to_string(), n.agent_policy())),
+                "content",
+                include,
+            );
+            let exported: Vec<Note> = if include {
                 notes
             } else {
                 skip_notice(restricted_count);

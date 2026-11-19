@@ -105,5 +105,6 @@ a file or log.
   `passlane unlock --vault totp` when needed). The agent cannot supply the master password
   non-interactively.
 - **If a read is refused by the agent policy,** stop: `never` needs the owner to change the
-  attribute; `ask` needs the owner to approve (they run `passlane show '<entry>'` interactively
-  and confirm). Do not look for side channels around the refusal.
+  attribute; `ask` needs the owner to run the read themselves (there is no approval handoff
+  until the link transport ships — their approval does not transfer to you, so do not retry).
+  Do not look for side channels around the refusal.

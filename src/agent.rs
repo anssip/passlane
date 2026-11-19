@@ -298,7 +298,7 @@ fn requester() -> String {
 }
 
 /// The current vault's name, best-effort, for log lines.
-fn current_vault_name() -> String {
+pub(crate) fn current_vault_name() -> String {
     crate::vault_registry::current()
         .map(|v| v.name)
         .unwrap_or_else(|_| "unknown".to_string())
@@ -339,7 +339,7 @@ where
                 Err(Error::new(&format!(
                     "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
                      recorded in the approval log ({}). Until the approval link ships, the \
-                     owner approves by revealing the entry interactively: passlane show '{}'",
+                     owner performs the reveal interactively instead: passlane show '{}'",
                     entry,
                     id,
                     log.path().display(),
@@ -398,6 +398,38 @@ fn ask_approval(entry: &str, field: &str) -> bool {
     .prompt()
     .map(|answer| answer == "Approve once")
     .unwrap_or(false)
+}
+
+/// Bulk stdout outputs (`list`, `export`) withhold `ask` entries without
+/// failing the command; each withheld entry still enters the ask flow with
+/// a recorded approval request, so the owner sees what an agent wanted.
+/// Metadata-only listings never call this. When `approved_by_owner` is set
+/// (an interactive owner chose to include the entries), the request is
+/// immediately resolved with a matching decision.
+pub fn log_bulk_ask_requests(
+    entries: impl Iterator<Item = (String, AgentPolicy)>,
+    field: &str,
+    approved_by_owner: bool,
+) {
+    log_bulk_ask_requests_with(&ApprovalLog::default_path(), entries, field, approved_by_owner);
+}
+
+/// [`log_bulk_ask_requests`] with the approval log injected (tests).
+pub fn log_bulk_ask_requests_with(
+    log: &ApprovalLog,
+    entries: impl Iterator<Item = (String, AgentPolicy)>,
+    field: &str,
+    approved_by_owner: bool,
+) {
+    let vault = current_vault_name();
+    for (entry, policy) in entries {
+        if decide(policy, RevealContext::Agent) == RevealDecision::NeedApproval {
+            let id = log.log_request(&vault, &entry, field, policy);
+            if approved_by_owner {
+                log.log_decision(&id, &vault, &entry, field, policy, true);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -628,5 +660,48 @@ mod tests {
         )
         .expect("allow passes agent reveals");
         assert!(!log.path().exists());
+    }
+
+    #[test]
+    fn bulk_ask_requests_record_only_ask_entries() {
+        let (log, _dir) = log_in_tempdir();
+        log_bulk_ask_requests_with(
+            &log,
+            vec![
+                ("GitHub".to_string(), AgentPolicy::Allow),
+                ("Stripe test key".to_string(), AgentPolicy::Ask),
+                ("root".to_string(), AgentPolicy::Never),
+            ]
+            .into_iter(),
+            "password",
+            false,
+        );
+        let events = lines(&log);
+        assert_eq!(events.len(), 1, "only the ask entry enters the ask flow");
+        assert_eq!(events[0]["event"], "request");
+        assert_eq!(events[0]["entry"], "Stripe test key");
+        assert_eq!(events[0]["field"], "password");
+        assert_eq!(
+            events[0].get("decision").and_then(|d| d.as_str()),
+            None,
+            "the request stays pending when the owner did not include it"
+        );
+    }
+
+    #[test]
+    fn bulk_ask_requests_resolved_when_owner_includes_them() {
+        let (log, _dir) = log_in_tempdir();
+        log_bulk_ask_requests_with(
+            &log,
+            vec![("Stripe test key".to_string(), AgentPolicy::Ask)].into_iter(),
+            "password",
+            true,
+        );
+        let events = lines(&log);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["event"], "request");
+        assert_eq!(events[1]["event"], "decision");
+        assert_eq!(events[1]["decision"], "approved");
+        assert_eq!(events[1]["id"], events[0]["id"]);
     }
 }

@@ -57,7 +57,10 @@ rustyline = "14.0.0"
 inquire = "0.7.5"
 ctrlc = "3.4"
 zeroize = "1.8"
-passlane-approval = { path = "crates/passlane-approval" }
+# Approval-protocol message types for the agent ask flow (issue #50). The
+# path+version form lets `cargo publish` rewrite it to the registry
+# dependency once passlane-approval is published.
+passlane-approval = { path = "crates/passlane-approval", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3.24.0"

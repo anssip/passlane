@@ -1,5 +1,5 @@
 use crate::actions::{ItemType, UnlockingAction};
-use crate::agent::{decide, RevealContext, RevealDecision};
+use crate::agent::{self, decide, RevealContext, RevealDecision};
 use chrono::{DateTime, Utc};
 use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
 use passlane_core::vault::vault_trait::Vault;
@@ -93,16 +93,31 @@ struct ListedCredential {
 
 impl ListedCredential {
     fn from_entry(entry: &Credential) -> Self {
+        let restricted = withheld_reason(entry.agent_policy()).is_some();
         Self {
             uuid: entry.uuid().to_string(),
             title: entry.title().to_string(),
             url: entry.url().map(str::to_string),
             username: entry.username().to_string(),
-            note: entry.note().map(str::to_string),
+            // Notes and custom attributes can carry secrets (recovery
+            // codes, tokens); restricted entries keep only the policy
+            // attribute itself as metadata.
+            note: if restricted {
+                None
+            } else {
+                entry.note().map(str::to_string)
+            },
             tags: entry.tags().to_vec(),
             expires: entry.expires(),
             expiry_time: entry.expiry_time(),
-            custom_attributes: entry.custom_attributes().to_vec(),
+            custom_attributes: if restricted {
+                vec![(
+                    passlane_core::vault::entities::AGENT_ATTRIBUTE.to_string(),
+                    entry.agent_policy().as_str().to_string(),
+                )]
+            } else {
+                entry.custom_attributes().to_vec()
+            },
             agent: entry.agent_policy().as_str().to_string(),
             password: withheld_reason(entry.agent_policy())
                 .is_none()
@@ -256,6 +271,15 @@ impl ListAction {
         let entries = vault.grep(self.search_pattern.as_deref());
         // Only verbose plain output (and JSON, which always serializes the
         // password) reveals passwords; the metadata listing never did.
+        if self.json_output || self.verbose {
+            agent::log_bulk_ask_requests(
+                entries
+                    .iter()
+                    .map(|e| (e.title().to_string(), e.agent_policy())),
+                "password",
+                false,
+            );
+        }
         if self.json_output {
             let mut withheld = WithheldSummary::new();
             let listed: Vec<ListedCredential> = entries
@@ -279,6 +303,13 @@ impl ListAction {
     fn list_payments(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.find_payments();
         // Card numbers and CVVs are always part of payment listings.
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.name().to_string(), e.agent_policy())),
+            "number",
+            false,
+        );
         let mut withheld = WithheldSummary::new();
         let listed: Vec<ListedPayment> = entries
             .iter()
@@ -300,6 +331,13 @@ impl ListAction {
     fn list_notes(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.find_notes();
         // Note content is always part of note listings.
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.title().to_string(), e.agent_policy())),
+            "content",
+            false,
+        );
         let mut withheld = WithheldSummary::new();
         let listed: Vec<ListedNote> = entries
             .iter()
@@ -322,6 +360,17 @@ impl ListAction {
         let entries = vault.find_totp(self.search_pattern.as_deref());
         if self.code {
             return self.list_totp_codes(&entries);
+        }
+        if self.json_output || self.verbose {
+            // Only verbose output (and JSON, which always serializes the
+            // secret) reveals the stored secrets.
+            agent::log_bulk_ask_requests(
+                entries
+                    .iter()
+                    .map(|e| (e.label().to_string(), e.agent_policy())),
+                "secret",
+                false,
+            );
         }
         if self.json_output {
             // JSON always serializes the stored secret.
@@ -346,6 +395,13 @@ impl ListAction {
     }
 
     fn list_totp_codes(&self, entries: &[Totp]) -> Result<Option<String>, Error> {
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.label().to_string(), e.agent_policy())),
+            "code",
+            false,
+        );
         let mut withheld = WithheldSummary::new();
         let mut codes = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -409,13 +465,14 @@ impl ListAction {
         }
         let mut lines = vec![format!("Found {} credentials:", count)];
         for entry in entries {
+            let restricted = withheld_reason(entry.agent_policy()).is_some();
             lines.push(String::new());
             lines.push(format!("Title: {}", entry.title()));
             if let Some(url) = entry.url() {
                 lines.push(format!("URL: {}", url));
             }
             lines.push(format!("Username: {}", entry.username()));
-            if let Some(note) = entry.note() {
+            if let Some(note) = entry.note().filter(|_| !restricted) {
                 lines.push(format!("Note: {}", note));
             }
             if !entry.tags().is_empty() {
@@ -424,8 +481,17 @@ impl ListAction {
             if let Some(expiry) = entry.expiry_time().filter(|_| entry.expires()) {
                 lines.push(format!("Expires: {}", expiry.format("%d.%m.%Y")));
             }
-            for (key, value) in entry.custom_attributes() {
-                lines.push(format!("{}: {}", key, value));
+            if restricted {
+                // Notes and custom attributes can carry secrets; keep only
+                // the policy attribute itself visible.
+                lines.push(format!(
+                    "agent: {}",
+                    entry.agent_policy().as_str()
+                ));
+            } else {
+                for (key, value) in entry.custom_attributes() {
+                    lines.push(format!("{}: {}", key, value));
+                }
             }
             if verbose {
                 match withheld_reason(entry.agent_policy()) {
@@ -690,13 +756,34 @@ mod tests {
     #[test]
     fn test_format_credentials_plain_verbose_withholds_restricted() {
         // Default (no attribute) is `never`: the password is withheld.
-        let never = Credential::new(None, "secret", "root", "admin", None, None);
+        let never = Credential::new(None, "secret", "root", "admin", Some("root note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "never".to_string()),
+                ("Recovery code".to_string(), "12345".to_string()),
+            ]);
         let ask = Credential::new(None, "secret", "stripe", "api", None, None)
             .with_custom_attributes(&[("agent".to_string(), "ask".to_string())]);
-        let result = ListAction::format_credentials_plain(&[never, ask], true);
+        let result = ListAction::format_credentials_plain(&[never.clone(), ask], true);
         assert!(!result.contains("Password: secret"), "passwords must be withheld");
         assert!(result.contains("Password: [withheld: agent=never]"));
         assert!(result.contains("Password: [withheld: agent=ask, needs owner approval]"));
+        // Notes and custom attribute values can carry secrets: restricted
+        // entries keep only the policy attribute itself.
+        assert!(!result.contains("root note"), "notes must be withheld");
+        assert!(!result.contains("12345"), "custom attribute values must be withheld");
+        assert!(result.contains("agent: never"));
+        // Metadata stays so the entry is identifiable.
+        assert!(result.contains("Title: root"));
+        assert!(result.contains("Username: admin"));
+        // Allowed entries keep their notes and attributes.
+        let allow = Credential::new(None, "secret", "github.com", "ci", Some("ci note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "allow".to_string()),
+                ("Recovery code".to_string(), "99999".to_string()),
+            ]);
+        let result = ListAction::format_credentials_plain(&[allow], true);
+        assert!(result.contains("Note: ci note"));
+        assert!(result.contains("Recovery code: 99999"));
     }
 
     fn allow_cred(title: &str) -> Credential {
@@ -886,7 +973,11 @@ mod tests {
     #[test]
     fn test_listed_credential_json_withholds_restricted_passwords() {
         let allowed = allow_cred("github.com");
-        let never = Credential::new(None, "root-secret", "root", "admin", None, None);
+        let never = Credential::new(None, "root-secret", "root", "admin", Some("root note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "never".to_string()),
+                ("Recovery code".to_string(), "12345".to_string()),
+            ]);
         let ask = Credential::new(None, "stripe-secret", "stripe", "api", None, None)
             .with_custom_attributes(&[("agent".to_string(), "ask".to_string())]);
 
@@ -903,12 +994,19 @@ mod tests {
 
         assert!(!json.contains("root-secret"), "never entries must be redacted");
         assert!(!json.contains("stripe-secret"), "ask entries must be redacted");
+        assert!(!json.contains("root note"), "notes must be redacted");
+        assert!(!json.contains("12345"), "custom attribute values must be redacted");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         let entries = parsed["entries"].as_array().unwrap();
         assert_eq!(entries[0]["password"], "secret");
         assert_eq!(entries[0]["agent"], "allow");
         assert!(entries[1]["password"].is_null());
         assert_eq!(entries[1]["agent"], "never");
+        // Only the policy attribute survives on restricted entries.
+        assert_eq!(
+            entries[1]["custom_attributes"],
+            serde_json::json!([["agent", "never"]])
+        );
         assert!(entries[2]["password"].is_null());
         assert_eq!(entries[2]["agent"], "ask");
         // Metadata stays so the entry is still identifiable.

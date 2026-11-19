@@ -130,9 +130,12 @@ attribute. **All stdout reading commands honor it** (`show --out`, `show -o --on
 - **`never`:** do not retry and do not try to work around it. Tell the user which entry you need
   and that its `agent` attribute must be changed to `ask` or `allow` (they can edit it in any
   KeePass client, or via `passlane edit` → advanced fields → custom attributes).
-- **`ask`:** tell the user an approval is needed for `<entry>`. Until the approval link ships, the
-  owner approves by running `passlane show '<entry>'` themselves and answering the prompt. Do not
-  pretend the read succeeded; ask, then retry once they confirm.
+- **`ask`:** tell the user an approval is needed for `<entry>`. Until the approval link ships,
+  there is **no approval handoff**: the owner runs the read themselves (`passlane show
+  '<entry>'`, answers the prompt) and relays the secret to you if they choose. Their approval
+  covers only their own invocation — do **not** retry the read afterwards; it will just record
+  another pending request and fail again. If you should have durable access, ask the owner to
+  set the entry's `agent` attribute to `allow`.
 - Checking which entries you may read without triggering anything: `passlane list` (plain, no
   `-v`/`--json`) shows each entry's custom attributes, including `agent`.
 

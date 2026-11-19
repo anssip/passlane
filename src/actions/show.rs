@@ -55,6 +55,22 @@ fn require_cleartext_allowed(gated: usize) -> Result<(), Error> {
     }
 }
 
+/// Verbose (cleartext) multi-match tables reveal every matched entry at
+/// once. At the owner's terminal that is the owner's own view and stays
+/// untouched; in an agent-facing context the table must not include
+/// restricted entries, so it is refused instead of partially redacted.
+fn guard_cleartext_table(
+    show_cleartext: bool,
+    context: RevealContext,
+    policies: impl Iterator<Item = AgentPolicy>,
+) -> Result<(), Error> {
+    if show_cleartext && context == RevealContext::Agent {
+        require_cleartext_allowed(restricted_count(policies))
+    } else {
+        Ok(())
+    }
+}
+
 struct ShowCredentialsTemplate {
     verbose: bool,
     stdout_only: bool,
@@ -89,13 +105,14 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        // A verbose table reveals every matched password up front; in an
-        // agent-facing context that must not include restricted entries.
-        if self.verbose {
-            require_cleartext_allowed(restricted_count(
-                matches.iter().map(|c| c.agent_policy()),
-            ))?;
-        }
+        // A verbose table reveals every matched password up front. That is
+        // the owner's own view at a terminal; in an agent-facing context it
+        // must not include restricted entries.
+        guard_cleartext_table(
+            self.verbose,
+            RevealContext::for_reveal(self.stdout_only),
+            matches.iter().map(|c| c.agent_policy()),
+        )?;
         show_credentials_table(&matches, self.verbose, self.plain);
 
         let prompt = if self.stdout_only {
@@ -164,12 +181,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        // A cleartext table reveals every matched card number up front.
-        if self.show_cleartext {
-            require_cleartext_allowed(restricted_count(
-                matches.iter().map(|c| c.agent_policy()),
-            ))?;
-        }
+        // A cleartext table reveals every matched card number up front —
+        // the owner's own view at a terminal, gated in agent contexts.
+        guard_cleartext_table(
+            self.show_cleartext,
+            RevealContext::for_reveal(false),
+            matches.iter().map(|c| c.agent_policy()),
+        )?;
         show_payment_cards_table(&matches, self.show_cleartext, self.plain);
 
         match ask_index(
@@ -223,12 +241,13 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        // A cleartext table reveals every matched note up front.
-        if self.verbose {
-            require_cleartext_allowed(restricted_count(
-                matches.iter().map(|n| n.agent_policy()),
-            ))?;
-        }
+        // A cleartext table reveals every matched note up front — the
+        // owner's own view at a terminal, gated in agent contexts.
+        guard_cleartext_table(
+            self.verbose,
+            RevealContext::for_reveal(false),
+            matches.iter().map(|n| n.agent_policy()),
+        )?;
         show_notes_table(&matches, self.verbose, self.plain);
 
         match ask_index(
@@ -540,5 +559,29 @@ mod tests {
             err.message
         );
         assert!(err.message.contains("agent=allow"));
+    }
+
+    #[test]
+    fn cleartext_table_guard_uses_the_reveal_context() {
+        let policies = [AgentPolicy::Never, AgentPolicy::Allow];
+        // At the owner's terminal the verbose table is the owner's own view.
+        assert!(guard_cleartext_table(true, RevealContext::Owner, policies.into_iter()).is_ok());
+        // In agent-facing contexts a table containing restricted entries is refused...
+        assert!(
+            guard_cleartext_table(true, RevealContext::Agent, policies.into_iter()).is_err()
+        );
+        // ...but non-cleartext tables never carry secrets, and all-allowed
+        // sets pass anywhere.
+        assert!(
+            guard_cleartext_table(false, RevealContext::Agent, policies.into_iter()).is_ok()
+        );
+        assert!(
+            guard_cleartext_table(
+                true,
+                RevealContext::Agent,
+                [AgentPolicy::Allow].into_iter()
+            )
+            .is_ok()
+        );
     }
 }

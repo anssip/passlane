@@ -61,9 +61,11 @@ owner-only.
   `ask` additionally records an approval request.
 - `list`: the command still succeeds (exit 0) and stays parseable.
   Restricted entries are returned with the secret fields as `null`
-  (`password`, `secret`, `content`, `number`/`cvv`, `code`) plus an `agent`
-  field stating the policy that applied; a summary of what was withheld is
-  printed to stderr. Plain-text verbose listings print
+  (`password`, `secret`, `content`, `number`/`cvv`, `code`), with notes and
+  custom attributes dropped except the `agent` policy itself, plus an
+  `agent` field stating the policy that applied; a summary of what was
+  withheld is printed to stderr, and every withheld `ask` entry records an
+  approval request. Plain-text verbose listings print
   `[withheld: agent=never]` markers instead of the secret.
 - `show -v` / verbose tables: if any matched entry is restricted and the
   context is agent-facing, the cleartext table is refused with guidance
@@ -72,21 +74,28 @@ owner-only.
 ## The `ask` flow (Phase 0)
 
 Until the approval link transport ships (passlane#51), the approval flow
-defers to the interactive prompt:
+defers to the interactive prompt — with one deliberate limitation:
 
 1. An agent requests an `ask` entry through an agent-facing path. The CLI
    does not reveal. It appends an **approval request** to the local
-   approval log and tells the requester the entry needs approval.
-2. The owner resolves it by revealing the entry interactively — e.g.
-   `passlane show '<entry>'` — and answering the approval prompt
-   (`Approve once` / `Deny`). The decision is appended to the log,
-   correlated with the request by its id.
+   approval log and tells the requester the entry needs approval. Bulk
+   paths behave the same way: `list` redaction and `export` filtering
+   record one request per withheld `ask` entry.
+2. The owner then handles the request out of band: they run the reveal
+   themselves — e.g. `passlane show '<entry>'` — and answer the approval
+   prompt (`Approve once` / `Deny`). That interaction is its own
+   request/decision pair in the log. **There is no single-use approval
+   handoff yet**: the agent's original request stays pending, and an
+   agent-side retry simply records another request and is refused again.
+   If the owner wants the agent to have the secret, they relay it
+   themselves or switch the entry to `agent = allow`.
 
-When the link transport lands, the same request becomes an encrypted
-envelope carried to the phone (or the Phase 0 static page) and the approval
-arrives signed; the CLI-side log already records each request as the
-protocol's real `approval_request` body (`crates/passlane-approval`), so
-the flow extends without changing what is being asked.
+When the link transport lands, step 2 becomes a real handoff: the same
+request body travels to the approver (phone or the Phase 0 static page),
+and the signed approval it returns is what releases the entry. The CLI
+already records each request as the protocol's real `approval_request`
+body (`crates/passlane-approval`), so nothing about what is being asked
+changes.
 
 ### The approval log
 
