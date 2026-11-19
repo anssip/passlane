@@ -1,6 +1,6 @@
 use crate::actions::{ItemType, UnlockingAction};
-use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use serde::Serialize;
 
@@ -239,7 +239,7 @@ impl UnlockingAction for ListAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::entities::{Address, Expiry};
+    use passlane_core::vault::entities::{Address, Expiry};
     use chrono::Utc;
     use uuid::Uuid;
 

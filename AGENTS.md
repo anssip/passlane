@@ -53,10 +53,20 @@ The codebase uses an action-based pattern where all user commands are implemente
 - `Action` trait: Simple actions that don't require vault access (e.g., init, lock, unlock, generate password)
 - `UnlockingAction` trait: Actions that require unlocking a vault (e.g., show, add, delete, edit, import, export)
 
-### Module Structure
+### Workspace Layout
+
+The repo is a cargo workspace: the root package is the `passlane` CLI, and `crates/*` holds shared library crates (`passlane-core`, `passlane-approval`). `passlane-core` carries the platform-independent logic (KeePass vault, password generator, pure hardware-key config) so the CLI and the iOS app share a single kdbx implementation; its `usb` cargo feature (enabled by the CLI) gates real YubiKey support, keeping libusb out of mobile builds.
 
 ```
-src/
+crates/passlane-core/    # Platform-independent core (lib crate), consumed by the CLI
+├── src/vault/           # Vault abstraction layer
+│   ├── vault_trait.rs   # Traits: Vault, PasswordVault, PaymentVault, NoteVault, TotpVault
+│   ├── keepass_vault.rs # Keepass implementation (only implementation currently)
+│   └── entities.rs      # Data models: Credential, PaymentCard, Note, Totp, Error
+├── src/generator.rs     # Password generation/validation
+└── src/hwkey.rs         # HwKeyConfig parsing, challenge-response key resolution (pure parts)
+
+src/                     # The passlane CLI package
 ├── main.rs              # CLI definition using clap, command routing to actions
 ├── actions/             # All user commands implemented as actions
 │   ├── mod.rs          # Action traits and common utilities
@@ -71,14 +81,10 @@ src/
 │   ├── show.rs         # Display entries
 │   ├── unlock.rs       # Unlock vaults (store in keychain)
 │   └── vault.rs        # Manage vaults: list/add/use/remove/rename/info
-├── vault/               # Vault abstraction layer
-│   ├── vault_trait.rs  # Traits: Vault, PasswordVault, PaymentVault, NoteVault, TotpVault
-│   ├── keepass_vault.rs # Keepass implementation (only implementation currently)
-│   └── entities.rs     # Data models: Credential, PaymentCard, Note, Totp, Error
 ├── vault_registry.rs    # Named-vault registry (vaults.json), active vault, current-vault global, migration
 ├── store.rs            # File I/O: CSV operations, low-level config-dir helpers
 ├── keychain.rs         # OS keychain integration for master password storage
-├── crypto.rs           # Cryptographic utilities
+├── hwkey.rs            # Interactive hardware-key flows: enrollment prompts, recovery, backup reminder
 └── ui/                 # User interface components
     ├── input.rs        # Interactive prompts and input handling
     └── output.rs       # Formatted output and table rendering

@@ -3,8 +3,8 @@ use keepass_ng::ChallengeResponseKey;
 
 use crate::actions::{get_vault_password, Action};
 use crate::hwkey;
-use crate::vault::entities::Error;
-use crate::vault::keepass_vault::KeepassVault;
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::keepass_vault::KeepassVault;
 use crate::vault_registry::{self, VaultConfig};
 use zeroize::Zeroize;
 
@@ -111,7 +111,7 @@ impl HwKeyAction {
         let challenge_response = if secret {
             hwkey::recovery_key_from_prompt()
         } else {
-            hwkey::configured_challenge_response_key(&enrolled)?
+            passlane_core::hwkey::configured_challenge_response_key(&enrolled)?
         };
 
         let mut password = get_vault_password(&config.name);

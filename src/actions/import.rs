@@ -1,8 +1,8 @@
 use crate::actions::UnlockingAction;
 use crate::completion_cache;
 use crate::store;
-use crate::vault::entities::Error;
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 
 pub struct ImportCsvAction {

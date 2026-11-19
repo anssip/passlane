@@ -11,9 +11,9 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hwkey::HwKeyConfig;
+use passlane_core::hwkey::HwKeyConfig;
 use crate::store;
-use crate::vault::entities::Error;
+use passlane_core::vault::entities::Error;
 
 pub const REGISTRY_FILENAME: &str = "vaults.json";
 pub const ACTIVE_VAULT_FILENAME: &str = ".active_vault";

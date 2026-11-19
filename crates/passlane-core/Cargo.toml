@@ -1,0 +1,33 @@
+[package]
+name = "passlane-core"
+version = "4.0.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Anssi Piirainen <anssip@email.com>"]
+license = "GPL-3.0-or-later"
+description = "Platform-independent passlane core: the KeePass-backed vault, password generator and hardware-key logic"
+repository = "https://github.com/anssip/passlane"
+keywords = ["keepass", "password-manager", "vault"]
+categories = ["cryptography"]
+
+[dependencies]
+anyhow = "1.0.56"
+chrono = { version = "0.4.19", features = ["serde"] }
+keepass-ng = { version = "0.11.11", features = ["save_kdbx4", "totp", "challenge_response"] }
+log = "0.4.16"
+rand = "0.8.5"
+serde = { version = "1.0.198", features = ["derive"] }
+serde_json = "1.0.116"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[features]
+default = []
+# Real hardware keys (YubiKey challenge-response over USB). Mirrors
+# keepass-ng's challenge_response_usb feature, which pulls in libusb — the
+# one dependency mobile platforms (iOS) cannot take. Off by default so
+# passlane-core stays USB-free; the passlane CLI enables it.
+usb = ["keepass-ng/challenge_response_usb"]

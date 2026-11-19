@@ -10,8 +10,8 @@ use crate::ui::input::{
     ask_master_password, ask_new_master_password, ask_open_existing_vault, ask_remove_vault,
     ask_store_hwkey, ask_store_master_password, ask_vault_name, ask_vault_path, newline,
 };
-use crate::vault::entities::Error;
-use crate::vault::keepass_vault::KeepassVault;
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::keepass_vault::KeepassVault;
 use crate::vault_registry::{self, VaultConfig};
 
 pub struct VaultAction {

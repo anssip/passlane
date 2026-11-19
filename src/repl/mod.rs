@@ -213,7 +213,7 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Gen => {
-            let password = crate::crypto::generate();
+            let password = passlane_core::generator::generate();
             copy_to_clipboard(&password);
             println!("{}", password);
             println!("Password copied to clipboard.");

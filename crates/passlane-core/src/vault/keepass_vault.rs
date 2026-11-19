@@ -6,9 +6,12 @@ use keepass_ng::db::{
     Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
 };
 use keepass_ng::db::DatabaseSaveError;
+// Only used by the usb-gated "Wrong CRC" explanation in explain_open_error.
+#[cfg(feature = "usb")]
+use keepass_ng::{ChallengeResponseKeyError, DatabaseKeyError};
 use keepass_ng::{
-    ChallengeResponseKey, ChallengeResponseKeyError, DatabaseConfig, DatabaseKey,
-    DatabaseKeyError, DatabaseOpenError, DatabaseVersion,
+    ChallengeResponseKey, DatabaseConfig, DatabaseKey,
+    DatabaseOpenError, DatabaseVersion,
 };
 
 use log::debug;
@@ -48,6 +51,10 @@ impl From<DatabaseOpenError> for Error {
 /// protocol error. The string match is on the inner error's Display
 /// because the challenge_response crate is not a direct dependency.
 fn explain_open_error(e: &DatabaseOpenError) -> String {
+    // The Api variant (and thus the "Wrong CRC" string match) only exists
+    // with the `usb` feature; without hardware keys there is no touch to
+    // miss, so the raw error message is already the right answer.
+    #[cfg(feature = "usb")]
     if let DatabaseOpenError::Key(DatabaseKeyError::ChallengeResponse(
         ChallengeResponseKeyError::Api(inner),
     )) = e
@@ -271,10 +278,21 @@ struct NodeCredentialValues {
 /// `LocalChallenge` key (recovery via backed-up secret, tests) computes the
 /// response locally, so no "touch" prompt should be shown for it.
 fn requires_touch(challenge_response: Option<&ChallengeResponseKey>) -> bool {
-    matches!(
-        challenge_response,
-        Some(ChallengeResponseKey::YubikeyChallenge(..))
-    )
+    // The YubikeyChallenge variant only exists with the `usb` feature
+    // (keepass-ng's challenge_response_usb); without it no key can block on
+    // a touch, so the answer is always false.
+    #[cfg(feature = "usb")]
+    {
+        matches!(
+            challenge_response,
+            Some(ChallengeResponseKey::YubikeyChallenge(..))
+        )
+    }
+    #[cfg(not(feature = "usb"))]
+    {
+        let _ = challenge_response;
+        false
+    }
 }
 
 /// Errors a File Provider can emit while it is busy, updating or wedged.

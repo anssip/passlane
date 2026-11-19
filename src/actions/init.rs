@@ -1,6 +1,6 @@
 use crate::actions::vault::setup_vault;
 use crate::actions::Action;
-use crate::vault::entities::Error;
+use passlane_core::vault::entities::Error;
 use crate::vault_registry;
 
 pub struct InitAction {}
