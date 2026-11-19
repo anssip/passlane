@@ -122,9 +122,16 @@ fn committed_vectors_open() {
                 )
                 .unwrap();
                 let expected_code = f["confirmation_code"].as_str().unwrap();
-                assert_eq!(secret.confirmation_code(), expected_code);
+                let sender: Keys = serde_json::from_value(f["sender"].clone()).unwrap();
+                let sender_keys = keys(&sender);
+                let cli_enc =
+                    passlane_approval::encoding::hex_encode(&sender_keys.encryption_public());
+                let cli_sig = passlane_approval::encoding::hex_encode(
+                    &sender_keys.verifying_key().to_sec1_bytes(),
+                );
+                assert_eq!(secret.confirmation_code(&cli_enc, &cli_sig), expected_code);
                 assert_eq!(
-                    secret.confirmation_code(),
+                    secret.confirmation_code(&cli_enc, &cli_sig),
                     expected_code,
                     "code must be stable"
                 );

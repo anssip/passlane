@@ -160,7 +160,10 @@ fn main() {
         "name": "pairing_request_psk",
         "sender": { "enc_secret": cli_enc, "sig_secret": cli_sig },
         "pairing_secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-        "confirmation_code": secret.confirmation_code(),
+        "confirmation_code": secret.confirmation_code(
+            &passlane_approval::encoding::hex_encode(&cli.encryption_public()),
+            &passlane_approval::encoding::hex_encode(&cli.verifying_key().to_sec1_bytes()),
+        ),
         "now": now,
         "policy": { "ttl_secs": policy.ttl_secs, "max_ttl_secs": policy.max_ttl_secs,
                     "max_clock_skew_secs": policy.max_clock_skew_secs, "max_session_secs": policy.max_session_secs },

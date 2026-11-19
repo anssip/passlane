@@ -71,20 +71,17 @@ impl PairingSecret {
         Zeroizing::new(hex_encode(&self.0))
     }
 
-    /// Six-digit confirmation code (`123-456`), derived from the secret.
+    /// Six-digit confirmation code (`123-456`), derived from the secret and
+    /// **bound to the CLI identity being pinned** (its public keys, as the
+    /// terminal shows them / as the decrypted request carries them).
     ///
-    /// Both endpoints display it; the human compares them before continuing.
-    /// It is a display check, not a cryptographic secret: its only job is to
-    /// prove both sides derived their keys from the same QR payload.
-    pub fn confirmation_code(&self) -> String {
-        use hkdf::Hkdf;
-        use sha2::Sha256;
-        let hk = Hkdf::<Sha256>::new(Some(b"passlane-pairing-confirm"), &self.0);
-        let mut out = [0u8; 4];
-        hk.expand(b"confirmation-code", &mut out)
-            .expect("4 bytes fit HKDF output");
-        let n = u32::from_be_bytes(out) % 1_000_000;
-        format!("{:03}-{:03}", n / 1000, n % 1000)
+    /// Both endpoints display it over the same key material; the human
+    /// compares them before continuing. The identity binding is what makes
+    /// a swapped QR (same secret, substituted keys) fail the comparison.
+    /// The code is a display check, not a transport secret; guessing it is
+    /// rate-limited by the pairing ceremony being interactive.
+    pub fn confirmation_code(&self, cli_enc_pub_hex: &str, cli_sig_pub_hex: &str) -> String {
+        crypto::pairing_confirmation_code(self.as_bytes(), cli_enc_pub_hex, cli_sig_pub_hex)
     }
 }
 
@@ -133,6 +130,7 @@ pub fn seal_pairing_request(
     };
     let sig = local.sign(&env.signed_transcript());
     env.signature = Some(Signature::EcdsaP256(sig.to_der().as_bytes().to_vec()));
+    crate::envelope::ensure_deliverable(&env)?;
     Ok(env)
 }
 
@@ -177,8 +175,11 @@ pub fn seal_pairing_response(
 ) -> Result<Envelope> {
     let enc_pub = hex_encode(&local.encryption_public());
     let sig_pub = hex_encode(&local.verifying_key().to_sec1_bytes());
+    let cli_enc = hex_encode(&cli.enc_pub_bytes()?);
     let proof = Zeroizing::new(hex_encode(&crypto::pairing_binding_proof(
         secret.as_bytes(),
+        &request.header.rid,
+        &cli_enc,
         &enc_pub,
         &sig_pub,
     )?));
@@ -240,13 +241,21 @@ pub fn open_pairing_response(
         return Err(Error::MessageTypeMismatch(MessageType::PairingResponse));
     };
 
-    // The binding proof ties the declared keys to the pairing secret.
+    // The binding proof ties the declared keys AND the request being
+    // answered (rid) AND the CLI's own key to the pairing secret.
     // Without it, a forged response could pin attacker keys.
     let proof_hex = pairing_proof
         .as_ref()
         .ok_or_else(|| Error::Pairing("response carries no pairing proof".into()))?;
     let proof = Zeroizing::new(crate::encoding::hex_decode(proof_hex)?);
-    crypto::verify_pairing_binding_proof(secret.as_bytes(), enc_pub, sig_pub, &proof)?;
+    crypto::verify_pairing_binding_proof(
+        secret.as_bytes(),
+        &envelope.header.rid,
+        &hex_encode(&local.encryption_public()),
+        enc_pub,
+        sig_pub,
+        &proof,
+    )?;
 
     // The signature must be made with the key the body declares.
     let sig_key = PublicKey::from_hex(sig_pub.as_str())?;

@@ -149,10 +149,13 @@ pub const CHALLENGE_LEN: usize = 32;
 
 fn check_hex_len(name: &str, value: Option<&str>, len: usize) -> Result<()> {
     if let Some(v) = value
-        && (v.len() != len * 2 || !v.chars().all(|c| c.is_ascii_hexdigit()))
+        && (v.len() != len * 2
+            || !v
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f')))
     {
         return Err(Error::Malformed(format!(
-            "{name} must be {len}-byte hex, got {} chars",
+            "{name} must be {len}-byte lower-case hex, got {} chars",
             v.len()
         )));
     }

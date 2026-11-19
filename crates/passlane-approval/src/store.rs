@@ -32,34 +32,56 @@ struct IdentityFile {
 /// Load this device's identity from `dir/approval_identity.json`,
 /// generating and persisting fresh keys on first use.
 ///
-/// First-use creation is race-free: the file is created exclusively
-/// (`O_EXCL`), so when two processes race, both end up loading the
-/// winner's identity instead of silently discarding one of them (which
-/// would orphan every peer paired with the loser).
+/// Creation is serialized by a stable lock file and published atomically
+/// (write a complete temp file, then `link` it into place — which never
+/// replaces an existing file). Racing processes therefore always converge
+/// on the winner's identity, and no reader can ever observe a partial or
+/// empty identity file.
 pub fn load_or_generate_identity(
     dir: &Path,
     rng: &mut (impl CryptoRng + RngCore),
 ) -> Result<IdentityKeys> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("approval_identity.json");
+    let lock_path = dir.join("approval_identity.json.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(&lock_path)?;
+    fs4::FileExt::lock(&lock)?;
+
     if path.exists() {
         return load_identity_file(&path);
     }
+
     let keys = IdentityKeys::generate(rng)?;
     let (enc, sig) = keys.secret_bytes();
     let file = IdentityFile {
         enc_secret: crate::encoding::hex_encode(&enc),
         sig_secret: crate::encoding::hex_encode(&sig),
     };
-    let mut json = Zeroizing::new(serde_json::to_vec(&file)?);
-    match write_new_exclusive(&path, &json) {
-        Ok(()) => Ok(keys),
+    let json = Zeroizing::new(serde_json::to_vec(&file)?);
+
+    // Publish atomically without replacing: hard-link the complete temp
+    // file into place (fails with AlreadyExists if we lost the race).
+    let tmp = dir.join("approval_identity.json.new");
+    write_new_exclusive(&tmp, &json)?;
+    match std::fs::hard_link(&tmp, &path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok(keys)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // Another process won the race; converge on its identity.
-            json.zeroize();
+            let _ = std::fs::remove_file(&tmp);
             load_identity_file(&path)
         }
-        Err(e) => Err(e.into()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.into())
+        }
     }
 }
 

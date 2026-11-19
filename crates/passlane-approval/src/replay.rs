@@ -11,6 +11,17 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
+/// The stable lock file path for a data file (`nonces.json` →
+/// `nonces.json.lock`).
+fn lock_path_for(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().map_or_else(
+        || "nonces.json".to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    name.push_str(".lock");
+    path.with_file_name(name)
+}
+
 /// Replay protection state shared by every `open` path.
 pub trait NonceStore {
     /// Has this `(sender, nonce)` pair been seen before?
@@ -64,24 +75,33 @@ pub struct FileNonceStore {
 impl FileNonceStore {
     /// Load (or start) the store at `path`, taking the exclusive lock.
     ///
-    /// Blocks while another process holds the store.
+    /// Blocks while another process holds the store. The lock lives on a
+    /// **separate, stable lock file** (`<path>.lock`), never on the data
+    /// file itself — `save` replaces the data file by rename, which would
+    /// strand a lock taken on the data file's original inode.
     pub fn load(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let lock_path = lock_path_for(path);
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .read(true)
-            .open(path)?;
+            .open(&lock_path)?;
         {
             // Fully qualified: newer std (1.89+) has an inherent File::lock;
             // the fs4 call keeps our MSRV at 1.88.
             fs4::FileExt::lock(&lock)?;
         }
-        let entries = if lock.metadata()?.len() > 0 {
-            serde_json::from_slice(&std::fs::read(path)?)?
+        let entries = if path.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) if bytes.is_empty() => BTreeMap::new(),
+                Ok(bytes) => serde_json::from_slice(&bytes)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+                Err(e) => return Err(e.into()),
+            }
         } else {
             BTreeMap::new()
         };
@@ -94,8 +114,8 @@ impl FileNonceStore {
     }
 
     /// Persist to disk atomically (temp file + rename) with owner-only
-    /// permissions. The exclusive lock is still held, so no other process
-    /// can interleave.
+    /// permissions. The lock is held on the **lock file**, not the data
+    /// file, so replacing the data file by rename cannot orphan it.
     pub fn save(&self) -> Result<()> {
         if !self.dirty {
             return Ok(());
@@ -188,21 +208,26 @@ mod tests {
     fn file_store_lock_is_exclusive() {
         // While one process (this test) holds the store, a second load in
         // the same process must block — verified via the underlying lock
-        // API rather than deadlocking ourselves.
+        // API rather than deadlocking ourselves. The lock sits on the
+        // sidecar lock file, so this must hold across save() renames too.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonces.json");
-        let _store = FileNonceStore::load(&path).unwrap();
-        let second = std::fs::OpenOptions::new()
+        let mut store = FileNonceStore::load(&path).unwrap();
+        store.record("kid", "n1", 900);
+        store.save().unwrap(); // replaces the data file by rename
+        let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .read(true)
-            .open(&path)
+            .open(lock_path_for(&path))
             .unwrap();
         assert!(
-            fs4::FileExt::try_lock(&second).is_err(),
-            "a second exclusive lock must not be granted while the store lives"
+            fs4::FileExt::try_lock(&lock_file).is_err(),
+            "a second exclusive lock must not be granted while the store lives, even after save()"
         );
+        // And the recorded nonce survived the rename.
+        assert!(store.seen("kid", "n1"));
     }
 
     #[test]

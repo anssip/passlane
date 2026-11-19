@@ -39,7 +39,11 @@
 //! let cli = IdentityKeys::generate(&mut rng)?;
 //! let phone = IdentityKeys::generate(&mut rng)?;
 //! let secret = PairingSecret::generate(&mut rng);
-//! assert_eq!(secret.confirmation_code(), secret.confirmation_code());
+//! let cli_pubs = (
+//!     passlane_approval::encoding::hex_encode(&cli.encryption_public()),
+//!     passlane_approval::encoding::hex_encode(&cli.verifying_key().to_sec1_bytes()),
+//! );
+//! assert_eq!(secret.confirmation_code(&cli_pubs.0, &cli_pubs.1), secret.confirmation_code(&cli_pubs.0, &cli_pubs.1));
 //!
 //! let request = seal_pairing_request(
 //!     &mut rng, &secret, &cli,

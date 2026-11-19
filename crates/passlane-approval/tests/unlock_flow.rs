@@ -32,8 +32,17 @@ fn phone_held_key_unlock_flow() {
     let cli = IdentityKeys::generate(&mut rng).unwrap();
     let phone = IdentityKeys::generate(&mut rng).unwrap();
     let secret = PairingSecret::generate(&mut rng);
-    let code = secret.confirmation_code();
+    // The code is bound to the CLI identity the QR introduces.
+    let cli_enc = passlane_approval::encoding::hex_encode(&cli.encryption_public());
+    let cli_sig = passlane_approval::encoding::hex_encode(&cli.verifying_key().to_sec1_bytes());
+    let code = secret.confirmation_code(&cli_enc, &cli_sig);
     assert_eq!(code.len(), 7, "formatted as 123-456");
+    // A substituted identity must produce a different code (QR-swap defense).
+    let impostor = IdentityKeys::generate(&mut rng).unwrap();
+    let imp_enc = passlane_approval::encoding::hex_encode(&impostor.encryption_public());
+    let imp_sig =
+        passlane_approval::encoding::hex_encode(&impostor.verifying_key().to_sec1_bytes());
+    assert_ne!(code, secret.confirmation_code(&imp_enc, &imp_sig));
 
     let request = seal_pairing_request(
         &mut rng,

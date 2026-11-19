@@ -402,12 +402,26 @@ pub fn seal_webauthn(
 pub fn attach_webauthn_assertion(
     mut env: Envelope,
     assertion: crate::webauthn::WebauthnAssertion,
-) -> Envelope {
+) -> Result<Envelope> {
     // The placeholder assertion only shaped the kind byte and byte lengths;
     // the three fields serialize to fixed-shape empty strings, so swapping
     // in the real assertion preserves the signed framing exactly.
     env.signature = Some(Signature::WebauthnEs256(assertion));
-    env
+    ensure_deliverable(&env)?;
+    Ok(env)
+}
+
+/// An envelope that cannot survive its own transport (QR code, link, or
+/// our decoder's limits) must never be emitted: the receiver would get
+/// bytes it cannot parse. Called at every sealing exit point.
+pub(crate) fn ensure_deliverable(env: &Envelope) -> Result<()> {
+    let encoded_len = base64url_encode(&env.to_bytes()).len();
+    if encoded_len > MAX_ENCODED_LEN {
+        return Err(Error::Malformed(format!(
+            "sealed envelope is {encoded_len} base64url characters;              the transport and decoder cap is {MAX_ENCODED_LEN}"
+        )));
+    }
+    Ok(())
 }
 
 // The internal core shares the full parameter set by design (see the
@@ -469,7 +483,9 @@ fn seal_inner(
         env.signature = Some(Signature::EcdsaP256(der.as_bytes().to_vec()));
     }
     // WebAuthn path: the assertion arrives out-of-band (the page);
-    // the placeholder framing stays untouched.
+    // the placeholder framing stays untouched. (The final assertion can
+    // grow the signature block; attach_webauthn_assertion re-checks.)
+    ensure_deliverable(&env)?;
     Ok(env)
 }
 
@@ -926,6 +942,20 @@ mod tests {
     }
 
     #[test]
+    fn oversized_body_rejected_at_seal() {
+        // A 7,000-character requester would seal fine but produce an
+        // envelope whose base64url form exceeds the decoder cap —
+        // undeliverable. Sealing must refuse.
+        let (cli, _p, phone_pin, _) = cli_and_phone();
+        let mut body = sample_request();
+        if let Body::ApprovalRequest { requester, .. } = &mut body {
+            *requester = "x".repeat(7_000);
+        }
+        let err = seal(&mut OsRng, &cli, &phone_pin, body, 1, &Policy::default());
+        assert!(matches!(err, Err(Error::Malformed(_))));
+    }
+
+    #[test]
     fn webauthn_seal_open_roundtrip() {
         use p256::ecdsa::signature::hazmat::PrehashSigner;
         use p256::ecdsa::{Signature, SigningKey};
@@ -986,7 +1016,7 @@ mod tests {
             sig.to_der().as_bytes(),
         );
 
-        let env = attach_webauthn_assertion(pending, assertion);
+        let env = attach_webauthn_assertion(pending, assertion).unwrap();
         let mut store = crate::replay::InMemoryNonceStore::default();
         let opened = open(
             &cli,

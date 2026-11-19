@@ -107,8 +107,11 @@ cleartext but cannot be modified without breaking decryption.
 ‖ enc ‖ ct_len ‖ ct`), including the signature-kind byte. ECDSA nonces are
 RFC 6979 deterministic on the CLI; the SE randomizes.
 
-**WebAuthn (Phase 0)**: the signature-kind-2 block is
-`{authenticatorData, clientDataJSON, signature}` (base64url fields). The
+**WebAuthn (Phase 0)**: the signature-kind-2 block is the JSON
+serialization of the assertion — field names `authenticator_data`,
+`client_data_json`, `signature` (snake_case, base64url values), matching
+the crate's serde representation exactly. Implementations on other
+platforms must use these key names verbatim. The
 WebAuthn challenge is `base64url(SHA-256(transcript))` — the passkey
 signature thus commits to the exact envelope bytes. Verification additionally
 checks `type == "webauthn.get"`, the pinned origin, the RP-id hash, and the
@@ -138,18 +141,26 @@ characters, comfortably inside QR capacity and URL fragments.
 2. `pairing_request` travels PSK-sealed (key = `HKDF-SHA256(salt =
    "passlane-pairing/v1", ikm = secret, info = "passlane-approval/v1" ‖
    type)`), signed by the CLI's signing key (carried inside the ciphertext).
-3. Both sides display `confirmation_code(secret)` = six digits
-   (`HKDF(secret, "confirmation-code") mod 10^6`, formatted `123-456`).
-   The human compares — this defeats QR-swap. The code is a display check,
-   not a secret.
+3. Both sides display the confirmation code: six digits,
+    `format!("{:03}-{:03}", n / 1000, n % 1000)` where
+    `n = u32(HMAC-SHA256(k_display, "confirmation-code" ‖ cli_enc_pub ‖
+    cli_sig_pub))[0..4] mod 10^6` and `k_display = HKDF-SHA256(salt =
+    "passlane-pairing/v1", ikm = secret, info = "display-code")`. The code
+    is **bound to the CLI identity the QR introduces**: a swapped QR
+    carrying substituted keys yields a different code on the phone than
+    the terminal shows over its own keys, so the human comparison fails.
+    The code is a display check, not a transport secret; guessing it is
+    rate-limited by the ceremony being interactive.
 4. `pairing_response` is normal HPKE to the CLI's key, signed by the
-   approver, **and carries a binding proof**: `HMAC-SHA256(k_bind,
-   "pairing-response-bind" ‖ enc_pub ‖ sig_pub)` with `k_bind =
+   approver, **and carries a binding proof**:
+   `HMAC-SHA256(k_bind, "pairing-response-bind" ‖ request.rid ‖ cli_enc_pub
+   ‖ responder_enc_pub ‖ responder_sig_pub)` with `k_bind =
    HKDF-SHA256(salt = "passlane-pairing/v1", ikm = secret, info =
-   "response-binding")`. The proof is what defeats an attacker who knows
-   the CLI's public keys and tries to pin their own identity in a forged
-   response: HPKE-to-the-CLI and a self-declared signing key alone would
-   not stop them. The response echoes the request's `rid`.
+   "response-binding")`. The proof binds the response to the exact request
+   (by `rid`) and to **both** identities being pinned. HPKE-to-the-CLI and
+   a self-declared signing key alone would not stop an attacker who knows
+   the CLI's public keys; the proof requires the pairing secret. The
+   response echoes the request's `rid`.
 5. The CLI pins the declared keys only after the proof verified and the
    codes matched. The secret is discarded; both sides store a `PeerPin`
    (`label`, `enc_pub`, `sig_pub`, `paired_at`, optional WebAuthn RP data).
@@ -172,11 +183,18 @@ ECDH that HPKE needs. The page therefore enrolls:
   hardware-backed, human-present factor).
 
 **Enrollment** (one-time, at the computer): `passlane approvals enroll`
-prints a QR/link to `https://<domain>/enroll`; the page generates the ECDH
-keypair, runs `navigator.credentials.create()` for the passkey with a
-challenge that covers the ECDH public key, and hands the registration to
-the CLI; the CLI verifies the attestation, checks that the passkey
-signature commits to the ECDH public key it is about to trust, and pins
+prints a QR/link to `https://<domain>/enroll` carrying a fresh CLI
+enrollment nonce. The page generates the ECDH keypair, creates the passkey
+with `navigator.credentials.create()` (`attestation: "none"` is fine —
+attestation statements are signed by vendor attestation keys, not the
+credential key, so they cannot bind anything to this user's passkey), and
+then — the binding step — requests a **subsequent assertion** with
+`navigator.credentials.get()`, whose challenge is
+`SHA-256(enrollment_nonce ‖ ECDH_public_key)`. The credential-key
+signature over that challenge is what proves the passkey (and the human
+behind it) vouches for this exact ECDH key. The CLI verifies the assertion
+(`webauthn::verify_assertion` semantics: origin, RP-id hash, UP flag,
+credential-key signature) and pins
 `enc_pub = ECDH public key`, `sig_pub = passkey public key`,
 `webauthn = { rp_id, origin }`. (COSE parsing and this ceremony land with
 the CLI command — passlane#51.)

@@ -179,36 +179,82 @@ fn pairing_binding_key(secret: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     Zeroizing::new(key)
 }
 
-/// HMAC-SHA256 binding proof over the keys a pairing response declares.
-/// Without it, anyone knowing the CLI's public keys could forge a response
-/// pinning their own identity (see SPEC §5).
+/// Key for the human-verified display code.
+fn pairing_display_key(secret: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(PAIRING_SALT), secret);
+    let mut key = [0u8; 32];
+    hk.expand(b"display-code", &mut key)
+        .expect("32 bytes fits HKDF-SHA256 output");
+    Zeroizing::new(key)
+}
+
+/// The six-digit confirmation code, bound to the **CLI identity being
+/// pinned** — not to the secret alone.
+///
+/// Binding the identity is what defeats the QR-swap attack: an attacker
+/// who reads the terminal's QR and re-issues it with substituted keys
+/// produces a different code on the phone than the one the terminal shows
+/// over its own keys, so the human comparison fails. Only a phone holding
+/// the same secret *and* seeing the terminal's genuine keys can display
+/// the matching digits.
+pub(crate) fn pairing_confirmation_code(
+    secret: &[u8; 32],
+    cli_enc_pub_hex: &str,
+    cli_sig_pub_hex: &str,
+) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_display_key(secret).as_ref())
+        .expect("HMAC accepts any key length");
+    mac.update(b"confirmation-code");
+    mac.update(cli_enc_pub_hex.as_bytes());
+    mac.update(cli_sig_pub_hex.as_bytes());
+    let n = u32::from_be_bytes(
+        mac.finalize().into_bytes()[..4]
+            .try_into()
+            .expect("4 bytes"),
+    ) % 1_000_000;
+    format!("{:03}-{:03}", n / 1000, n % 1000)
+}
+
+/// HMAC-SHA256 binding proof over the whole pairing context: the request
+/// it answers (by `rid`) plus **both** identities being pinned. Anyone can
+/// know public keys; only the holder of the pairing secret can produce
+/// this, and replaying it against a different request or key set fails.
 pub(crate) fn pairing_binding_proof(
     secret: &[u8; 32],
-    enc_pub_hex: &str,
-    sig_pub_hex: &str,
+    request_rid: &str,
+    cli_enc_pub_hex: &str,
+    responder_enc_pub_hex: &str,
+    responder_sig_pub_hex: &str,
 ) -> Result<Vec<u8>> {
     use hmac::{Hmac, Mac};
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_binding_key(secret).as_ref())
         .expect("HMAC accepts any key length");
     mac.update(b"pairing-response-bind");
-    mac.update(enc_pub_hex.as_bytes());
-    mac.update(sig_pub_hex.as_bytes());
+    mac.update(request_rid.as_bytes());
+    mac.update(cli_enc_pub_hex.as_bytes());
+    mac.update(responder_enc_pub_hex.as_bytes());
+    mac.update(responder_sig_pub_hex.as_bytes());
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
 /// Verify a binding proof in constant time.
 pub(crate) fn verify_pairing_binding_proof(
     secret: &[u8; 32],
-    enc_pub_hex: &str,
-    sig_pub_hex: &str,
+    request_rid: &str,
+    cli_enc_pub_hex: &str,
+    responder_enc_pub_hex: &str,
+    responder_sig_pub_hex: &str,
     proof: &[u8],
 ) -> Result<()> {
     use hmac::{Hmac, Mac};
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_binding_key(secret).as_ref())
         .expect("HMAC accepts any key length");
     mac.update(b"pairing-response-bind");
-    mac.update(enc_pub_hex.as_bytes());
-    mac.update(sig_pub_hex.as_bytes());
+    mac.update(request_rid.as_bytes());
+    mac.update(cli_enc_pub_hex.as_bytes());
+    mac.update(responder_enc_pub_hex.as_bytes());
+    mac.update(responder_sig_pub_hex.as_bytes());
     mac.verify_slice(proof)
         .map_err(|_| Error::Pairing("pairing proof mismatch".into()))
 }
