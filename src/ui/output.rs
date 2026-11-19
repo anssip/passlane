@@ -179,7 +179,7 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool, 
                 Cell::new(table_secret(card.number(), card.agent_policy())),
                 Cell::new(String::from(format!("{}", card.expiry()))),
                 Cell::new(table_secret(card.cvv(), card.agent_policy())),
-                Cell::new(String::from(card.name_on_card())),
+                Cell::new(table_secret(card.name_on_card(), card.agent_policy())),
                 Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         } else {

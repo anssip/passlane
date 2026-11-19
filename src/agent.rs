@@ -318,10 +318,26 @@ fn owner_reveal_command(entry: &str, field: &str, vault: &str) -> String {
 
 fn owner_reveal_base_command(entry: &str, field: &str) -> String {
     match field {
-        "code" | "secret" => format!("passlane show -o '{entry}'"),
+        "code" | "secret" => format!("passlane show -o {}", shell_quote(entry)),
         "number" => "passlane show -p".to_string(),
         "content" => "passlane show -n".to_string(),
-        _ => format!("passlane show '{entry}'"),
+        _ => format!("passlane show {}", shell_quote(entry)),
+    }
+}
+
+/// Quote an entry title for a shell command line the owner is told to
+/// paste. Titles are arbitrary user data: without quoting, a title like
+/// `x'; rm -rf ~` would escape the suggested command. Plain safe names
+/// stay unquoted for readability.
+fn shell_quote(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@' | '+' | '%'));
+    if safe {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -785,15 +801,15 @@ mod tests {
         // flags or the owner's recovery command finds nothing.
         assert_eq!(
             owner_reveal_base_command("root-server", "password"),
-            "passlane show 'root-server'"
+            "passlane show root-server"
         );
         assert_eq!(
             owner_reveal_base_command("GitHub:user", "code"),
-            "passlane show -o 'GitHub:user'"
+            "passlane show -o GitHub:user"
         );
         assert_eq!(
             owner_reveal_base_command("GitHub:user", "secret"),
-            "passlane show -o 'GitHub:user'"
+            "passlane show -o GitHub:user"
         );
         assert_eq!(
             owner_reveal_base_command("Visa", "number"),
@@ -802,6 +818,25 @@ mod tests {
         assert_eq!(
             owner_reveal_base_command("wifi", "content"),
             "passlane show -n"
+        );
+    }
+
+    #[test]
+    fn shell_quote_never_lets_a_title_escape_the_command() {
+        assert_eq!(shell_quote("github.com"), "github.com");
+        assert_eq!(shell_quote("GitHub:user"), "GitHub:user");
+        assert_eq!(shell_quote("my entry"), "'my entry'");
+        // A title carrying a single quote stays inside the quoting.
+        assert_eq!(shell_quote("x'; rm -rf ~"), r"'x'\''; rm -rf ~'");
+        // Command substitution and backticks never reach the shell bare.
+        assert_eq!(shell_quote("$(touch /tmp/pwned)"), "'$(touch /tmp/pwned)'");
+        assert_eq!(shell_quote("`id`"), "'`id`'");
+        assert_eq!(shell_quote(""), "''");
+        // The quoted forms themselves must not contain a bare quote that
+        // closes early: round-trip sanity via the base command.
+        assert_eq!(
+            owner_reveal_base_command("x'; rm -rf ~", "password"),
+            "passlane show 'x'\\''; rm -rf ~'"
         );
     }
 
