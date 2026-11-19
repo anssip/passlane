@@ -213,15 +213,29 @@ impl ListedTotp {
     }
 }
 
-/// The entries whose notes a non-verbose (metadata) listing redacts:
-/// restricted entries that actually carry a note. Notes are the only
-/// secret-bearing field such a listing would show, so the withholding is
-/// reported (and `ask` entries enter the ask flow) exactly like the
-/// secret-bearing listings.
-fn note_withheld_entries<'a>(entries: &'a [Credential]) -> Vec<&'a Credential> {
+/// The entries a non-verbose (metadata) listing redacts secret-bearing
+/// fields from: restricted entries that carry a note or any custom
+/// attribute besides the policy itself. Titles, usernames, tags and the
+/// policy attribute stay visible, so entries without notes or extra
+/// attributes are fully shown and nothing is withheld from them. The
+/// withholding is reported (and `ask` entries enter the ask flow) exactly
+/// like the secret-bearing listings.
+fn metadata_withheld_entries<'a>(entries: &'a [Credential]) -> Vec<(&'a Credential, &'static str)> {
     entries
         .iter()
-        .filter(|e| e.note().is_some_and(|_| withheld_reason(e.agent_policy()).is_some()))
+        .filter(|e| withheld_reason(e.agent_policy()).is_some())
+        .filter_map(|e| {
+            if e.note().is_some() {
+                Some((e, "note"))
+            } else if e.custom_attributes()
+                .iter()
+                .any(|(key, _)| key != passlane_core::vault::entities::AGENT_ATTRIBUTE)
+            {
+                Some((e, "attributes"))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -309,20 +323,27 @@ impl ListAction {
                 // Verbose plain withholds passwords and notes per entry.
                 WithheldSummary::tally(entries.iter().map(|e| e.agent_policy())).report();
             } else {
-                // The metadata listing prints notes; when one is redacted,
-                // the withheld read is reported and ask entries enter the
-                // ask flow, exactly like the secret-bearing listings.
-                let withheld_notes = note_withheld_entries(&entries);
-                if !withheld_notes.is_empty() {
-                    WithheldSummary::tally(withheld_notes.iter().map(|e| e.agent_policy()))
-                        .report();
-                    agent::log_bulk_ask_requests(
-                        withheld_notes
-                            .into_iter()
-                            .map(|e| (e.title().to_string(), e.agent_policy())),
-                        "note",
-                        false,
-                    );
+                // The metadata listing prints notes and custom attributes;
+                // when fields are redacted, the withheld read is reported
+                // and ask entries enter the ask flow, exactly like the
+                // secret-bearing listings — one request per withheld entry,
+                // named for the field family that was redacted.
+                let withheld_fields = metadata_withheld_entries(&entries);
+                if !withheld_fields.is_empty() {
+                    WithheldSummary::tally(
+                        withheld_fields.iter().map(|(e, _)| e.agent_policy()),
+                    )
+                    .report();
+                    for field in ["note", "attributes"] {
+                        let group: Vec<(String, AgentPolicy)> = withheld_fields
+                            .iter()
+                            .filter(|(_, f)| *f == field)
+                            .map(|(e, _)| (e.title().to_string(), e.agent_policy()))
+                            .collect();
+                        if !group.is_empty() {
+                            agent::log_bulk_ask_requests(group.into_iter(), field, false);
+                        }
+                    }
                 }
             }
             Ok(Some(Self::format_credentials_plain(&entries, self.verbose)))
@@ -1076,24 +1097,29 @@ mod tests {
     }
 
     #[test]
-    fn note_withheld_entries_covers_only_restricted_entries_with_notes() {
-        let with_note = |agent: Option<&str>| {
-            let mut cred = Credential::new(None, "pw", "t", "u", Some("note"), None);
+    fn metadata_withheld_entries_cover_notes_and_custom_attributes() {
+        let entry = |note: Option<&str>, agent: Option<&str>, attrs: &[(&str, &str)]| {
+            let mut cred =
+                Credential::new(None, "pw", "t", "u", note, None);
+            let mut all: Vec<(String, String)> = attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
             if let Some(agent) = agent {
-                cred = cred
-                    .with_custom_attributes(&[("agent".to_string(), agent.to_string())]);
+                all.push(("agent".to_string(), agent.to_string()));
             }
-            cred
+            cred.with_custom_attributes(&all)
         };
         let entries = vec![
-            with_note(Some("allow")),
-            with_note(Some("ask")),
-            with_note(None), // default never, with a note -> withheld
-            Credential::new(None, "pw", "t2", "u2", None, None), // never, no note
+            entry(Some("n"), Some("allow"), &[]), // allowed: nothing withheld
+            entry(Some("n"), Some("ask"), &[]),   // note withheld
+            entry(None, None, &[("Recovery code", "1")]), // never: attributes withheld
+            entry(None, Some("never"), &[("agent", "never")]), // only the policy attr
+            Credential::new(None, "pw", "t2", "u2", None, None), // bare never
         ];
-        let withheld = note_withheld_entries(&entries);
-        assert_eq!(withheld.len(), 2);
-        assert_eq!(withheld[0].agent_policy(), AgentPolicy::Ask);
-        assert_eq!(withheld[1].agent_policy(), AgentPolicy::Never);
+        let withheld = metadata_withheld_entries(&entries);
+        assert_eq!(withheld.len(), 2, "note and attribute carriers only");
+        assert_eq!((withheld[0].0.title(), withheld[0].1), ("t", "note"));
+        assert_eq!((withheld[1].0.title(), withheld[1].1), ("t", "attributes"));
     }
 }

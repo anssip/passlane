@@ -302,6 +302,19 @@ fn requester() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// The command the owner can run to reveal an entry interactively, for
+/// error-message guidance. Map by the field being revealed: a bare
+/// `passlane show <pattern>` only searches credentials, so TOTP, payment
+/// and note entries need their type flags.
+fn owner_reveal_command(entry: &str, field: &str) -> String {
+    match field {
+        "code" | "secret" => format!("passlane show -o '{entry}'"),
+        "number" => "passlane show -p".to_string(),
+        "content" => "passlane show -n".to_string(),
+        _ => format!("passlane show '{entry}'"),
+    }
+}
+
 /// True when a reveal would run in an agent-facing context. Convenience
 /// for display code (tables) that needs the same classification as the
 /// gates.
@@ -351,11 +364,11 @@ where
                 Err(Error::new(&format!(
                     "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
                      recorded in the approval log ({}). Until the approval link ships, the \
-                     owner performs the reveal interactively instead: passlane show '{}'",
+                     owner performs the reveal interactively instead: {}",
                     entry,
                     id,
                     log.path().display(),
-                    entry
+                    owner_reveal_command(entry, field)
                 )))
             } else {
                 let id = log.log_request(&vault, entry, field, policy);
@@ -376,9 +389,10 @@ where
                 log.log_blocked(&vault, entry, field);
                 Err(Error::new(&format!(
                     "Entry '{}' is not available to agents (agent=never). The owner can \
-                     reveal it interactively with 'passlane show \"{}\"', or change its \
-                     'agent' attribute to 'ask' or 'allow'",
-                    entry, entry
+                     reveal it interactively with '{}', or change its 'agent' attribute to \
+                     'ask' or 'allow'",
+                    entry,
+                    owner_reveal_command(entry, field)
                 )))
             } else {
                 Ok(())
@@ -743,5 +757,26 @@ mod tests {
         assert_eq!(events[1]["event"], "decision");
         assert_eq!(events[1]["decision"], "approved");
         assert_eq!(events[1]["id"], events[0]["id"]);
+    }
+
+    #[test]
+    fn owner_reveal_command_selects_the_right_entry_type() {
+        // A bare `passlane show <pattern>` only searches credentials; the
+        // guidance must route TOTP, payment and note entries to their type
+        // flags or the owner's recovery command finds nothing.
+        assert_eq!(
+            owner_reveal_command("root-server", "password"),
+            "passlane show 'root-server'"
+        );
+        assert_eq!(
+            owner_reveal_command("GitHub:user", "code"),
+            "passlane show -o 'GitHub:user'"
+        );
+        assert_eq!(
+            owner_reveal_command("GitHub:user", "secret"),
+            "passlane show -o 'GitHub:user'"
+        );
+        assert_eq!(owner_reveal_command("Visa", "number"), "passlane show -p");
+        assert_eq!(owner_reveal_command("wifi", "content"), "passlane show -n");
     }
 }
