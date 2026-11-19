@@ -294,9 +294,11 @@ fn sync_folder_hint(filepath: &str) -> &'static str {
     // (C:\Users\x\OneDrive\...) match too. Registry paths are absolute in
     // practice, so matching on "/<folder>/" is enough.
     let normalized = filepath.replace('\\', "/").to_lowercase();
-    const SYNCED_MARKERS: [&str; 6] = [
+    const SYNCED_MARKERS: [&str; 8] = [
         "/dropbox/",
+        "/dropbox (",   // Windows business: Dropbox (Contoso)
         "/onedrive/",
+        "/onedrive - ", // Windows work/school: OneDrive - Contoso
         "/google drive/",
         "/googledrive/", // ~/Library/CloudStorage/GoogleDrive-<account>
         "/mobile documents/",
@@ -586,10 +588,20 @@ impl KeepassVault {
     /// updating or restarting, so transient errors are retried briefly
     /// before giving up — they usually clear within seconds.
     fn read_vault_file(filepath: &str) -> Result<Vec<u8>, Error> {
+        Self::read_vault_file_with(filepath, |p| std::fs::read(p), std::thread::sleep)
+    }
+
+    /// `read_vault_file` with the filesystem reader and the sleep injected,
+    /// so the retry behavior is deterministically testable.
+    fn read_vault_file_with(
+        filepath: &str,
+        mut read: impl FnMut(&str) -> std::io::Result<Vec<u8>>,
+        mut sleep: impl FnMut(std::time::Duration),
+    ) -> Result<Vec<u8>, Error> {
         const MAX_ATTEMPTS: u32 = 5;
         const RETRY_DELAY_MS: u64 = 500;
         for attempt in 1..=MAX_ATTEMPTS {
-            match std::fs::read(filepath) {
+            match read(filepath) {
                 Ok(bytes) => return Ok(bytes),
                 Err(e) if is_transient_read_error(&e) && attempt < MAX_ATTEMPTS => {
                     eprintln!(
@@ -599,7 +611,7 @@ impl KeepassVault {
                         attempt,
                         MAX_ATTEMPTS - 1
                     );
-                    std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                    sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 }
                 Err(e) => {
                     return Err(Error::new(&format!(
@@ -1719,9 +1731,90 @@ mod tests {
         // Native Windows paths, separators and case.
         assert!(!sync_folder_hint(r"C:\Users\x\OneDrive\store.kdbx").is_empty());
         assert!(!sync_folder_hint(r"C:\Users\X\Dropbox\Documents\store.kdbx").is_empty());
+        // Work/school and business folders carry an organization suffix.
+        assert!(!sync_folder_hint(r"C:\Users\Alice\OneDrive - Contoso\store.kdbx").is_empty());
+        assert!(!sync_folder_hint(r"C:\Users\Alice\Dropbox (Contoso)\store.kdbx").is_empty());
         // A path merely containing the word is not enough...
         assert!(sync_folder_hint("/Users/x/my-dropbox-backups/store.kdbx").is_empty());
         assert!(sync_folder_hint(r"C:\Users\x\dropbox-backups\store.kdbx").is_empty());
+    }
+
+    #[test]
+    fn read_vault_file_recovers_after_transient_errors() {
+        let reads = std::cell::RefCell::new(0);
+        let mut sleeps = Vec::new();
+        let result = KeepassVault::read_vault_file_with(
+            "/Users/x/Dropbox/store.kdbx",
+            |path| {
+                let n = {
+                    let mut r = reads.borrow_mut();
+                    *r += 1;
+                    *r
+                };
+                if n < 3 {
+                    Err(std::io::Error::from_raw_os_error(11))
+                } else {
+                    assert_eq!(path, "/Users/x/Dropbox/store.kdbx");
+                    Ok(vec![1, 2, 3])
+                }
+            },
+            |d| sleeps.push(d),
+        );
+        assert_eq!(result.unwrap(), vec![1, 2, 3]);
+        assert_eq!(*reads.borrow(), 3, "success on the third read");
+        assert_eq!(sleeps.len(), 2, "one sleep per retry");
+        assert!(sleeps.iter().all(|d| d.as_millis() == 500));
+    }
+
+    #[test]
+    fn read_vault_file_gives_up_after_five_attempts() {
+        let reads = std::cell::RefCell::new(0);
+        let mut sleeps = Vec::new();
+        let err = KeepassVault::read_vault_file_with(
+            "/Users/x/Dropbox/store.kdbx",
+            |_| {
+                *reads.borrow_mut() += 1;
+                Err(std::io::Error::from_raw_os_error(11))
+            },
+            |d| sleeps.push(d),
+        )
+        .unwrap_err();
+        assert_eq!(*reads.borrow(), 5, "the attempt limit is five reads");
+        assert_eq!(sleeps.len(), 4, "no sleep after the final attempt");
+        for expected in [
+            "Failed to read vault file '/Users/x/Dropbox/store.kdbx'",
+            "Resource deadlock avoided",
+            "synced folder",
+        ] {
+            assert!(
+                err.message.contains(expected),
+                "message must contain '{}': {}",
+                expected,
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn read_vault_file_fails_immediately_on_permanent_error() {
+        let reads = std::cell::RefCell::new(0);
+        let mut sleeps = Vec::new();
+        let err = KeepassVault::read_vault_file_with(
+            "/vaults/store.kdbx",
+            |_| {
+                *reads.borrow_mut() += 1;
+                Err(std::io::Error::from_raw_os_error(13)) // EACCES
+            },
+            |d| sleeps.push(d),
+        )
+        .unwrap_err();
+        assert_eq!(*reads.borrow(), 1, "no retries for a permanent error");
+        assert!(sleeps.is_empty());
+        assert!(
+            err.message.contains("Failed to read vault file '/vaults/store.kdbx'"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 
     #[test]
