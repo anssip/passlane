@@ -45,7 +45,10 @@ tables, prompts, and the clipboard copy, the REPL, `show -o`'s code view.
 The owner revealing their own entry is the approval. An `ask` entry still
 prompts once in those flows (see below), which also covers the case of an
 agent driving the owner's terminal: the human at the keyboard is the one
-who answers.
+who answers. `edit` prompts pre-fill the entry's current secret fields
+(TOTP secret, card number, note content), so edits are gated the same way
+as reveals: `ask` entries prompt for approval first, and restricted
+entries are refused without an interactive terminal.
 
 Titles, usernames and other metadata are not secret material; listings that
 never showed secrets (`list` without `-v`/`--json`, the completion cache)
