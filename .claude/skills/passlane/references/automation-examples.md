@@ -18,7 +18,14 @@ set -euo pipefail
 
 CREDS=$(passlane list '^github\.com$' --json)
 USER=$(echo "$CREDS" | jq -r '.entries[0].username')
-PASS=$(echo "$CREDS" | jq -r '.entries[0].password')
+PASS=$(echo "$CREDS" | jq -r '.entries[0].password // empty')
+
+# A withheld password is null in the JSON and empty here: stop instead of
+# submitting literal "null" credentials (agent policy refusal).
+if [ -z "$PASS" ]; then
+  echo "password withheld by the agent policy (agent=never/ask)" >&2
+  exit 1
+fi
 
 # Fetch the TOTP code just before the request. Exits non-zero if 0 or >1 authorizers match.
 OTP=$(passlane show -o --once '^GitHub$')
@@ -54,11 +61,12 @@ passlane show '^vault\.internal$' --out | some-tool --password-stdin
 This is a reference pattern, not a literal script — form selectors are site-specific. The agent
 should drive the browser via the `playwright-cli` skill and use passlane only to source the secrets:
 
-1. Read the credential:
+1. Read the credential, failing fast on a withheld (null) password:
    ```bash
    CREDS=$(passlane list '^example\.com$' --json)
    USER=$(echo "$CREDS" | jq -r '.entries[0].username')
-   PASS=$(echo "$CREDS" | jq -r '.entries[0].password')
+   PASS=$(echo "$CREDS" | jq -r '.entries[0].password // empty')
+   [ -n "$PASS" ] || { echo "password withheld by the agent policy" >&2; exit 1; }
    ```
 2. Navigate to the login page; fill the username field with `$USER` and the password field with
    `$PASS`; submit.
@@ -73,20 +81,24 @@ Keep the secrets in the automation layer; do not print them into the page log or
 
 ## 4. Read-only credential audit
 
-`list --json` + `jq` enables safe, local analysis. Find credentials with short passwords:
+`list --json` + `jq` enables safe, local analysis. Restricted entries have `null`
+passwords — filter them out first or every audit silently miscounts them (`null | length`
+is 0, so they would all look "short").
+
+Find credentials with short passwords:
 
 ```bash
 passlane list --json \
-  | jq -r '.entries[] | select(.password | length < 12) | .service'
+  | jq -r '.entries[] | select(.password != null) | select(.password | length < 12) | .title'
 ```
 
-Find reused passwords across services (groups of size > 1):
+Find reused passwords across services (groups of size > 1, withheld passwords excluded):
 
 ```bash
 passlane list --json | jq -r '
-  [.entries[] | {service, password}]
+  [.entries[] | select(.password != null) | {title, password}]
   | group_by(.password)
-  | map(select(length > 1) | map(.service))
+  | map(select(length > 1) | map(.title))
 '
 ```
 
@@ -100,6 +112,9 @@ a file or log.
   approval). Check `$?` (or use `set -e`) and react — don't proceed on empty output.
 - **Anchor regexes** (`'^github\.com$'`, `'^GitHub$'`) so single-secret commands resolve to exactly
   one entry. `show -o --once` and `show --out` error on multiple matches.
+- **Never submit `null` as a secret.** In `--json` output a withheld secret is `null`; with
+  `jq -r` it becomes the literal string `"null"`. Extract with `.password // empty` and
+  abort on empty — or `select(.password != null)` in pipelines.
 - **Re-fetch TOTP codes per attempt.** They expire within seconds; never cache or reuse a code.
 - **If the vault is locked,** the right fix is for the user to run `passlane unlock` (and
   `passlane unlock --vault totp` when needed). The agent cannot supply the master password
