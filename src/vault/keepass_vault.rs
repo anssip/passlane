@@ -1781,18 +1781,24 @@ mod tests {
         .unwrap_err();
         assert_eq!(*reads.borrow(), 5, "the attempt limit is five reads");
         assert_eq!(sleeps.len(), 4, "no sleep after the final attempt");
-        for expected in [
-            "Failed to read vault file '/Users/x/Dropbox/store.kdbx'",
-            "Resource deadlock avoided",
-            "synced folder",
-        ] {
-            assert!(
-                err.message.contains(expected),
-                "message must contain '{}': {}",
-                expected,
-                err.message
-            );
-        }
+        assert!(
+            err.message
+                .contains("Failed to read vault file '/Users/x/Dropbox/store.kdbx'"),
+            "unexpected message: {}",
+            err.message
+        );
+        // The OS message for the injected errno differs per platform
+        // (EDEADLK on macOS, EAGAIN on Linux); derive it, don't hard-code.
+        assert!(
+            err.message.contains(&std::io::Error::from_raw_os_error(11).to_string()),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("synced folder"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 
     #[test]
