@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Fix a misleading hardware-key failure: the vault file is now read *before* the "Touch your hardware key to open the vault" prompt is shown, so an unreadable vault no longer appears to be a YubiKey problem. Transient File Provider errors (`Resource deadlock avoided`/EAGAIN/EBUSY from synced folders such as Dropbox while the sync client is busy or updating) are retried briefly, and a vault that stays unreadable fails with a clear message naming the file and pointing at the synced folder instead of a raw OS error. The message also suggests opening the vault once in another app (Finder/KeePassXC), which forces the sync client to materialize the file and has been observed to restore reads on a wedged Dropbox File Provider
+- A missed YubiKey touch (the key times out waiting and the response fails its CRC check) now reports "The hardware key did not return a valid response..." with the two likely causes instead of the cryptic `Wrong CRC`
+
 ## [4.0.0]
 
 - **Breaking:** Add multi-vault support: manage any number of named vaults (`vault add`, `vault list`, `vault use`, `vault remove`, `vault rename`, `vault info`), switch with the global `--vault <NAME>` flag or `PASSLANE_VAULT` env var, and track the active vault. All entry types (credentials, payment cards, notes, TOTP) can now live in any vault. The pre-multi-vault config is migrated automatically on first run (main vault → `default`, TOTP vault → `totp`); `unlock -o`/`passwd -o` remain as legacy aliases for `--vault totp`

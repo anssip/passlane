@@ -7,7 +7,8 @@ use keepass_ng::db::{
 };
 use keepass_ng::db::DatabaseSaveError;
 use keepass_ng::{
-    ChallengeResponseKey, DatabaseConfig, DatabaseKey, DatabaseOpenError, DatabaseVersion,
+    ChallengeResponseKey, ChallengeResponseKeyError, DatabaseConfig, DatabaseKey,
+    DatabaseKeyError, DatabaseOpenError, DatabaseVersion,
 };
 
 use log::debug;
@@ -35,9 +36,30 @@ impl Drop for KeepassVault {
 impl From<DatabaseOpenError> for Error {
     fn from(e: DatabaseOpenError) -> Self {
         Error {
-            message: e.to_string(),
+            message: explain_open_error(&e),
         }
     }
+}
+
+/// Map keepass-ng's open errors to user-facing messages. "Wrong CRC" from
+/// the challenge-response exchange is what a *missed* YubiKey touch looks
+/// like: the key times out and answers with an error status, which fails
+/// the response CRC check. Name the likely causes instead of the raw
+/// protocol error. The string match is on the inner error's Display
+/// because the challenge_response crate is not a direct dependency.
+fn explain_open_error(e: &DatabaseOpenError) -> String {
+    if let DatabaseOpenError::Key(DatabaseKeyError::ChallengeResponse(
+        ChallengeResponseKeyError::Api(inner),
+    )) = e
+    {
+        if inner.to_string() == "Wrong CRC" {
+            return "The hardware key did not return a valid response. Either no touch was \
+                    detected within the key's timeout (touch the key when it blinks), or its \
+                    slot is not programmed for HMAC-SHA1 challenge-response."
+                .to_string();
+        }
+    }
+    e.to_string()
 }
 
 impl From<DatabaseSaveError> for Error {
@@ -255,6 +277,35 @@ fn requires_touch(challenge_response: Option<&ChallengeResponseKey>) -> bool {
     )
 }
 
+/// Errors a File Provider can emit while it is busy, updating or wedged.
+/// macOS: EDEADLK=11 (the "Resource deadlock avoided" seen when a synced
+/// folder's provider is unresponsive), EBUSY=16, EAGAIN=35; on Linux
+/// EAGAIN=11 and EDEADLK=35. Covering all three on both platforms is
+/// harmless — no regular-disk read produces them.
+fn is_transient_read_error(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(11) | Some(16) | Some(35))
+}
+
+/// Extra guidance appended to vault read errors when the file lives in a
+/// known synced folder, where the usual culprit is the sync client's file
+/// provider rather than the disk.
+fn sync_folder_hint(filepath: &str) -> &'static str {
+    const SYNCED_MARKERS: [&str; 4] = [
+        "/Dropbox/",
+        "/OneDrive/",
+        "/Google Drive/",
+        "/Library/Mobile Documents/",
+    ];
+    if SYNCED_MARKERS.iter().any(|m| filepath.contains(m)) {
+        " The vault is in a synced folder; the sync client may be busy, updating or \
+         unresponsive. Retry in a moment or restart the sync client. Opening the \
+         vault once in another app (Finder preview or KeePassXC) forces the sync \
+         client to finish fetching the file and has been known to restore reads."
+    } else {
+        ""
+    }
+}
+
 impl KeepassVault {
     pub fn open(
         password: &str,
@@ -465,15 +516,18 @@ impl KeepassVault {
             }
             Ok(_) => {}
         }
-        let (mut db_file, key) =
+        let (vault_bytes, key) =
             Self::get_database_key(filepath, password, keyfile, challenge_response)?;
-        // Printed only once the vault file and keyfile opened fine, so the
-        // user is never told to touch the key for an operation that is about
-        // to fail before any challenge happens.
+        // Printed only once the vault file and keyfile opened fine *and* the
+        // vault bytes are in memory. The challenge itself happens inside
+        // Database::parse, shortly after this point; reading the file first
+        // means a vault on an unavailable synced drive fails before the user
+        // is told to touch the key (the touch prompt otherwise misattributes
+        // the failure to the hardware key).
         if requires_touch(challenge_response) {
             eprintln!("Touch your hardware key to open the vault...");
         }
-        let mut db = Database::open(&mut db_file, key)?;
+        let mut db = Database::parse(&vault_bytes, key)?;
         db.set_recycle_bin_enabled(false);
         // keepass-ng 0.11 only writes KDBX 4.1, while vaults created with
         // earlier passlane versions (keepass-ng 0.9) are KDBX 4.0. Upgrade
@@ -502,8 +556,8 @@ impl KeepassVault {
         password: &str,
         keyfile: &Option<String>,
         challenge_response: Option<&ChallengeResponseKey>,
-    ) -> Result<(File, DatabaseKey), DatabaseOpenError> {
-        let db_file = File::open(filepath)?;
+    ) -> Result<(Vec<u8>, DatabaseKey), Error> {
+        let vault_bytes = Self::read_vault_file(filepath)?;
         let mut key = match keyfile {
             Some(kf) => {
                 debug!("Using keyfile '{}' and password", kf);
@@ -517,7 +571,41 @@ impl KeepassVault {
         if let Some(cr) = challenge_response {
             key = key.with_challenge_response_key(cr.clone());
         }
-        Ok((db_file, key))
+        Ok((vault_bytes, key))
+    }
+
+    /// Read the vault file into memory. File Provider-backed folders
+    /// (Dropbox, OneDrive, iCloud Drive, Google Drive) can transiently
+    /// refuse reads with EDEADLK/EAGAIN/EBUSY while the provider is busy,
+    /// updating or restarting, so transient errors are retried briefly
+    /// before giving up — they usually clear within seconds.
+    fn read_vault_file(filepath: &str) -> Result<Vec<u8>, Error> {
+        const MAX_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY_MS: u64 = 500;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match std::fs::read(filepath) {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if is_transient_read_error(&e) && attempt < MAX_ATTEMPTS => {
+                    eprintln!(
+                        "Vault file '{}' is not readable yet ({}), retrying ({}/{})...",
+                        filepath,
+                        e,
+                        attempt,
+                        MAX_ATTEMPTS - 1
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                }
+                Err(e) => {
+                    return Err(Error::new(&format!(
+                        "Failed to read vault file '{}': {}.{}",
+                        filepath,
+                        e,
+                        sync_folder_hint(filepath)
+                    )));
+                }
+            }
+        }
+        unreachable!("read_vault_file loop must return on its last attempt")
     }
 
     fn load_credentials(&self, grep: Option<&str>) -> Vec<Credential> {
@@ -1580,6 +1668,66 @@ mod tests {
         let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
         assert_eq!(vault.grep(Some("infra")).len(), 1);
         assert_eq!(vault.grep(Some("no-such-tag")).len(), 0);
+    }
+
+    #[test]
+    fn transient_read_errors_are_classified() {
+        // EDEADLK (macOS) / EAGAIN (Linux), EBUSY, EAGAIN (macOS) /
+        // EDEADLK (Linux): the errors a File Provider emits when busy.
+        for errno in [11, 16, 35] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            assert!(is_transient_read_error(&e), "errno {} must be transient", errno);
+        }
+        for errno in [2, 13, 21, 5] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            assert!(
+                !is_transient_read_error(&e),
+                "errno {} must not be transient",
+                errno
+            );
+        }
+        assert!(!is_transient_read_error(&std::io::Error::from(
+            std::io::ErrorKind::UnexpectedEof
+        )));
+    }
+
+    #[test]
+    fn sync_folder_hint_matches_known_providers() {
+        assert!(sync_folder_hint("/Users/x/vaults/store.kdbx").is_empty());
+        assert!(!sync_folder_hint("/Users/x/Dropbox/Documents/store.kdbx").is_empty());
+        assert!(!sync_folder_hint("/Users/x/OneDrive/store.kdbx").is_empty());
+        assert!(!sync_folder_hint("/Users/x/Library/Mobile Documents/store.kdbx").is_empty());
+        // A path merely containing the word is not enough...
+        assert!(sync_folder_hint("/Users/x/my-dropbox-backups/store.kdbx").is_empty());
+    }
+
+    #[test]
+    fn open_unreadable_vault_reports_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        std::fs::write(&path, b"not-a-vault").unwrap();
+
+        // Make the vault unreadable (EACCES) for anyone but root; when the
+        // test happens to run privileged the open succeeds and there is
+        // nothing to assert.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let result = KeepassVault::open("any-password", path.to_str().unwrap(), None, None);
+        if let Err(err) = result {
+            assert!(
+                err.message.contains("Failed to read vault file"),
+                "unexpected error message: {}",
+                err.message
+            );
+            assert!(
+                err.message.contains(path.to_str().unwrap()),
+                "error message must name the vault file: {}",
+                err.message
+            );
+        }
     }
 
     /// A stand-in for a hardware key: the 20-byte HMAC-SHA1 secret a
