@@ -882,11 +882,12 @@ mod tests {
         // like "-root" must come after -- or clap reads it as an option.
         assert_eq!(
             owner_reveal_base_command("-root", "password"),
-            "passlane show -- '-root'"
+            "passlane show -- -root"
         );
+        // Unsafe dash-leading titles are additionally shell-quoted.
         assert_eq!(
-            owner_reveal_base_command("--delete-everything", "code"),
-            "passlane show -o -- '--delete-everything'"
+            owner_reveal_base_command("-x y", "code"),
+            "passlane show -o -- '-x y'"
         );
         // Ordinary titles are unaffected.
         assert_eq!(
