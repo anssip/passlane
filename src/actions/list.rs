@@ -127,12 +127,13 @@ impl ListedCredential {
     }
 }
 
-/// A payment card as listed; `number` and `cvv` are `null` when withheld.
+/// A payment card as listed; `number`, `cvv`, cardholder name and billing
+/// address are `null` when withheld.
 #[derive(Serialize)]
 struct ListedPayment {
     id: String,
     name: String,
-    name_on_card: String,
+    name_on_card: Option<String>,
     number: Option<String>,
     cvv: Option<String>,
     expiry: passlane_core::vault::entities::Expiry,
@@ -149,12 +150,19 @@ impl ListedPayment {
         Self {
             id: entry.id().to_string(),
             name: entry.name().to_string(),
-            name_on_card: entry.name_on_card().to_string(),
+            // Cardholder name and billing address identify the owner as
+            // much as the number does; restricted entries keep only
+            // explicitly safe card metadata.
+            name_on_card: (!withheld).then(|| entry.name_on_card().to_string()),
             number: (!withheld).then(|| entry.number().to_string()),
             cvv: (!withheld).then(|| entry.cvv().to_string()),
             expiry: entry.expiry().clone(),
             color: entry.color().cloned(),
-            billing_address: entry.billing_address().cloned(),
+            billing_address: if withheld {
+                None
+            } else {
+                entry.billing_address().cloned()
+            },
             agent: entry.agent_policy().as_str().to_string(),
             last_modified: *entry.last_modified(),
         }
@@ -568,23 +576,25 @@ impl ListAction {
             let withheld = withheld_reason(entry.agent_policy());
             lines.push(String::new());
             lines.push(format!("Name: {}", entry.name()));
-            lines.push(format!("Name on Card: {}", entry.name_on_card()));
             match withheld {
                 None => {
                     lines.push(format!("Number: {}", entry.number()));
                     lines.push(format!("CVV: {}", entry.cvv()));
+                    lines.push(format!("Name on Card: {}", entry.name_on_card()));
+                    if let Some(address) = entry.billing_address() {
+                        lines.push(format!("Billing Address: {}", address));
+                    }
                 }
                 Some(reason) => {
                     lines.push(format!("Number: [withheld: {}]", reason));
                     lines.push("CVV: [withheld]".to_string());
+                    lines.push("Name on Card: [withheld]".to_string());
+                    lines.push("Billing Address: [withheld]".to_string());
                 }
             }
             lines.push(format!("Expiry: {}", entry.expiry()));
             if let Some(color) = entry.color() {
                 lines.push(format!("Color: {}", color));
-            }
-            if let Some(address) = entry.billing_address() {
-                lines.push(format!("Billing Address: {}", address));
             }
             lines.push(format!("Last Modified: {}", entry.last_modified()));
         }
@@ -862,13 +872,19 @@ mod tests {
     fn test_format_payments_plain_withholds_restricted() {
         let card = PaymentCard::new(
             None, "Visa", "John Doe", "4532123456789012", "123",
-            Expiry { month: 6, year: 2025 }, None, None, None,
+            Expiry { month: 6, year: 2025 }, None,
+            Some(&Address::new(None, "Main St 1", "Helsinki", "FI", None, "00100")),
+            None,
         );
         let result = ListAction::format_payments_plain(&[card]);
         assert!(!result.contains("4532123456789012"), "card number must be withheld");
         assert!(!result.contains("CVV: 123"));
+        assert!(!result.contains("John Doe"), "cardholder name must be withheld");
+        assert!(!result.contains("Main St 1"), "billing address must be withheld");
         assert!(result.contains("Number: [withheld: agent=never]"));
         assert!(result.contains("CVV: [withheld]"));
+        assert!(result.contains("Name on Card: [withheld]"));
+        assert!(result.contains("Billing Address: [withheld]"));
         // Metadata survives so the entry is still identifiable.
         assert!(result.contains("Name: Visa"));
     }
@@ -1067,11 +1083,15 @@ mod tests {
     fn test_listed_payment_note_totp_json_withhold_secrets() {
         let card = PaymentCard::new(
             None, "Visa", "Jane", "4532123456789012", "123",
-            Expiry { month: 6, year: 2025 }, None, None, None,
+            Expiry { month: 6, year: 2025 }, None,
+            Some(&Address::new(None, "Main St 1", "Helsinki", "FI", None, "00100")),
+            None,
         );
         let card_json = serde_json::to_string(&ListedPayment::from_entry(&card, true)).unwrap();
         assert!(!card_json.contains("4532123456789012"));
         assert!(!card_json.contains("\"cvv\":\"123\""));
+        assert!(!card_json.contains("Jane"), "cardholder name must be withheld");
+        assert!(!card_json.contains("Main St 1"), "billing address must be withheld");
         assert!(card_json.contains("\"agent\":\"never\""));
 
         let note = Note::new(None, "wifi", "wpa-key", None);

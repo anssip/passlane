@@ -305,13 +305,32 @@ fn requester() -> String {
 /// The command the owner can run to reveal an entry interactively, for
 /// error-message guidance. Map by the field being revealed: a bare
 /// `passlane show <pattern>` only searches credentials, so TOTP, payment
-/// and note entries need their type flags.
-fn owner_reveal_command(entry: &str, field: &str) -> String {
+/// and note entries need their type flags. When the entry's vault is not
+/// the active one, the command targets it explicitly — following the
+/// guidance without `--vault` would search the wrong vault.
+fn owner_reveal_command(entry: &str, field: &str, vault: &str) -> String {
+    with_vault_targeting(
+        owner_reveal_base_command(entry, field),
+        vault,
+        crate::vault_registry::get_active().as_deref(),
+    )
+}
+
+fn owner_reveal_base_command(entry: &str, field: &str) -> String {
     match field {
         "code" | "secret" => format!("passlane show -o '{entry}'"),
         "number" => "passlane show -p".to_string(),
         "content" => "passlane show -n".to_string(),
         _ => format!("passlane show '{entry}'"),
+    }
+}
+
+/// Append `--vault` unless the entry's vault already is the active one
+/// (no active vault at all still needs the explicit target).
+fn with_vault_targeting(command: String, vault: &str, active: Option<&str>) -> String {
+    match active {
+        Some(active) if active == vault => command,
+        _ => format!("{command} --vault {vault}"),
     }
 }
 
@@ -368,7 +387,7 @@ where
                     entry,
                     id,
                     log.path().display(),
-                    owner_reveal_command(entry, field)
+                    owner_reveal_command(entry, field, &vault)
                 )))
             } else {
                 let id = log.log_request(&vault, entry, field, policy);
@@ -392,7 +411,7 @@ where
                      reveal it interactively with '{}', or change its 'agent' attribute to \
                      'ask' or 'allow'",
                     entry,
-                    owner_reveal_command(entry, field)
+                    owner_reveal_command(entry, field, &vault)
                 )))
             } else {
                 Ok(())
@@ -765,18 +784,43 @@ mod tests {
         // guidance must route TOTP, payment and note entries to their type
         // flags or the owner's recovery command finds nothing.
         assert_eq!(
-            owner_reveal_command("root-server", "password"),
+            owner_reveal_base_command("root-server", "password"),
             "passlane show 'root-server'"
         );
         assert_eq!(
-            owner_reveal_command("GitHub:user", "code"),
+            owner_reveal_base_command("GitHub:user", "code"),
             "passlane show -o 'GitHub:user'"
         );
         assert_eq!(
-            owner_reveal_command("GitHub:user", "secret"),
+            owner_reveal_base_command("GitHub:user", "secret"),
             "passlane show -o 'GitHub:user'"
         );
-        assert_eq!(owner_reveal_command("Visa", "number"), "passlane show -p");
-        assert_eq!(owner_reveal_command("wifi", "content"), "passlane show -n");
+        assert_eq!(
+            owner_reveal_base_command("Visa", "number"),
+            "passlane show -p"
+        );
+        assert_eq!(
+            owner_reveal_base_command("wifi", "content"),
+            "passlane show -n"
+        );
+    }
+
+    #[test]
+    fn vault_targeting_only_when_the_entry_lives_elsewhere() {
+        // The active vault needs no flag; any other vault (or no active
+        // vault at all) gets an explicit --vault so the command actually
+        // finds the entry.
+        assert_eq!(
+            with_vault_targeting("passlane show 'x'".into(), "work", Some("work")),
+            "passlane show 'x'"
+        );
+        assert_eq!(
+            with_vault_targeting("passlane show 'x'".into(), "work", Some("default")),
+            "passlane show 'x' --vault work"
+        );
+        assert_eq!(
+            with_vault_targeting("passlane show 'x'".into(), "work", None),
+            "passlane show 'x' --vault work"
+        );
     }
 }
