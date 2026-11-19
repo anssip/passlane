@@ -140,9 +140,12 @@ attribute. **All stdout reading commands honor it** (`show --out`, `show -o --on
   `-v`/`--json`) shows each entry's custom attributes, including `agent`.
 
 For `list` commands, restricted entries are **redacted, not omitted**: the secret fields
-(`password`, `secret`, `content`, `number`/`cvv`, `code`) come back as `null` and each entry gains
-an `"agent"` field with the policy that applied. A stderr summary counts what was withheld. Handle
-`null` secrets explicitly instead of feeding empty strings into automations.
+(`password`, `secret`, `content`, `number`/`cvv`/cardholder/billing address, `code`) come
+back as `null`, notes and custom attributes are dropped except the `agent` attribute, and
+each entry gains an `"agent"` field with the policy that applied. A stderr summary counts
+what was withheld, and every withheld `agent=ask` entry records an approval request in the
+log (one per run — expect log growth if a script polls an `ask` entry). Handle `null`
+secrets explicitly instead of feeding empty strings into automations.
 
 ## Other commands
 

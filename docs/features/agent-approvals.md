@@ -13,6 +13,28 @@ In passlane, `edit` → *advanced fields* → *custom attributes* offers the
 same thing. Missing or unrecognized values read as `never` — a typo never
 widens access.
 
+### Changing the policy
+
+Setting or changing the attribute goes through the same gates as
+revealing:
+
+- `passlane edit <pattern>` → *advanced fields* → *custom attributes*
+  adds or updates `agent`. The edit prompts pre-fill the entry's current
+  secret fields, so the edit itself runs the approval gate: restricted
+  (`never`/`ask`) entries are refused outright in agent-facing contexts,
+  and `ask` entries prompt the owner first. An agent cannot flip a
+  restricted entry to `allow` for itself.
+- Any KeePass client can edit the attribute directly on the vault file —
+  as with everything cooperative, a process with write access to the
+  vault can always change it.
+- `passlane csv` import accepts an `agent=…` value in the
+  `custom_attributes` column.
+
+Within the cooperative model an agent may still *edit* entries whose
+policy is `allow` (the edit gate passes for them) — including changing
+their other fields. Writes are out of scope for the reveal policy; keep
+agent workflows on a dedicated vault if that matters.
+
 The policy governs **agent-facing reveals**: passlane output that a program
 (an AI agent, a script) consumes, as opposed to the owner's own interactive
 use. It is the CLI half of the approvals feature (passlane#50,
@@ -64,11 +86,16 @@ owner-only.
   `ask` additionally records an approval request.
 - `list`: the command still succeeds (exit 0) and stays parseable.
   Restricted entries are returned with the secret fields as `null`
-  (`password`, `secret`, `content`, `number`/`cvv`, `code`), with notes and
-  custom attributes dropped except the `agent` policy itself, plus an
-  `agent` field stating the policy that applied; a summary of what was
-  withheld is printed to stderr, and every withheld `ask` entry records an
-  approval request. Plain-text verbose listings print
+  (`password`, `secret`, `content`, `number`/`cvv`/cardholder/billing
+  address, `code`), with notes and custom attributes dropped except the
+  `agent` policy itself, plus an `agent` field stating the policy that
+  applied; a summary of what was withheld is printed to stderr. **Side
+  effect:** every withheld `ask` entry records an approval request in the
+  approval log — that is the audit signal of what an agent wanted, and it
+  happens on each invocation, so a script polling `list` over `ask`
+  entries grows the log (one line per entry per run). Metadata-only
+  listings (`list` without `-v`/`--json`) log nothing unless they actually
+  redacted a note or custom attribute. Plain-text verbose listings print
   `[withheld: agent=never]` markers instead of the secret.
 - `show -v` / verbose tables: if any matched entry is restricted and the
   context is agent-facing, the cleartext table is refused with guidance
