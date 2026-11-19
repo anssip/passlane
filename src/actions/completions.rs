@@ -6,7 +6,7 @@ use clap_complete::{generate, Shell};
 
 use crate::actions::Action;
 use crate::completion_cache;
-use crate::vault::entities::Error;
+use passlane_core::vault::entities::Error;
 
 pub struct CompletionsAction {
     pub shell: Option<String>,
@@ -77,8 +77,8 @@ fn rc_file(shell: Shell) -> &'static str {
 fn generate_cache() -> Result<usize, Error> {
     use crate::keychain;
     use crate::ui::input::ask_master_password;
-    use crate::vault::keepass_vault::KeepassVault;
-    use crate::vault::vault_trait::{PasswordVault, Vault};
+    use passlane_core::vault::keepass_vault::KeepassVault;
+    use passlane_core::vault::vault_trait::{PasswordVault, Vault};
 
     let config = crate::vault_registry::current()?;
     let master_pwd = match keychain::get_master_password(&config.name) {
@@ -95,7 +95,7 @@ fn generate_cache() -> Result<usize, Error> {
     let challenge_response = config
         .hwkey
         .as_ref()
-        .map(crate::hwkey::configured_challenge_response_key)
+        .map(passlane_core::hwkey::configured_challenge_response_key)
         .transpose()?;
 
     println!("Opening vault '{}' to build completion cache...", config.name);

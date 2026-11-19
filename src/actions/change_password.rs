@@ -1,8 +1,8 @@
 use crate::actions::Action;
 use crate::keychain;
 use crate::ui::input::{ask_master_password, ask_new_master_password};
-use crate::vault::entities::Error;
-use crate::vault::keepass_vault::KeepassVault;
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::keepass_vault::KeepassVault;
 use crate::vault_registry;
 
 pub struct ChangePasswordAction {}
@@ -22,7 +22,7 @@ impl Action for ChangePasswordAction {
         )));
         let challenge_response = match config.hwkey {
             Some(ref hwkey_config) => {
-                Some(crate::hwkey::configured_challenge_response_key(hwkey_config)?)
+                Some(passlane_core::hwkey::configured_challenge_response_key(hwkey_config)?)
             }
             None => None,
         };

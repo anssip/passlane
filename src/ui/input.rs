@@ -8,7 +8,7 @@ use rustyline::validate::Validator;
 use rustyline::{Config, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
-use crate::vault::entities::{
+use passlane_core::vault::entities::{
     parse_tags, Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS,
     Totp,
 };

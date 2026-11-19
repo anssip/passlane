@@ -8,8 +8,8 @@ use crate::ui::output::{
     show_card, show_credential, show_credentials_table, show_note, show_notes_table,
     show_payment_cards_table, show_totp_table,
 };
-use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use log::debug;
 use std::io::{self, Read, Write};

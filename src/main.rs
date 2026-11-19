@@ -1,12 +1,10 @@
 mod actions;
 mod completion_cache;
-mod crypto;
 mod hwkey;
 mod keychain;
 mod repl;
 mod store;
 mod ui;
-mod vault;
 mod vault_registry;
 
 use crate::actions::add::AddAction;

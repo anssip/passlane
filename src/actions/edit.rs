@@ -4,8 +4,8 @@ use crate::completion_cache;
 use crate::ui::output::{
     show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
 };
-use crate::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::vault_trait::Vault;
 use crate::{handle_matches, ui, ItemType, MatchHandlerTemplate, UnlockingAction};
 
 struct EditCredentialsTemplate<'a> {

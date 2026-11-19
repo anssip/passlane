@@ -1,4 +1,4 @@
-use crate::vault::entities::{parse_tags, Credential, Error, Note, PaymentCard};
+use passlane_core::vault::entities::{parse_tags, Credential, Error, Note, PaymentCard};
 use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
@@ -8,19 +8,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-impl From<csv::Error> for Error {
-    fn from(e: csv::Error) -> Self {
-        Error {
-            message: e.to_string(),
-        }
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error {
-            message: e.to_string(),
-        }
+/// `Error` lives in passlane-core, so the orphan rule forbids a `From`
+/// impl here; the CSV writers convert explicitly instead.
+fn csv_error(e: csv::Error) -> Error {
+    Error {
+        message: e.to_string(),
     }
 }
 
@@ -278,7 +270,7 @@ pub(crate) fn write_credentials_to_csv(
                 .unwrap_or_default(),
             custom_attributes: encode_custom_attributes(cred.custom_attributes()),
             last_modified: cred.last_modified().to_rfc3339(),
-        })?;
+        }).map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)
@@ -304,7 +296,7 @@ pub(crate) fn write_payment_cards_to_csv(
                 Some(address) => format!("{}", address),
                 None => String::from(""),
             },
-        })?;
+        }).map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(cards.len() as i64)
@@ -316,7 +308,7 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
         wtr.serialize(CSVSecureNote {
             title: note.title().to_string(),
             note: note.content().to_string(),
-        })?;
+        }).map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
@@ -325,7 +317,7 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::entities::Credential;
+    use passlane_core::vault::entities::Credential;
     use tempfile::NamedTempFile;
 
     #[cfg(unix)]

@@ -18,9 +18,9 @@ pub mod vault;
 use crate::keychain;
 
 use crate::ui::input::ask_master_password;
-use crate::vault::entities::Error;
-use crate::vault::keepass_vault::KeepassVault;
-use crate::vault::vault_trait::Vault;
+use passlane_core::vault::entities::Error;
+use passlane_core::vault::keepass_vault::KeepassVault;
+use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use arboard::Clipboard;
 use keepass_ng::ChallengeResponseKey;
@@ -85,7 +85,7 @@ fn get_vault_properties() -> Result<VaultProperties, Error> {
     let mut master_pwd = get_vault_password(&config.name);
     let challenge_response = match config.hwkey {
         Some(ref hwkey_config) => {
-            match crate::hwkey::configured_challenge_response_key(hwkey_config) {
+            match passlane_core::hwkey::configured_challenge_response_key(hwkey_config) {
                 Ok(cr) => Some(cr),
                 Err(e) => {
                     // The key not being connected lands here; keep the password
