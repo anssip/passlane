@@ -125,6 +125,17 @@ inquire/rustyline need a terminal; feeding a plain pipe hangs or panics. Wrap in
 
 ## Gotchas
 
+- **Never run the freshly built binary against the user's real vaults.** Any
+  rebuild changes the ad-hoc signature, so the first keychain access to *real*
+  items (`vault list` and `status` read the lock state of every configured
+  vault!) triggers a permission popup per item. Scope every invocation to the
+  test vault (`--vault $NAME`); check registration with
+  `python3 -c "import json; print([v['name'] for v in json.load(open('$HOME/.passlane/vaults.json'))['vaults']])"`
+  instead of `vault list`, and never use `vault list`/`status`/`vault info`
+  with the debug binary outside the test vault.
+- Unit tests (`cargo test`) are hermetic — no test reads the keychain. If a
+  popup appears "during tests", it came from a stray binary invocation around
+  them (often a sanity-check `vault list` after a rebuild).
 - `Unlocking vault...` is printed to **stdout** (pre-existing). Filter it
   (`| grep -v '^Unlocking'`) before piping `list --json` into `jq`/`python`.
 - Exit codes: capture them on an unpiped run (`$P ... ; echo $?`) — in a pipeline you get
