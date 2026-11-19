@@ -1,0 +1,231 @@
+# passlane approval protocol — specification (draft 1)
+
+Status: **implementable draft** for passlane#49. The reference implementation
+is this crate; the Swift (UniFFI, passlane#44) and JavaScript (static
+approval page, passlane#51) ports must interoperate with it via
+[`vectors/v1.json`](vectors/v1.json).
+
+## 1. Purpose and constraints
+
+Two features share one protocol:
+
+- **Phone-as-key** (passlane-ios PLAN §3.1): the vault's HMAC-SHA1
+  challenge-response secret lives only on the iPhone; the CLI asks, the owner
+  approves with Face ID, the CLI gets its 20-byte answer.
+- **Agent approvals** (PLAN §3.3): an agent wanting a secret marked
+  `agent = ask` triggers the same human approval.
+
+The transport is never trusted. v1 carries envelopes in a terminal QR code /
+URL fragment and pastes the reply back over Universal Clipboard; later
+transports (BLE v1.1, private CloudKit v1.2) change only the carrier. A
+malicious relay sees opaque bytes, and can drop, delay or replay them —
+nothing else.
+
+Non-goals: hiding *that* a request exists from the approver's own device;
+post-quantum security; proximity binding (BLE adds that later).
+
+## 2. Cryptographic profile (ADR: HPKE, not Noise)
+
+**Decision: RFC 9180 HPKE, base mode, `DHKEM(P-256)` + `HKDF-SHA256` +
+`AES-256-GCM`, plus ECDSA-P256/SHA-256 sender signatures.**
+
+Alternatives considered:
+
+| | HPKE (RFC 9180) | Noise (XX/IK) | custom ECIES |
+|---|---|---|---|
+| Message model | one-shot, store-and-forward | interactive session handshake | one-shot |
+| Secure Enclave | P-256 ECDH ✓ P-256 ECDSA ✓ | ECDH per message with custom DH plumbing | ✓ |
+| WebCrypto (Phase 0 page) | ECDH+HKDF+AESGCM, DHKEM is thin composition over natives | no native support | fully native |
+| swift-crypto | native HPKE ✓ | manual | manual |
+| Vectors / analysis | RFC test vectors, used by MLS/ECH | framework vectors, not of our protocol | none |
+
+Why HPKE wins: our messages are **asynchronous** — the approver answers
+minutes later over a relay, with no live connection and possibly no
+connectivity at all (QR scan). Noise's security model is built around
+interactive handshakes; bending it to one-shot relayed messages buys nothing
+and costs a state machine on every platform. HPKE's single-shot seal/open is
+exactly our shape, and every consumer platform has either a native
+implementation (swift-crypto) or the primitives to compose the KEM
+deterministically (WebCrypto). Sender authentication is layered as a
+signature rather than HPKE `mode_auth`, because the approver's signing key is
+a **Secure Enclave** key — the SE signs (ECDSA) and does ECDH, which maps
+cleanly onto HPKE-base + signature, while `mode_auth` would require the SE
+key to be the KEM sender key in the response direction.
+
+Pairing messages cannot use HPKE (no pinned recipient exists yet), so they
+use `AES-256-GCM` under a key derived by `HKDF-SHA256` from a 32-byte
+QR-borne secret (§5).
+
+Libraries: Rust uses `hpke-rs` 0.8 (Cryspen; MPL-2.0, GPL-compatible) with
+its RustCrypto backend — this crate never implements HPKE itself.
+
+## 3. Envelope wire format
+
+All integers little-endian. One envelope = one message.
+
+```text
+offset size field
+0      4    magic "PLAP"
+4      1    version (= 1)
+5      1    message type: 1 pairing_req, 2 pairing_resp, 3 approval_req,
+                      4 approval_resp, 5 session_revoke
+6      1    signature kind: 0 none, 1 ECDSA-P256 DER, 2 WebAuthn ES256
+7      2    header length
+9      n    header — compact JSON, cleartext
+.      2    enc length     65 for HPKE envelopes, 0 for PSK pairing
+.      n    enc             HPKE ephemeral public key (uncompressed SEC1)
+.      4    ciphertext length
+.      n    ciphertext      AEAD ct ‖ tag
+.      2    signature length
+.      n    signature       kind 1: DER ECDSA; kind 2: JSON WebauthnAssertion
+```
+
+**Header** (cleartext, deliberately compact — it rides in QR codes):
+
+```json
+{ "v":1, "t":3, "n":"<16B nonce hex>", "ts":1732000000, "exp":1732000300,
+  "skid":"<sender enc kid>", "rkid":"<recipient enc kid>", "rid":"<16B request id hex>" }
+```
+
+Everything sensitive (vault name, entry titles, challenges, responses) is in
+the encrypted body, never the header. A relay learns only: a message exists,
+its lifetime, and opaque key ids. `skid`/`rkid` are the first 8 bytes of
+`SHA-256("enc" ‖ public_key)` in hex — routing/pinning handles, not
+identities.
+
+**Body** (inside the ciphertext, JSON, `#[serde(tag="type")]`):
+`pairing_request`, `pairing_response`, `approval_request`,
+`approval_response`, `session_revoke` — see `src/message.rs` for the
+authoritative field list. Bodies wipe themselves on drop
+(`zeroize`); `Debug` prints secrets as `[redacted]`.
+
+**AEAD binding**: AAD = `magic ‖ version ‖ type ‖ sig_kind ‖ header_len ‖
+header`. HPKE `info` = `"passlane-approval/v1" ‖ type`. The header is
+cleartext but cannot be modified without breaking decryption.
+
+**Signatures** cover the entire prefix through the ciphertext (AAD ‖ `enc_len
+‖ enc ‖ ct_len ‖ ct`), including the signature-kind byte. ECDSA nonces are
+RFC 6979 deterministic on the CLI; the SE randomizes.
+
+**WebAuthn (Phase 0)**: the signature-kind-2 block is
+`{authenticatorData, clientDataJSON, signature}` (base64url fields). The
+WebAuthn challenge is `base64url(SHA-256(transcript))` — the passkey
+signature thus commits to the exact envelope bytes. Verification additionally
+checks `type == "webauthn.get"`, the pinned origin, the RP-id hash, and the
+user-present flag (`src/webauthn.rs`).
+
+Envelope sizes: a typical approval request is ~600 bytes → ~800 base64url
+characters, comfortably inside QR capacity and URL fragments.
+
+## 4. Freshness and replay
+
+- `nonce`: 16 random bytes per envelope. Receivers record
+  `(skid, nonce) → exp` **only after** full verification, so unverified
+  envelopes cannot poison the store. Entries are pruned after `exp`.
+- `ts`/`exp`: receiver policy (defaults): reject `ts > now + 120s` (skew),
+  reject `exp - ts > 900s` (TTL cap), reject `now >= exp`.
+- `rid`: request id; a response for a request must echo it (the CLI matches
+  pending requests by `rid` before accepting an approval).
+- Rate limiting is a **hook** (`RateLimiter` trait, sliding-window reference
+  impl): the phone throttles *displays* (approval fatigue), the CLI
+  throttles *emission*.
+
+## 5. Pairing
+
+1. CLI generates a 32-byte `PairingSecret`, embeds it (with its public keys
+   and a request envelope) in the enrollment QR — URL fragment, never sent
+   to any server.
+2. `pairing_request` travels PSK-sealed (key = `HKDF-SHA256(salt =
+   "passlane-pairing/v1", ikm = secret, info = "passlane-approval/v1" ‖
+   type)`), signed by the CLI's signing key (carried inside the ciphertext).
+3. Both sides display `confirmation_code(secret)` = six digits
+   (`HKDF(secret, "confirmation-code") mod 10^6`, formatted `123-456`).
+   The human compares — this defeats QR-swap. The code is a display check,
+   not a secret.
+4. `pairing_response` is normal HPKE to the CLI's key, signed by the
+   approver. The CLI pins the declared keys only after the codes matched.
+5. The secret is discarded; both sides store a `PeerPin`
+   (`label`, `enc_pub`, `sig_pub`, `paired_at`, optional WebAuthn RP data).
+
+**Away-from-desk pairing is forbidden for initial pairing.** The QR scan is
+the out-of-band channel; a chat-relayed "pairing" is a social-engineering
+vector. Existing pairs may re-approve over relays.
+
+## 6. Phase 0 bootstrap (passkeys before the app exists)
+
+Before the iOS app ships, the approver is a passkey on the static page:
+
+1. **Enrollment** (one-time, at the computer): `passlane approvals enroll`
+   prints a QR/link to `https://<domain>/enroll`; the page runs
+   `navigator.credentials.create()` (passkey, RP = the page's domain); the
+   user pastes the registration result back; the CLI verifies the attestation,
+   converts the COSE P-256 key to a pinned `PeerPin` with
+   `webauthn = { rp_id, origin }`. (COSE parsing lands with the CLI command —
+   passlane#51.)
+2. **Approvals**: request envelopes are HPKE-sealed to the passkey's P-256
+   public key — the page decrypts with WebCrypto (ECDH+HKDF+AESGCM
+   composing DHKEM exactly as §3 specifies), shows the request, and produces
+   a `approval_response` sealed to the CLI's key, with signature-kind 2
+   (the WebAuthn assertion over the envelope transcript).
+3. **Domain**: the page domain later serves the app's
+   `apple-app-site-association`, so the universal link routes to the app
+   instead. The envelope always rides the URL **fragment**, which browsers
+   never send to the domain.
+
+## 7. The unlock application flow (phone-held key)
+
+Enrollment (`hwkey add --phone`, passlane#53) and every vault open reuse this
+sequence; the HMAC-SHA1 semantics are exactly KeePass's challenge-response
+(the vault stays readable by a physical YubiKey programmed with the same
+secret):
+
+```text
+CLI                                              Phone / page
+---                                              ------------
+pair: QR(secret, pubs) ─── scan, confirm code ──> pin CLI
+      <──────── pairing_response (HPKE, signed) ── pin phone
+open: approval_request{ Unlock, challenge }
+      ── QR/link fragment ──────────────────────> display, Face ID
+      <─ approval_response{ response = HMAC-SHA1(secret, challenge) } ─
+derive composite key with the response
+```
+
+The response crosses only inside the HPKE ciphertext. Sessions
+(`Scope::Timed`, passlane#54) let one approval serve until expiry while the
+vault's challenge is unchanged (it rotates on save).
+
+## 8. Threat model
+
+| Attacker | Capability | Result |
+|---|---|---|
+| Relay/chat/link host | read, drop, delay, replay envelopes | sees opaque bytes; replays rejected (§4); drops = DoS only |
+| Malicious page host (post-app) | serves its own JS on the domain | cannot decrypt (fragment never sent; keys pinned at enrollment); origin pinning fails closed |
+| Stolen Mac, locked vault | full disk + memory of a dead process | no factors; unlock requires the phone's approval |
+| Compromised Mac (live) | anything | **out of scope** — the CLI holds decrypted vault data by design; approvals defend entry *access*, not a rooted host |
+| Phone thief | the device and its biometrics | `biometryCurrentSet` invalidation + recovery sheet re-import (PLAN §9) |
+| QR swap at enrollment | attacker's QR in place of the CLI's | confirmation-code mismatch — pairing aborts |
+| Approval-fatigue flood | many requests | display rate limiting (§4); `request_id` dedupe |
+
+Honest limitations: revocation of a stolen *phone's* approvals is cooperative
+(the CLI forgets pins on `session_revoke`/re-pair, but the HMAC secret it
+holds does not rotate without re-keying the vault — re-key guidance lives in
+passlane#53); the link transport carries no proximity signal (shown on the
+approval screen; BLE adds it in v1.1).
+
+## 9. Test vectors
+
+[`vectors/v1.json`](vectors/v1.json) — fixed keys, exact envelope bytes, and
+expected bodies for: an unlock request with challenge, a response carrying
+the HMAC secret, and a PSK pairing request with its confirmation code.
+Regenerate with `cargo run --example gen-vectors`. Cross-implementation
+tests (Swift, JS) open these exact envelopes — no shared code required.
+
+## 10. Implementation notes
+
+- `#![forbid(unsafe_code)]`; zeroize on keys, bodies, and HPKE secrets.
+- `open()` order: version → freshness → sender pinning → signature →
+  AEAD → body consistency → replay record (never before verification).
+- Decode limits (header 4 KiB, enc 1 KiB, ct 1 MiB) cap hostile allocations.
+- All randomness enters through caller-provided RNGs; no hidden global state.
+- `rand` 0.8 at the API boundary (matches the CLI); p256 0.14 shares one
+  version with the hpke-rs backend.

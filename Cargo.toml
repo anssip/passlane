@@ -1,3 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# Interim pin until the challenge_response/challenge_response_usb feature split
+# is released on crates.io (passlane#47, upstream PR ssrlive/keepass-ng#2).
+[patch.crates-io]
+keepass-ng = { git = "https://github.com/anssip/keepass-ng.git", branch = "challenge-response-usb" }
+
 [package]
 name = "passlane"
 version = "4.0.0"
@@ -36,7 +45,7 @@ anyhow = "1.0.56"
 chrono = { version = "0.4.19", features = ["serde"] }
 env_logger = "0.10.0"
 hex = "0.4.3"
-keepass-ng = { version = "0.11.11", features = ["save_kdbx4", "totp", "challenge_response"] }
+keepass-ng = { version = "0.11.11", features = ["save_kdbx4", "totp", "challenge_response", "challenge_response_usb"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 percent-encoding = "2.3.1"
