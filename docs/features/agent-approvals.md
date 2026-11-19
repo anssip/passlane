@@ -61,6 +61,11 @@ use. It is the CLI half of the approvals feature (passlane#50,
   agent-facing **even at an interactive terminal**.
 - Any reveal attempted while stdin is not a terminal (e.g. `passlane show`
   driven by a pipe): there is no interactive owner present to approve it.
+- Any reveal while stdout is not a terminal: the interactive display
+  itself (verbose tables, the note line in credential tables) would carry
+  secrets into a redirect or pager instead of the owner's screen, so it
+  is treated like any other stdout reveal. `passlane show … | less` on a
+  restricted entry is refused with the same guidance.
 - `export`, which writes every secret to a plaintext file. At an
   interactive terminal the owner is asked once whether to include
   restricted entries (migration use case); non-interactively the restricted

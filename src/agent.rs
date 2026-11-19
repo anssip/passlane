@@ -55,16 +55,19 @@ pub enum RevealContext {
 impl RevealContext {
     /// Classify a reveal: the stdout-printing paths are agent-facing even
     /// at a terminal (they are the documented scripting surface), and so
-    /// is everything else when stdin is not a terminal, because then
-    /// there is no interactive owner to approve the reveal.
+    /// is any reveal attempted without an interactive terminal on *both*
+    /// sides — without an interactive stdin there is no owner present to
+    /// approve, and without an interactive stdout the display itself
+    /// (verbose tables, note cells) would carry secrets into a redirect
+    /// or pager instead of the owner's screen.
     pub fn for_reveal(stdout_reveal: bool) -> Self {
-        Self::classify(stdin_is_interactive(), stdout_reveal)
+        Self::classify(stdin_is_interactive(), stdout_reveal, stdout_is_interactive())
     }
 
-    /// The classification rule, with the terminal check injected so the
+    /// The classification rule, with the terminal checks injected so the
     /// rule itself is deterministically testable.
-    pub fn classify(interactive_stdin: bool, stdout_reveal: bool) -> Self {
-        if stdout_reveal || !interactive_stdin {
+    pub fn classify(interactive_stdin: bool, stdout_reveal: bool, interactive_stdout: bool) -> Self {
+        if stdout_reveal || !interactive_stdin || !interactive_stdout {
             Self::Agent
         } else {
             Self::Owner
@@ -74,6 +77,10 @@ impl RevealContext {
 
 fn stdin_is_interactive() -> bool {
     std::io::stdin().is_terminal()
+}
+
+fn stdout_is_interactive() -> bool {
+    std::io::stdout().is_terminal()
 }
 
 /// What the policy says about a reveal.
@@ -515,12 +522,30 @@ mod tests {
     #[test]
     fn classify_rule() {
         // Stdout reveals are agent-facing even at a terminal.
-        assert_eq!(RevealContext::classify(true, true), RevealContext::Agent);
-        // Interactive stdin with a non-stdout reveal is the owner.
-        assert_eq!(RevealContext::classify(true, false), RevealContext::Owner);
-        // Without an interactive terminal there is no owner to approve.
-        assert_eq!(RevealContext::classify(false, false), RevealContext::Agent);
-        assert_eq!(RevealContext::classify(false, true), RevealContext::Agent);
+        assert_eq!(
+            RevealContext::classify(true, true, true),
+            RevealContext::Agent
+        );
+        // Interactive stdin AND stdout with a non-stdout reveal is the owner.
+        assert_eq!(
+            RevealContext::classify(true, false, true),
+            RevealContext::Owner
+        );
+        // Without an interactive stdin there is no owner to approve.
+        assert_eq!(
+            RevealContext::classify(false, false, true),
+            RevealContext::Agent
+        );
+        // Without an interactive stdout the display itself would carry
+        // secrets into a redirect or pager.
+        assert_eq!(
+            RevealContext::classify(true, false, false),
+            RevealContext::Agent
+        );
+        assert_eq!(
+            RevealContext::classify(false, true, false),
+            RevealContext::Agent
+        );
     }
 
     #[test]
