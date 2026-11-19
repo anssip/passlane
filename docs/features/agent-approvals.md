@@ -123,6 +123,15 @@ is *not* a cryptographic boundary:
 
 - Anything that can read the vault file and the keychain (or an open vault
   in another process) can bypass the CLI entirely.
+- **An agent can fake the owner's terminal.** The non-stdout paths rely on
+  "stdin is a terminal" to recognize the owner; an agent that allocates a
+  pseudo-terminal (`script -q /dev/null passlane show …`) satisfies that
+  check, reveals `never` entries, and can even answer an `ask` entry's
+  approval prompt with a keystroke. There is no reliable way to
+  distinguish such a pty from a real terminal, so the CLI does not pretend
+  to. The `ask` prompt is a speed bump against quiet exfiltration, not
+  proof of human presence — that arrives with the approval link, where the
+  approver must produce a passkey/Face ID the relaying agent cannot forge.
 - An agent driving the owner's interactive terminal is trusted to be the
   owner; the `ask` prompt is the only speed bump there.
 - The completion cache and non-verbose listings expose entry *names* by
