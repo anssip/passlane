@@ -58,6 +58,21 @@
 //!     1_000, &policy)?;
 //! let (_body, phone_pin) = open_pairing_response(&cli, &secret, &response, 1_001, &policy, &mut store)?;
 //!
+//! // -- MANDATORY before using either pin (SPEC §5): compare the mutual --
+//! // -- code. open_pairing_response succeeding is NOT enough: anyone who --
+//! // -- read the QR holds the secret and can forge a valid response.    --
+//! // The phone displays its code over (cli keys, its own keys); the
+//! // terminal displays the same value derived from the response's keys.
+//! let phone_pubs = (
+//!     passlane_approval::encoding::hex_encode(&phone.encryption_public()),
+//!     passlane_approval::encoding::hex_encode(&phone.verifying_key().to_sec1_bytes()),
+//! );
+//! let shown_on_phone = secret.mutual_confirmation_code(
+//!     &cli_pubs.0, &cli_pubs.1, &phone_pubs.0, &phone_pubs.1);
+//! let shown_on_terminal = secret.mutual_confirmation_code(
+//!     &cli_pubs.0, &cli_pubs.1, &phone_pin.enc_pub, &phone_pin.sig_pub);
+//! assert_eq!(shown_on_phone, shown_on_terminal); // the human does this
+//!
 //! // -- an approval round-trip (link/QR transport) --
 //! let request = seal(&mut rng, &cli, &phone_pin, Body::ApprovalRequest {
 //!     vault_id: "v1".into(),
