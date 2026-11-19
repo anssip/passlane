@@ -175,7 +175,12 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         gate_reveal(the_match.agent_policy(), false, the_match.name(), "number")?;
-        show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext, self.plain);
+        // The gate above passed (allow, owner's own reveal, or an approved
+        // ask), so the table renders a display copy with the policy
+        // cleared — otherwise ask cells would stay redacted after the
+        // owner just approved them.
+        let display = the_match.clone().with_agent_policy(AgentPolicy::Allow);
+        show_payment_cards_table(&vec![display], self.show_cleartext, self.plain);
         if ask_with_options(
             "Do you want to see the full card details? (yes/no)",
             vec!["yes", "no"],
@@ -246,7 +251,10 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
         gate_reveal(the_match.agent_policy(), false, the_match.title(), "content")?;
-        show_notes_table(&vec![the_match.clone()], self.verbose, self.plain);
+        // As with payment cards: the reveal is approved, so the verbose
+        // table renders a display copy instead of redacted ask cells.
+        let display = the_match.clone().with_agent_policy(AgentPolicy::Allow);
+        show_notes_table(&vec![display], self.verbose, self.plain);
         let response = ask_with_options(
             "Do you want to see the full note? (yes/no)",
             vec!["yes", "no"],
