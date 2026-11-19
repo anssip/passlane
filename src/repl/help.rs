@@ -46,7 +46,10 @@ show [type] [pattern] — Show entries from the vault
   show otp            Show all TOTP entries
   show otp <pattern>  Show TOTP entries matching the pattern
 
-When a single credential is found, its password is copied to clipboard."#
+When a single credential is found, its password is copied to clipboard.
+
+Entries with the 'agent' attribute set to 'ask' (agent=ask) ask for
+approval before being revealed; see docs/features/agent-approvals.md."#
         ),
         "add" => println!(
             r#"
@@ -140,7 +143,10 @@ completions — Show shell completion installation instructions
   The REPL already has built-in tab completion for commands and types."#
         ),
         _ => {
-            eprintln!("Unknown command: '{}'. Type 'help' for available commands.", cmd);
+            eprintln!(
+                "Unknown command: '{}'. Type 'help' for available commands.",
+                cmd
+            );
         }
     }
 }

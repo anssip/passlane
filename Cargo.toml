@@ -54,6 +54,7 @@ rustyline = "14.0.0"
 inquire = "0.7.5"
 ctrlc = "3.4"
 zeroize = "1.8"
+passlane-approval = { path = "crates/passlane-approval" }
 
 [dev-dependencies]
 tempfile = "3.24.0"

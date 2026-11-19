@@ -16,6 +16,49 @@ pub struct Error {
     pub message: String,
 }
 
+/// The name of the KeePass custom attribute that carries the per-entry
+/// agent access policy. A standard custom attribute, so it survives
+/// round-trips through other KeePass clients (see
+/// docs/features/agent-approvals.md).
+pub const AGENT_ATTRIBUTE: &str = "agent";
+
+/// Per-entry agent access policy: `agent = never | ask | allow` as a
+/// KeePass custom attribute. Governs reveals on the agent-facing paths
+/// (stdout output such as `show --out`, `list --json`, TOTP `--once`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentPolicy {
+    /// Never reveal through agent-facing paths (the default, also for
+    /// missing or unrecognized attribute values).
+    #[default]
+    Never,
+    /// Reveal only after an owner approval; until the approval link
+    /// transport ships, the owner approves interactively.
+    Ask,
+    /// Reveal through agent-facing paths without approval.
+    Allow,
+}
+
+impl AgentPolicy {
+    /// Parse the `agent` attribute value. Anything missing or
+    /// unrecognized is [`AgentPolicy::Never`]: a typo must never widen
+    /// access. Values are matched case-insensitively and trimmed.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("ask") => Self::Ask,
+            Some("allow") => Self::Allow,
+            _ => Self::Never,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+        }
+    }
+}
+
 impl Error {
     pub fn new(message: &str) -> Self {
         Error {
@@ -174,6 +217,17 @@ impl Credential {
         &self.custom_attributes
     }
 
+    /// The entry's agent access policy, read from the `agent` custom
+    /// attribute (missing/unrecognized values mean `never`).
+    pub fn agent_policy(&self) -> AgentPolicy {
+        AgentPolicy::parse(
+            self.custom_attributes
+                .iter()
+                .find(|(key, _)| key == AGENT_ATTRIBUTE)
+                .map(|(_, value)| value.as_str()),
+        )
+    }
+
     pub fn last_modified(&self) -> &DateTime<Utc> {
         &self.last_modified
     }
@@ -214,6 +268,8 @@ pub struct PaymentCard {
     color: Option<String>,
     billing_address: Option<Address>,
     last_modified: DateTime<Utc>,
+    #[serde(skip)]
+    agent_policy: AgentPolicy,
 }
 
 impl PaymentCard {
@@ -238,7 +294,19 @@ impl PaymentCard {
             color: color.map(sanitize),
             billing_address: billing_address.cloned(),
             last_modified: last_modified.unwrap_or_else(|| Utc::now()),
+            agent_policy: AgentPolicy::Never,
         }
+    }
+
+    /// Set the agent access policy (read from the KeePass entry's `agent`
+    /// attribute by the vault layer).
+    pub fn with_agent_policy(mut self, policy: AgentPolicy) -> Self {
+        self.agent_policy = policy;
+        self
+    }
+
+    pub fn agent_policy(&self) -> AgentPolicy {
+        self.agent_policy
     }
 
     pub fn id(&self) -> &Uuid {
@@ -299,6 +367,8 @@ pub struct Totp {
     period: u64,
     digits: u32,
     last_modified: DateTime<Utc>,
+    #[serde(skip)]
+    agent_policy: AgentPolicy,
 }
 
 impl Totp {
@@ -323,7 +393,19 @@ impl Totp {
             period,
             digits,
             last_modified: last_modified.unwrap_or_else(|| Utc::now()),
+            agent_policy: AgentPolicy::Never,
         }
+    }
+
+    /// Set the agent access policy (read from the KeePass entry's `agent`
+    /// attribute by the vault layer).
+    pub fn with_agent_policy(mut self, policy: AgentPolicy) -> Self {
+        self.agent_policy = policy;
+        self
+    }
+
+    pub fn agent_policy(&self) -> AgentPolicy {
+        self.agent_policy
     }
 
     pub fn id(&self) -> &Uuid {
@@ -518,6 +600,8 @@ pub struct Note {
     title: String,
     content: String,
     last_modified: DateTime<Utc>,
+    #[serde(skip)]
+    agent_policy: AgentPolicy,
 }
 
 fn sanitize(value: &str) -> String {
@@ -539,7 +623,19 @@ impl Note {
             title: sanitize(title),
             content: sanitize(content),
             last_modified: last_modified.unwrap_or_else(Utc::now),
+            agent_policy: AgentPolicy::Never,
         }
+    }
+
+    /// Set the agent access policy (read from the KeePass entry's `agent`
+    /// attribute by the vault layer).
+    pub fn with_agent_policy(mut self, policy: AgentPolicy) -> Self {
+        self.agent_policy = policy;
+        self
+    }
+
+    pub fn agent_policy(&self) -> AgentPolicy {
+        self.agent_policy
     }
     pub fn id(&self) -> Uuid {
         self.id
@@ -685,6 +781,85 @@ mod tests {
         assert!(parse_tags("").is_empty());
         assert!(parse_tags(";;, ;").is_empty());
         assert_eq!(parse_tags("  work  "), ["work".to_string()]);
+    }
+
+    #[test]
+    fn test_agent_policy_parsing() {
+        assert_eq!(AgentPolicy::parse(Some("never")), AgentPolicy::Never);
+        assert_eq!(AgentPolicy::parse(Some("ask")), AgentPolicy::Ask);
+        assert_eq!(AgentPolicy::parse(Some("allow")), AgentPolicy::Allow);
+        // Case-insensitive and trimmed, like a hand-edited attribute.
+        assert_eq!(AgentPolicy::parse(Some(" ASK ")), AgentPolicy::Ask);
+        assert_eq!(AgentPolicy::parse(Some("Allow")), AgentPolicy::Allow);
+    }
+
+    #[test]
+    fn test_agent_policy_unknown_values_default_to_never() {
+        // A typo or an unknown value must never widen access.
+        assert_eq!(AgentPolicy::parse(None), AgentPolicy::Never);
+        assert_eq!(AgentPolicy::parse(Some("")), AgentPolicy::Never);
+        assert_eq!(AgentPolicy::parse(Some("always")), AgentPolicy::Never);
+        assert_eq!(AgentPolicy::parse(Some("yolo")), AgentPolicy::Never);
+    }
+
+    #[test]
+    fn test_agent_policy_as_str_roundtrip() {
+        for policy in [AgentPolicy::Never, AgentPolicy::Ask, AgentPolicy::Allow] {
+            assert_eq!(
+                AgentPolicy::parse(Some(policy.as_str())),
+                policy,
+                "as_str/parse must roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn test_credential_agent_policy_from_custom_attributes() {
+        let cred = Credential::new(None, "pass", "stripe.com", "user", None, None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "ask".to_string()),
+                ("other".to_string(), "value".to_string()),
+            ]);
+        assert_eq!(cred.agent_policy(), AgentPolicy::Ask);
+
+        let plain = Credential::new(None, "pass", "stripe.com", "user", None, None);
+        assert_eq!(plain.agent_policy(), AgentPolicy::Never);
+
+        let unknown = Credential::new(None, "pass", "stripe.com", "user", None, None)
+            .with_custom_attributes(&[("agent".to_string(), "sometimes".to_string())]);
+        assert_eq!(unknown.agent_policy(), AgentPolicy::Never);
+    }
+
+    #[test]
+    fn test_non_credential_entities_default_to_never_and_accept_policy() {
+        let card = make_card("4111111111111234").with_agent_policy(AgentPolicy::Allow);
+        assert_eq!(card.agent_policy(), AgentPolicy::Allow);
+        assert_eq!(
+            make_card("4111111111111234").agent_policy(),
+            AgentPolicy::Never
+        );
+
+        let note = Note::new(None, "t", "c", None).with_agent_policy(AgentPolicy::Ask);
+        assert_eq!(note.agent_policy(), AgentPolicy::Ask);
+        assert_eq!(Note::new(None, "t", "c", None).agent_policy(), AgentPolicy::Never);
+
+        let totp = totp_fixture().with_agent_policy(AgentPolicy::Allow);
+        assert_eq!(totp.agent_policy(), AgentPolicy::Allow);
+        assert_eq!(totp_fixture().agent_policy(), AgentPolicy::Never);
+    }
+
+    fn totp_fixture() -> Totp {
+        Totp::new(
+            None,
+            "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+            "user",
+            "GitHub",
+            "JBSWY3DPEHPK3PXP",
+            "SHA1",
+            30,
+            6,
+            None,
+        )
     }
 
     #[test]

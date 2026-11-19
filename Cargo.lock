@@ -2304,6 +2304,7 @@ dependencies = [
  "keepass-ng",
  "keyring",
  "log",
+ "passlane-approval",
  "percent-encoding",
  "rand 0.8.7",
  "regex",

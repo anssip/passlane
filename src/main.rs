@@ -1,4 +1,5 @@
 mod actions;
+mod agent;
 mod completion_cache;
 mod crypto;
 mod hwkey;
@@ -25,7 +26,7 @@ use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
 use crate::actions::vault::VaultAction;
 use actions::*;
-use clap::{arg, ArgAction, Command};
+use clap::{ArgAction, Command, arg};
 use init::InitAction;
 use std::env;
 
@@ -150,20 +151,20 @@ pub fn cli() -> Command {
                     -c --credentials "Shows credentials by searching with the specified regular expression."
                 ).action(ArgAction::SetTrue).requires("search"))
                 .arg(arg!(
-                    --out "Print password to stdout instead of copying to clipboard."
+                    --out "Print password to stdout instead of copying to clipboard. This is an agent-facing reveal: the entry's 'agent' attribute (never|ask|allow, default never) applies and restricted entries are withheld."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
                     --plain "Render tables without borders for narrower output."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(
-                    --once "With -o, print the single matching OTP code to stdout and exit (no clipboard, no countdown). Errors if zero or multiple authorizers match. The code is valid only briefly."
+                    --once "With -o, print the single matching OTP code to stdout and exit (no clipboard, no countdown). Errors if zero or multiple authorizers match. The code is valid only briefly. The entry's 'agent' attribute (never|ask|allow, default never) applies."
                 ).action(ArgAction::SetTrue))
                 .arg(arg!(<REGEXP> "Regular expression used to search services to show.").group("search").required(false))
                 .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("list")
-                .about("Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.")
+                .about("Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout. Secret fields follow each entry's 'agent' attribute (never|ask|allow, default never): restricted entries come back redacted.")
                 .arg(arg!(
                     --json "Output as JSON"
                 ).action(ArgAction::SetTrue))
@@ -266,7 +267,6 @@ pub fn cli() -> Command {
                 .about("Generate shell completions and save to ~/.passlane/. Shows the line to add to your shell rc file.")
                 .arg(arg!([SHELL] "Target shell (bash, zsh, fish). Auto-detected from $SHELL if omitted."))
         )
-
 }
 
 /// The vault a command targets: the --vault flag or $PASSLANE_VAULT first,

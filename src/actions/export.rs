@@ -1,13 +1,53 @@
 use clap::ArgMatches;
 use log::debug;
+use std::io::IsTerminal;
+
 use crate::actions::{ItemType, UnlockingAction};
+use crate::agent::{decide, RevealContext, RevealDecision};
 use crate::store;
-use crate::vault::entities::Error;
+use crate::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard};
 use crate::vault::vault_trait::Vault;
 
 pub struct ExportAction {
     pub file_path: String,
     pub item_type: ItemType,
+}
+
+/// An export writes every secret to a plaintext file, which makes it an
+/// agent-facing bulk reveal: entries the agent policy restricts are skipped
+/// unless an interactive owner explicitly includes them.
+fn restricted(entries: &[AgentPolicy]) -> usize {
+    entries
+        .iter()
+        .filter(|p| decide(**p, RevealContext::Agent) != RevealDecision::Reveal)
+        .count()
+}
+
+/// At an interactive terminal the owner may choose to include restricted
+/// entries (e.g. when migrating to another password manager). Without a
+/// terminal there is no owner to approve, so restricted entries are skipped.
+fn confirm_include_restricted(restricted_count: usize) -> bool {
+    if restricted_count == 0 || !std::io::stdin().is_terminal() {
+        return false;
+    }
+    inquire::Confirm::new(&format!(
+        "{} entries are restricted by their agent policy (agent=never/ask). Include them in \
+         the export anyway?",
+        restricted_count
+    ))
+    .with_default(false)
+    .prompt()
+    .unwrap_or(false)
+}
+
+fn skip_notice(restricted_count: usize) {
+    if restricted_count > 0 {
+        eprintln!(
+            "Skipped {} entries restricted by their agent policy. Reveal them interactively or \
+             set their 'agent' attribute to 'allow' to export them.",
+            restricted_count
+        );
+    }
 }
 
 impl ExportAction {
@@ -25,13 +65,50 @@ impl ExportAction {
                 println!("No credentials found");
                 return Ok(0);
             }
-            store::write_credentials_to_csv(&self.file_path, &creds)
+            let restricted_count =
+                restricted(&creds.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
+            let exported: Vec<Credential> = if confirm_include_restricted(restricted_count) {
+                creds
+            } else {
+                skip_notice(restricted_count);
+                creds
+                    .into_iter()
+                    .filter(|c| decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .collect()
+            };
+            if exported.is_empty() {
+                println!("No agent-allowed credentials to export");
+                return Ok(0);
+            }
+            store::write_credentials_to_csv(&self.file_path, &exported)
         } else if self.item_type == ItemType::Payment {
             let cards = vault.find_payments();
-            store::write_payment_cards_to_csv(&self.file_path, &cards)
+            let restricted_count =
+                restricted(&cards.iter().map(|c| c.agent_policy()).collect::<Vec<_>>());
+            let exported: Vec<PaymentCard> = if confirm_include_restricted(restricted_count) {
+                cards
+            } else {
+                skip_notice(restricted_count);
+                cards
+                    .into_iter()
+                    .filter(|c| decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .collect()
+            };
+            store::write_payment_cards_to_csv(&self.file_path, &exported)
         } else if self.item_type == ItemType::Note {
             let notes = vault.find_notes();
-            store::write_secure_notes_to_csv(&self.file_path, &notes)
+            let restricted_count =
+                restricted(&notes.iter().map(|n| n.agent_policy()).collect::<Vec<_>>());
+            let exported: Vec<Note> = if confirm_include_restricted(restricted_count) {
+                notes
+            } else {
+                skip_notice(restricted_count);
+                notes
+                    .into_iter()
+                    .filter(|n| decide(n.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .collect()
+            };
+            store::write_secure_notes_to_csv(&self.file_path, &exported)
         } else {
             Ok(0)
         }

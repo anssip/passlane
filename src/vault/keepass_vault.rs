@@ -1,5 +1,4 @@
-use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
-use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
+use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::db::{
     group_get_children, node_is_entry, node_is_group, Database, Entry, Group,
@@ -706,6 +705,7 @@ impl KeepassVault {
     }
 
     fn node_to_totp(node: NodePtr) -> Totp {
+        let agent_policy = Self::node_agent_policy(&node);
         let totp = Self::get_node_totp_values(node);
         match totp {
             Err(e) => {
@@ -725,6 +725,7 @@ impl KeepassVault {
                     digits,
                     last_modified.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
                 )
+                .with_agent_policy(agent_policy)
             }
         }
     }
@@ -773,28 +774,46 @@ impl KeepassVault {
 
     fn node_to_payment(node: NodePtr) -> Option<PaymentCard> {
         let (name, name_on_card, number, cvv, expiry, color, billing_address, id) =
-            Self::get_node_payment_values(node)?;
-        Some(PaymentCard::new(
-            Some(&id),
-            &name,
-            &name_on_card,
-            &number,
-            &cvv,
-            expiry,
-            color.as_deref(),
-            billing_address.as_ref(),
-            None,
-        ))
+            Self::get_node_payment_values(node.clone())?;
+        Some(
+            PaymentCard::new(
+                Some(&id),
+                &name,
+                &name_on_card,
+                &number,
+                &cvv,
+                expiry,
+                color.as_deref(),
+                billing_address.as_ref(),
+                None,
+            )
+            .with_agent_policy(Self::node_agent_policy(&node)),
+        )
     }
 
     fn node_to_note(node: NodePtr) -> Note {
-        let (title, content, id, last_modified) = Self::get_node_note_values(node);
+        let (title, content, id, last_modified) = Self::get_node_note_values(node.clone());
         Note::new(
             Some(&id),
             &title,
             &content,
             last_modified.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
         )
+        .with_agent_policy(Self::node_agent_policy(&node))
+    }
+
+    /// The entry's agent access policy, read from the `agent` custom
+    /// attribute. Credentials carry their custom attributes in the entity
+    /// itself; the other entry types only surface this one.
+    fn node_agent_policy(node: &NodePtr) -> crate::vault::entities::AgentPolicy {
+        let node = node.borrow();
+        node.downcast_ref::<Entry>()
+            .map(|e| {
+                crate::vault::entities::AgentPolicy::parse(
+                    e.get(crate::vault::entities::AGENT_ATTRIBUTE),
+                )
+            })
+            .unwrap_or_default()
     }
 
     fn get_node_payment_values(
@@ -1381,6 +1400,7 @@ impl Vault for KeepassVault {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::entities::AgentPolicy;
 
     #[test]
     fn default_database_config_is_kdbx4_with_argon2_kdf() {
@@ -1545,6 +1565,145 @@ mod tests {
         assert!(!found.expires());
         assert_eq!(found.expiry_time(), None);
         assert!(found.custom_attributes().is_empty());
+    }
+
+    #[test]
+    fn agent_policy_attribute_roundtrips_through_kdbx() {
+        // The `agent` attribute is a standard KeePass custom attribute, so
+        // it must survive save/open for every entry type — including
+        // entries the attribute was added to in another KeePass client.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        // Credential: the attribute travels with the custom attributes.
+        vault
+            .save_one_credential(
+                Credential::new(None, "secret", "GitHub", "user", None, None)
+                    .with_custom_attributes(&[("agent".to_string(), "allow".to_string())]),
+            )
+            .unwrap();
+        // Card, note and TOTP: the attribute is set directly on the entry,
+        // the way another KeePass client would.
+        let card = PaymentCard::new(
+            None, "Visa", "Jane", "4111111111111111", "123",
+            Expiry { month: 12, year: 30 }, None, None, None,
+        );
+        vault.save_payment(card).unwrap();
+        {
+            let id = *vault.find_payments()[0].id();
+            let node = vault.db.search_node_by_uuid(id).unwrap();
+            node.borrow_mut()
+                .downcast_mut::<Entry>()
+                .unwrap()
+                .set_additional_attribute("agent", Some("ask"))
+                .unwrap();
+        }
+        vault.save_note(&Note::new(None, "wifi", "wpa-key", None)).unwrap();
+        {
+            let note_id = vault.find_notes()[0].id();
+            let node = vault.db.search_node_by_uuid(note_id).unwrap();
+            node.borrow_mut()
+                .downcast_mut::<Entry>()
+                .unwrap()
+                .set_additional_attribute("agent", Some("never"))
+                .unwrap();
+        }
+        vault
+            .save_totp(&Totp::new(
+                None,
+                "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+                "GitHub:user",
+                "GitHub",
+                "JBSWY3DPEHPK3PXP",
+                "SHA1",
+                30,
+                6,
+                None,
+            ))
+            .unwrap();
+        {
+            let totp_id = *vault.find_totp(None)[0].id();
+            let node = vault.db.search_node_by_uuid(totp_id).unwrap();
+            node.borrow_mut()
+                .downcast_mut::<Entry>()
+                .unwrap()
+                .set_additional_attribute("agent", Some("allow"))
+                .unwrap();
+        }
+        vault.save_database().unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.grep(None)[0].agent_policy(), AgentPolicy::Allow);
+        assert_eq!(vault.find_payments()[0].agent_policy(), AgentPolicy::Ask);
+        assert_eq!(vault.find_notes()[0].agent_policy(), AgentPolicy::Never);
+        assert_eq!(vault.find_totp(None)[0].agent_policy(), AgentPolicy::Allow);
+    }
+
+    #[test]
+    fn payment_edit_preserves_the_agent_attribute() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        vault
+            .save_payment(PaymentCard::new(
+                None, "Visa", "Jane", "4111111111111111", "123",
+                Expiry { month: 12, year: 30 }, None, None, None,
+            ))
+            .unwrap();
+        {
+            let id = *vault.find_payments()[0].id();
+            let node = vault.db.search_node_by_uuid(id).unwrap();
+            node.borrow_mut()
+                .downcast_mut::<Entry>()
+                .unwrap()
+                .set_additional_attribute("agent", Some("ask"))
+                .unwrap();
+        }
+        vault.save_database().unwrap();
+
+        // A passlane edit rewrites the card's own fields but must leave the
+        // user's agent attribute (like any unknown attribute) untouched.
+        let stored = vault.find_payments()[0].clone();
+        vault
+            .update_payment(PaymentCard::new(
+                Some(stored.id()),
+                stored.name(),
+                stored.name_on_card(),
+                stored.number(),
+                stored.cvv(),
+                Expiry { month: 12, year: 30 },
+                None, None, None,
+            ))
+            .unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.find_payments()[0].agent_policy(), AgentPolicy::Ask);
+    }
+
+    #[test]
+    fn credential_agent_policy_defaults_to_never_without_attribute() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+
+        let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
+        // An unrecognized value must read as `never`, never widen access.
+        vault
+            .save_one_credential(
+                Credential::new(None, "secret", "GitHub", "user", None, None)
+                    .with_custom_attributes(&[("agent".to_string(), "sometimes".to_string())]),
+            )
+            .unwrap();
+        drop(vault);
+
+        let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
+        assert_eq!(vault.grep(None)[0].agent_policy(), AgentPolicy::Never);
     }
 
     #[test]

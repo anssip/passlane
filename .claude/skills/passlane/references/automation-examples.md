@@ -2,7 +2,9 @@
 
 Ready-to-adapt patterns for using passlane in automations. All examples assume the vault is
 unlocked (`passlane unlock`, plus `passlane unlock --vault totp` when 2FA secrets live in a
-separate vault). Replace placeholder service names
+separate vault). Every entry also carries an agent policy (`agent = never | ask | allow`, default
+`never`) that governs these stdout reads — see the SKILL.md section on the agent access policy and
+handle `null` secrets / exit-1 refusals for restricted entries. Replace placeholder service names
 and selectors with the real ones.
 
 ## 1. API login: basic auth + TOTP header
@@ -25,9 +27,11 @@ curl -fsSL -u "$USER:$PASS" -H "X-GitHub-OTP: $OTP" https://api.github.com/user
 ```
 
 Notes:
-- `set -euo pipefail` makes the script abort if any `passlane` call fails (e.g. locked vault → exit
-  1), instead of sending empty credentials.
+- `set -euo pipefail` makes the script abort if any `passlane` call fails (e.g. locked vault or an
+  agent-policy refusal → exit 1), instead of sending empty credentials.
 - Capture secrets into variables; never inline them onto a command line that hits shell history.
+- Check the `agent` field / `null` `password` when reading via `list --json`: a `null` means the
+  entry's policy withheld it and the script must not proceed with an empty secret.
 
 ## 2. Single-secret extraction with `show --out`
 
@@ -91,11 +95,15 @@ a file or log.
 
 ## Robustness checklist
 
-- **Exit code 1 means something actionable:** a locked vault, no match, or an ambiguous match for
-  `--once`/`--out`. Check `$?` (or use `set -e`) and react — don't proceed on empty output.
+- **Exit code 1 means something actionable:** a locked vault, no match, an ambiguous match for
+  `--once`/`--out`, or an agent-policy refusal (`agent=never` blocked, `agent=ask` needs owner
+  approval). Check `$?` (or use `set -e`) and react — don't proceed on empty output.
 - **Anchor regexes** (`'^github\.com$'`, `'^GitHub$'`) so single-secret commands resolve to exactly
   one entry. `show -o --once` and `show --out` error on multiple matches.
 - **Re-fetch TOTP codes per attempt.** They expire within seconds; never cache or reuse a code.
 - **If the vault is locked,** the right fix is for the user to run `passlane unlock` (and
   `passlane unlock --vault totp` when needed). The agent cannot supply the master password
   non-interactively.
+- **If a read is refused by the agent policy,** stop: `never` needs the owner to change the
+  attribute; `ask` needs the owner to approve (they run `passlane show '<entry>'` interactively
+  and confirm). Do not look for side channels around the refusal.
