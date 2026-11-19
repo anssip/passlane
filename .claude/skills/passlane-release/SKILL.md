@@ -102,7 +102,7 @@ bullets as the changelog section from step 4. Keep the closing
 Stage the release files and commit:
 
 ```bash
-git add README.md CHANGELOG.md Cargo.toml Cargo.lock
+git add README.md CHANGELOG.md Cargo.toml Cargo.lock crates/passlane-core/Cargo.toml
 git commit -m "Release vX.Y.Z"
 ```
 
