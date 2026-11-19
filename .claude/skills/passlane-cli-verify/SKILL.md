@@ -156,11 +156,16 @@ inquire/rustyline need a terminal; feeding a plain pipe hangs or panics. Wrap in
 ## Cleanup — always
 
 ```bash
-$P --vault $NAME lock            # removes the keychain entry (non-interactive)
-security delete-generic-password -s passlane_master_pwd -a $NAME  # if lock didn't
+security delete-generic-password -s passlane_master_pwd -a $NAME  # deterministic, never prompts
 rm -f ~/.passlane/.completion_cache.$NAME
 rm -rf $T
 ```
+
+Prefer the direct `security` delete for the keychain item: `passlane --vault $NAME lock`
+removes it too, but if the binary was rebuilt since the item was created, the delete
+triggers a keychain permission prompt that **blocks the run until a human answers** —
+fine interactively, a wedge in unattended cleanup. (`security` never prompts for its own
+partition.) Run `lock` only when you know the binary is the one that created the item.
 
 `vault remove <name>` asks a `(y/N)` confirm — under the pty, send `y` with a generous
 delay (`sleep 3; printf 'y'`; a typed `y` answers immediately, no newline). If the pty

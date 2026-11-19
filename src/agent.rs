@@ -325,10 +325,21 @@ fn owner_reveal_command(entry: &str, field: &str, vault: &str) -> String {
 
 fn owner_reveal_base_command(entry: &str, field: &str) -> String {
     match field {
-        "code" | "secret" => format!("passlane show -o {}", shell_quote(entry)),
+        "code" | "secret" => format!("passlane show -o {}", positional(entry)),
         "number" => "passlane show -p".to_string(),
         "content" => "passlane show -n".to_string(),
-        _ => format!("passlane show {}", shell_quote(entry)),
+        _ => format!("passlane show {}", positional(entry)),
+    }
+}
+
+/// The entry pattern as a command-line argument: shell-quoted, and
+/// preceded by `--` when the title starts with a dash (otherwise clap
+/// parses it as an option instead of the pattern).
+fn positional(entry: &str) -> String {
+    if entry.starts_with('-') {
+        format!("-- {}", shell_quote(entry))
+    } else {
+        shell_quote(entry)
     }
 }
 
@@ -862,6 +873,25 @@ mod tests {
         assert_eq!(
             owner_reveal_base_command("x'; rm -rf ~", "password"),
             "passlane show 'x'\\''; rm -rf ~'"
+        );
+    }
+
+    #[test]
+    fn dash_leading_titles_stay_a_pattern_not_an_option() {
+        // Shell quoting does not protect the argument parser: a title
+        // like "-root" must come after -- or clap reads it as an option.
+        assert_eq!(
+            owner_reveal_base_command("-root", "password"),
+            "passlane show -- '-root'"
+        );
+        assert_eq!(
+            owner_reveal_base_command("--delete-everything", "code"),
+            "passlane show -o -- '--delete-everything'"
+        );
+        // Ordinary titles are unaffected.
+        assert_eq!(
+            owner_reveal_base_command("root", "password"),
+            "passlane show root"
         );
     }
 
