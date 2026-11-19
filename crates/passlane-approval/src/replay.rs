@@ -7,7 +7,6 @@
 //! bounding memory (and the file-backed store's growth).
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -48,18 +47,41 @@ impl NonceStore for InMemoryNonceStore {
 
 /// JSON-file-backed store for CLI processes that come and go
 /// (`~/.passlane/.approval_nonces` in the CLI integration).
+///
+/// **Process safety**: the store holds an exclusive advisory lock on the
+/// file for its entire lifetime, so two processes can never both observe
+/// the same nonce state — the second `load` blocks until the first store
+/// is dropped. `save` writes to a sibling temp file and renames it over
+/// the target, so a crash mid-write can never truncate the store.
 pub struct FileNonceStore {
     path: PathBuf,
     entries: BTreeMap<String, u64>,
     dirty: bool,
+    /// Kept alive: dropping it releases the exclusive lock.
+    _lock: std::fs::File,
 }
 
 impl FileNonceStore {
-    /// Load (or start) the store at `path`.
+    /// Load (or start) the store at `path`, taking the exclusive lock.
+    ///
+    /// Blocks while another process holds the store.
     pub fn load(path: &Path) -> Result<Self> {
-        let entries = if path.exists() {
-            let bytes = std::fs::read(path)?;
-            serde_json::from_slice(&bytes)?
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(path)?;
+        {
+            // Fully qualified: newer std (1.89+) has an inherent File::lock;
+            // the fs4 call keeps our MSRV at 1.88.
+            fs4::FileExt::lock(&lock)?;
+        }
+        let entries = if lock.metadata()?.len() > 0 {
+            serde_json::from_slice(&std::fs::read(path)?)?
         } else {
             BTreeMap::new()
         };
@@ -67,18 +89,19 @@ impl FileNonceStore {
             path: path.to_path_buf(),
             entries,
             dirty: false,
+            _lock: lock,
         })
     }
 
-    /// Persist to disk with owner-only permissions.
+    /// Persist to disk atomically (temp file + rename) with owner-only
+    /// permissions. The exclusive lock is still held, so no other process
+    /// can interleave.
     pub fn save(&self) -> Result<()> {
         if !self.dirty {
             return Ok(());
         }
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let bytes = serde_json::to_vec(&self.entries)?;
+        let tmp = self.path.with_extension("json.tmp");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -86,8 +109,13 @@ impl FileNonceStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&self.path)?;
-        file.write_all(&bytes)?;
+        {
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 
@@ -154,6 +182,27 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "nonce file must be owner-only");
         }
+    }
+
+    #[test]
+    fn file_store_lock_is_exclusive() {
+        // While one process (this test) holds the store, a second load in
+        // the same process must block — verified via the underlying lock
+        // API rather than deadlocking ourselves.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonces.json");
+        let _store = FileNonceStore::load(&path).unwrap();
+        let second = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&path)
+            .unwrap();
+        assert!(
+            fs4::FileExt::try_lock(&second).is_err(),
+            "a second exclusive lock must not be granted while the store lives"
+        );
     }
 
     #[test]

@@ -96,7 +96,7 @@ fn committed_vectors_open() {
                 // The sender identity matches the vector keys.
                 let sender = keys(&sender);
                 assert_eq!(
-                    envelope.header.skid,
+                    envelope.header().skid,
                     sender.encryption_kid(),
                     "{}: skid",
                     case.name

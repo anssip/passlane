@@ -59,7 +59,7 @@ fn main() {
     let mut cases = Vec::new();
 
     // 1. Approval request with an HMAC challenge (the unlock scenario).
-    let challenge = [0x2au8; 20];
+    let challenge = [0x2au8; 32];
     let request_body = Body::ApprovalRequest {
         vault_id: "default".into(),
         vault_name: "Main".into(),
@@ -90,8 +90,8 @@ fn main() {
         "policy": { "ttl_secs": policy.ttl_secs, "max_ttl_secs": policy.max_ttl_secs,
                     "max_clock_skew_secs": policy.max_clock_skew_secs, "max_session_secs": policy.max_session_secs },
         "expected_header": {
-            "v": request.header.v, "t": request.header.t, "ts": request.header.ts,
-            "exp": request.header.exp, "skid": request.header.skid, "rkid": request.header.rkid,
+            "v": request.header().v, "t": request.header().t, "ts": request.header().ts,
+            "exp": request.header().exp, "skid": request.header().skid, "rkid": request.header().rkid,
         },
         "body": request_body_json,
         "envelope_base64url": request.to_base64url(),

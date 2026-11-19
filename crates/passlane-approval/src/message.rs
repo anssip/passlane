@@ -140,10 +140,14 @@ pub enum Decision {
     },
 }
 
-/// HMAC-SHA1 outputs are 20 bytes; kept hex-encoded for transport.
+/// The HMAC-SHA1 response that unlocks the vault is 20 bytes (40 hex).
 pub const CHALLENGE_RESPONSE_LEN: usize = 20;
+/// The challenge itself is the vault's KDF seed — 32 bytes (64 hex) for
+/// KDBX4/Argon2 vaults, which is what keepass-ng passes to
+/// `perform_challenge`. It is not the same length as the response.
+pub const CHALLENGE_LEN: usize = 32;
 
-fn check_hex_field(name: &str, value: &Option<String>, len: usize) -> Result<()> {
+fn check_hex_len(name: &str, value: Option<&str>, len: usize) -> Result<()> {
     if let Some(v) = value
         && (v.len() != len * 2 || !v.chars().all(|c| c.is_ascii_hexdigit()))
     {
@@ -216,6 +220,11 @@ pub enum Body {
         enc_pub: String,
         /// Sender's ECDSA verifying key (hex SEC1) to pin.
         sig_pub: String,
+        /// HMAC-SHA256 binding proof over `enc_pub`/`sig_pub` under the
+        /// pairing secret (see SPEC §5): proves the responder holds the
+        /// secret, so a forged response cannot pin attacker keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pairing_proof: Option<String>,
     },
     /// A request for human approval.
     ApprovalRequest {
@@ -266,16 +275,20 @@ impl Body {
     }
 
     /// Validate field shapes that serde cannot express (hex lengths).
+    /// Validate field shapes that serde cannot express (hex lengths).
+    ///
+    /// Works on borrowed strings only: the plaintext of a response carries
+    /// the unlocking factor, and no extra copies of it may be made.
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::ApprovalRequest { challenge, .. } => check_hex_field(
+            Self::ApprovalRequest { challenge, .. } => check_hex_len(
                 "challenge",
-                &challenge.as_ref().map(|c| c.as_hex().to_string()),
-                CHALLENGE_RESPONSE_LEN,
+                challenge.as_ref().map(|c| c.as_hex()),
+                CHALLENGE_LEN,
             ),
-            Self::ApprovalResponse { response, .. } => check_hex_field(
+            Self::ApprovalResponse { response, .. } => check_hex_len(
                 "response",
-                &response.as_ref().map(|c| c.as_hex().to_string()),
+                response.as_ref().map(|c| c.as_hex()),
                 CHALLENGE_RESPONSE_LEN,
             ),
             _ => Ok(()),
@@ -301,6 +314,7 @@ impl fmt::Debug for Body {
                 device,
                 enc_pub,
                 sig_pub,
+                ..
             } => f
                 .debug_struct("Body::PairingResponse")
                 .field("device", device)
@@ -354,17 +368,27 @@ impl Zeroize for Body {
                 device,
                 enc_pub,
                 sig_pub,
-            }
-            | Self::PairingResponse {
-                device,
-                enc_pub,
-                sig_pub,
             } => {
                 device.kind.zeroize();
                 device.name.zeroize();
                 device.version.zeroize();
                 enc_pub.zeroize();
                 sig_pub.zeroize();
+            }
+            Self::PairingResponse {
+                device,
+                enc_pub,
+                sig_pub,
+                pairing_proof,
+            } => {
+                device.kind.zeroize();
+                device.name.zeroize();
+                device.version.zeroize();
+                enc_pub.zeroize();
+                sig_pub.zeroize();
+                if let Some(p) = pairing_proof.as_mut() {
+                    p.zeroize();
+                }
             }
             Self::ApprovalRequest {
                 vault_id,
@@ -425,7 +449,7 @@ mod tests {
             },
             requester: "anssi@macbook".into(),
             scope: Scope::Once,
-            challenge: Some(SecretHex::from_bytes(&[0xab; 20])),
+            challenge: Some(SecretHex::from_bytes(&[0xab; 32])),
         }
     }
 
@@ -493,6 +517,7 @@ mod tests {
                 },
                 enc_pub: "04".to_string() + &"ab".repeat(64),
                 sig_pub: "04".to_string() + &"cd".repeat(64),
+                pairing_proof: None,
             },
             Body::SessionRevoke {
                 session_id: "id".into(),

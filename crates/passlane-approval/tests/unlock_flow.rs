@@ -54,8 +54,10 @@ fn phone_held_key_unlock_flow() {
 
     let response = seal_pairing_response(
         &mut rng,
+        &secret,
         &phone,
         &cli_pin.clone(),
+        &request,
         DeviceInfo {
             kind: "phone".into(),
             name: "anssi-iphone".into(),
@@ -65,13 +67,15 @@ fn phone_held_key_unlock_flow() {
         &policy,
     )
     .unwrap();
+    // The response answers the request: rid echo (SPEC §4).
+    assert_eq!(response.header().rid, request.header().rid);
     let (_body, phone_pin) =
-        open_pairing_response(&cli, &response, now + 1, &policy, &mut store).unwrap();
+        open_pairing_response(&cli, &secret, &response, now + 1, &policy, &mut store).unwrap();
 
     // -- unlock request (every vault open) --
     // keepass-ng derives a per-vault challenge when a challenge-response
     // factor is enrolled; the CLI sends it, the phone answers it.
-    let vault_challenge = [0x5fu8; 20];
+    let vault_challenge = [0x5fu8; 32];
     let request = seal(
         &mut rng,
         &cli,
@@ -121,10 +125,11 @@ fn phone_held_key_unlock_flow() {
     assert_eq!(challenge, vault_challenge.to_vec());
 
     // The phone computes the HMAC-SHA1 response with the held secret and
-    // answers (encrypted to the CLI's pinned key).
+    // answers (encrypted to the CLI's pinned key), echoing the request id.
     let held_secret = [0xa1u8; 20]; // lives only on the phone
     let response = hmac_sha1(&held_secret, &challenge);
-    let answer = seal(
+    let request_rid = request.header().rid.clone();
+    let answer = seal_reply(
         &mut rng,
         &phone,
         &cli_pin.clone(),
@@ -133,12 +138,15 @@ fn phone_held_key_unlock_flow() {
             scope: Scope::Timed { seconds: 300 },
             response: Some(SecretHex::from_bytes(&response)),
         },
+        &request_rid,
         now + 10,
         &policy,
     )
     .unwrap();
+    assert_eq!(answer.header().rid, request_rid);
 
-    // -- the CLI verifies the answer --
+    // -- the CLI verifies the answer (rid match first, per SPEC §4) --
+    assert_eq!(answer.header().rid, request.header().rid);
     let answer_body = open(&cli, &[phone_pin], &answer, now + 20, &policy, &mut store).unwrap();
     let Body::ApprovalResponse {
         decision,

@@ -48,6 +48,8 @@ const SIG_KIND_WEBAUTHN: u8 = 2;
 const MAX_HEADER_LEN: usize = 4096;
 const MAX_ENC_LEN: usize = 1024;
 const MAX_CT_LEN: usize = 1 << 20;
+/// Ceiling on the base64url form — real envelopes are under 2 KiB encoded.
+const MAX_ENCODED_LEN: usize = 8192;
 
 /// The signature block of an envelope.
 #[derive(Clone, PartialEq)]
@@ -74,8 +76,12 @@ impl std::fmt::Debug for Signature {
 /// A sealed message, decodable from (and encodable to) exact wire bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Envelope {
-    /// The cleartext routing header.
-    pub header: Header,
+    /// The cleartext routing header. crate-private: the authenticated wire
+    /// form is cached in `header_bytes`, and callers must not be able to
+    /// mutate the parsed copy — the freshness/replay checks read it while
+    /// the signature and AEAD authenticate the cached bytes. External
+    /// readers get [`Envelope::header`].
+    pub(crate) header: Header,
     /// The exact header bytes as they appear on the wire (signed verbatim).
     pub(crate) header_bytes: Vec<u8>,
     /// HPKE ephemeral shared secret (`enc`); empty for PSK envelopes.
@@ -193,8 +199,25 @@ impl Envelope {
     }
 
     /// Parse from unpadded base64url.
+    ///
+    /// Rejects oversized input up front: real envelopes are under 2 KiB
+    /// encoded, and letting `base64url_decode` allocate first would let a
+    /// hostile relay exhaust memory before framing is even checked.
     pub fn from_base64url(s: &str) -> Result<Self> {
+        if s.len() > MAX_ENCODED_LEN {
+            return Err(Error::Malformed(format!(
+                "encoded envelope is {} bytes; the protocol never exceeds {MAX_ENCODED_LEN}",
+                s.len()
+            )));
+        }
         Self::from_bytes(&base64url_decode(s)?)
+    }
+
+    /// The parsed header (read-only). The authenticated wire form is cached
+    /// internally; callers cannot mutate the parsed copy out from under the
+    /// signature and AEAD binding.
+    pub fn header(&self) -> &Header {
+        &self.header
     }
 
     /// The bytes covered by the signature: everything before the signature
@@ -294,11 +317,109 @@ pub(crate) fn random_nonce_hex(rng: &mut (impl rand::CryptoRng + rand::RngCore))
 }
 
 /// Seal a body into an HPKE envelope for a pinned peer, signed by us.
+/// Generates a fresh request id (`rid`).
 pub fn seal(
     rng: &mut (impl rand::CryptoRng + rand::RngCore),
     local: &IdentityKeys,
     peer: &PeerPin,
     body: Body,
+    now: u64,
+    policy: &Policy,
+) -> Result<Envelope> {
+    seal_inner(
+        rng,
+        local,
+        peer,
+        body,
+        None,
+        Signature::EcdsaP256(Vec::new()),
+        now,
+        policy,
+    )
+}
+
+/// Seal a **response** that answers a specific request: the header echoes
+/// `in_reply_to` (the request's `rid`), as SPEC §4 requires — receivers
+/// match pending requests by `rid` before accepting an approval.
+pub fn seal_reply(
+    rng: &mut (impl rand::CryptoRng + rand::RngCore),
+    local: &IdentityKeys,
+    peer: &PeerPin,
+    body: Body,
+    in_reply_to: &str,
+    now: u64,
+    policy: &Policy,
+) -> Result<Envelope> {
+    seal_inner(
+        rng,
+        local,
+        peer,
+        body,
+        Some(in_reply_to),
+        Signature::EcdsaP256(Vec::new()),
+        now,
+        policy,
+    )
+}
+
+/// Begin a Phase 0 **WebAuthn** response: seals the body with the
+/// signature-kind byte set to 2 (so the AAD binds the assertion form) and
+/// returns the unsigned envelope plus the base64url challenge the page's
+/// `navigator.credentials.get()` must sign. Finish with
+/// [`attach_webauthn_assertion`].
+// Eight parameters: the pairing context (secret + request) is part of the
+// ceremony and splitting it into a builder would obscure the flow.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_webauthn(
+    rng: &mut (impl rand::CryptoRng + rand::RngCore),
+    local: &IdentityKeys,
+    peer: &PeerPin,
+    body: Body,
+    in_reply_to: &str,
+    now: u64,
+    policy: &Policy,
+) -> Result<(Envelope, String)> {
+    let env = seal_inner(
+        rng,
+        local,
+        peer,
+        body,
+        Some(in_reply_to),
+        Signature::WebauthnEs256(crate::webauthn::WebauthnAssertion {
+            authenticator_data: String::new(),
+            client_data_json: String::new(),
+            signature: String::new(),
+        }),
+        now,
+        policy,
+    )?;
+    let challenge = env.webauthn_challenge();
+    Ok((env, challenge))
+}
+
+/// Complete a [`seal_webauthn`] envelope with the assertion produced over
+/// its challenge. The envelope is otherwise ready; no re-encryption happens.
+pub fn attach_webauthn_assertion(
+    mut env: Envelope,
+    assertion: crate::webauthn::WebauthnAssertion,
+) -> Envelope {
+    // The placeholder assertion only shaped the kind byte and byte lengths;
+    // the three fields serialize to fixed-shape empty strings, so swapping
+    // in the real assertion preserves the signed framing exactly.
+    env.signature = Some(Signature::WebauthnEs256(assertion));
+    env
+}
+
+// The internal core shares the full parameter set by design (see the
+// public wrappers' note).
+#[allow(clippy::too_many_arguments)]
+fn seal_inner(
+    rng: &mut (impl rand::CryptoRng + rand::RngCore),
+    local: &IdentityKeys,
+    peer: &PeerPin,
+    body: Body,
+    in_reply_to: Option<&str>,
+    placeholder_signature: Signature,
     now: u64,
     policy: &Policy,
 ) -> Result<Envelope> {
@@ -315,19 +436,22 @@ pub fn seal(
         exp: now + policy.ttl_secs,
         skid: local.encryption_kid(),
         rkid: kid(b"enc", &peer.enc_pub_bytes()?),
-        rid: random_hex32(rng)?,
+        rid: match in_reply_to {
+            Some(rid) => rid.to_string(),
+            None => random_hex32(rng)?,
+        },
     };
     let header_bytes = serde_json::to_vec(&header)?;
     let plaintext = Zeroizing::new(serde_json::to_vec(&body)?);
 
     // AAD and transcript both embed the signature-kind byte, so build the
-    // frame with the final kind (ECDSA) and a placeholder signature first.
+    // frame with the final kind and a placeholder signature first.
     let frame = Envelope {
         header: header.clone(),
         header_bytes: header_bytes.clone(),
         enc: Vec::new(),
         ct: Vec::new(),
-        signature: Some(Signature::EcdsaP256(Vec::new())),
+        signature: Some(placeholder_signature),
     };
     let (enc, ct) = crypto::hpke_seal(&peer.enc_pub_bytes()?, header.t, &frame.aad(), &plaintext)?;
 
@@ -336,11 +460,16 @@ pub fn seal(
         header_bytes,
         enc,
         ct,
-        signature: Some(Signature::EcdsaP256(Vec::new())),
+        signature: frame.signature,
     };
-    let transcript = env.signed_transcript();
-    let sig = local.sign(&transcript);
-    env.signature = Some(Signature::EcdsaP256(sig.to_der().as_bytes().to_vec()));
+    if matches!(env.signature, Some(Signature::EcdsaP256(_))) {
+        // CLI/app path: sign directly with our signing key.
+        let transcript = env.signed_transcript();
+        let der = local.sign(&transcript).to_der();
+        env.signature = Some(Signature::EcdsaP256(der.as_bytes().to_vec()));
+    }
+    // WebAuthn path: the assertion arrives out-of-band (the page);
+    // the placeholder framing stays untouched.
     Ok(env)
 }
 
@@ -455,7 +584,7 @@ mod tests {
             },
             requester: "anssi@macbook".into(),
             scope: Scope::Once,
-            challenge: Some(crate::message::SecretHex::from_bytes(&[9u8; 20])),
+            challenge: Some(crate::message::SecretHex::from_bytes(&[9u8; 32])),
         }
     }
 
@@ -772,5 +901,103 @@ mod tests {
         let reparsed = Envelope::from_bytes(&env.to_bytes()).unwrap();
         assert_eq!(env.webauthn_challenge(), reparsed.webauthn_challenge());
         assert!(!env.webauthn_challenge().is_empty());
+    }
+
+    #[test]
+    fn oversized_base64url_rejected_before_decoding() {
+        let huge = "A".repeat(8193);
+        assert!(matches!(
+            Envelope::from_base64url(&huge),
+            Err(Error::Malformed(_))
+        ));
+        // A normal envelope still parses.
+        let (cli, _p, phone_pin, _) = cli_and_phone();
+        let env = seal(
+            &mut OsRng,
+            &cli,
+            &phone_pin,
+            sample_request(),
+            1,
+            &Policy::default(),
+        )
+        .unwrap();
+        assert!(env.to_base64url().len() <= 8192);
+        assert!(Envelope::from_base64url(&env.to_base64url()).is_ok());
+    }
+
+    #[test]
+    fn webauthn_seal_open_roundtrip() {
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        use p256::ecdsa::{Signature, SigningKey};
+        use sha2::{Digest, Sha256};
+
+        // The CLI and a Phase 0 approver: a page holding a WebCrypto ECDH
+        // key (the encryption identity) and a passkey (the signing
+        // identity). A local key stands in for the authenticator. The CLI's
+        // pin of the page carries the passkey's public key plus the WebAuthn
+        // RP metadata; the page's pin of the CLI is the recipient pin.
+        let (cli, page, _phone_pin, cli_pin) = cli_and_phone();
+        let passkey = SigningKey::from(&crate::crypto::random_secret_key(&mut OsRng).unwrap());
+        let page_pin = crate::keys::PeerPin {
+            label: "approval-page".into(),
+            enc_pub: crate::encoding::hex_encode(&page.encryption_public()),
+            sig_pub: crate::encoding::hex_encode(&passkey.verifying_key().to_sec1_bytes()),
+            paired_at: 0,
+            webauthn: Some(crate::keys::WebauthnPin {
+                rp_id: "approve.passlane.test".into(),
+                origin: "https://approve.passlane.test".into(),
+            }),
+        };
+
+        let policy = Policy::default();
+        let now = 1_000u64;
+        let body = Body::ApprovalResponse {
+            decision: Decision::Allow,
+            scope: Scope::Once,
+            response: None,
+        };
+        let (pending, challenge) = seal_webauthn(
+            &mut OsRng,
+            &page,
+            &cli_pin,
+            body.clone(),
+            &"a".repeat(32),
+            now,
+            &policy,
+        )
+        .unwrap();
+
+        // The page signs the WebAuthn transcript with the passkey.
+        let rp_hash = Sha256::digest(b"approve.passlane.test");
+        let mut auth_data = Vec::with_capacity(37);
+        auth_data.extend_from_slice(&rp_hash);
+        auth_data.push(0x01); // UP flag
+        auth_data.extend_from_slice(&0u32.to_be_bytes());
+        let client_data_json = format!(
+            r#"{{"type":"webauthn.get","challenge":"{challenge}","origin":"https://approve.passlane.test"}}"#
+        );
+        let mut digest = Sha256::new();
+        digest.update(&auth_data);
+        digest.update(Sha256::digest(client_data_json.as_bytes()));
+        let sig: Signature = passkey.sign_prehash(&digest.finalize()).unwrap();
+        let assertion = crate::webauthn::WebauthnAssertion::from_raw(
+            &auth_data,
+            client_data_json.as_bytes(),
+            sig.to_der().as_bytes(),
+        );
+
+        let env = attach_webauthn_assertion(pending, assertion);
+        let mut store = crate::replay::InMemoryNonceStore::default();
+        let opened = open(
+            &cli,
+            std::slice::from_ref(&page_pin),
+            &env,
+            now + 1,
+            &policy,
+            &mut store,
+        )
+        .unwrap();
+        assert_eq!(*opened, body);
+        assert_eq!(env.header().rid, "a".repeat(32));
     }
 }

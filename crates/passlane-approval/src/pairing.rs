@@ -30,7 +30,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::crypto;
 use crate::encoding::hex_encode;
-use crate::envelope::{Envelope, Signature, seal};
+use crate::envelope::{Envelope, Signature, seal_reply};
 use crate::error::{Error, Result};
 use crate::keys::{IdentityKeys, PeerPin, PublicKey, kid};
 use crate::message::{Body, DeviceInfo, Header, MessageType, VERSION};
@@ -155,33 +155,54 @@ pub fn open_pairing_request(
     )
 }
 
-/// Seal the pairing response: normal HPKE to the CLI's key, signed by us.
+/// Seal the pairing response: normal HPKE to the CLI's key, signed by us,
+/// **and bound to the pairing secret** via an HMAC proof over the keys being
+/// pinned. The response echoes the request's `rid`.
+///
+/// The proof is what makes a forged response impossible: HPKE-to-the-CLI
+/// and a self-declared signing key alone would let anyone who knows the
+/// CLI's public keys pin their own identity (see SPEC §5).
+// Eight parameters: the pairing context (secret + request) is part of the
+// ceremony and splitting it into a builder would obscure the flow.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_pairing_response(
     rng: &mut (impl CryptoRng + RngCore),
+    secret: &PairingSecret,
     local: &IdentityKeys,
     cli: &PeerPin,
+    request: &Envelope,
     device: DeviceInfo,
     now: u64,
     policy: &Policy,
 ) -> Result<Envelope> {
+    let enc_pub = hex_encode(&local.encryption_public());
+    let sig_pub = hex_encode(&local.verifying_key().to_sec1_bytes());
+    let proof = Zeroizing::new(hex_encode(&crypto::pairing_binding_proof(
+        secret.as_bytes(),
+        &enc_pub,
+        &sig_pub,
+    )?));
     let body = Body::PairingResponse {
         device,
-        enc_pub: hex_encode(&local.encryption_public()),
-        sig_pub: hex_encode(&local.verifying_key().to_sec1_bytes()),
+        enc_pub,
+        sig_pub,
+        pairing_proof: Some(proof.to_string()),
     };
-    seal(rng, local, cli, body, now, policy)
+    seal_reply(rng, local, cli, body, &request.header.rid, now, policy)
 }
 
 /// Open a pairing response on the CLI side. The phone is not pinned yet, so
-/// the sender is authenticated by the pairing channel: the response is
-/// HPKE-encrypted to *our* key (only the holder of the request context can
-/// read it) and signed by a key declared inside the encrypted body — a key
-/// the attacker cannot possess without the pairing secret.
+/// the sender is authenticated by the pairing channel itself: the response
+/// is HPKE-encrypted to *our* key, signed by a key declared inside the
+/// encrypted body, and — decisively — carries an HMAC binding proof over
+/// those keys under the QR-borne pairing secret, which only the honest
+/// phone (or the CLI that printed the QR) can compute.
 ///
 /// The caller pins the returned [`PeerPin`] only after the human confirms
 /// the confirmation codes match.
 pub fn open_pairing_response(
     local: &IdentityKeys,
+    secret: &PairingSecret,
     envelope: &Envelope,
     now: u64,
     policy: &Policy,
@@ -213,10 +234,19 @@ pub fn open_pairing_response(
         device,
         enc_pub,
         sig_pub,
+        pairing_proof,
     } = &body
     else {
         return Err(Error::MessageTypeMismatch(MessageType::PairingResponse));
     };
+
+    // The binding proof ties the declared keys to the pairing secret.
+    // Without it, a forged response could pin attacker keys.
+    let proof_hex = pairing_proof
+        .as_ref()
+        .ok_or_else(|| Error::Pairing("response carries no pairing proof".into()))?;
+    let proof = Zeroizing::new(crate::encoding::hex_decode(proof_hex)?);
+    crypto::verify_pairing_binding_proof(secret.as_bytes(), enc_pub, sig_pub, &proof)?;
 
     // The signature must be made with the key the body declares.
     let sig_key = PublicKey::from_hex(sig_pub.as_str())?;
@@ -373,8 +403,10 @@ mod tests {
         // Phone -> CLI response (normal HPKE now that the CLI key is known).
         let response = seal_pairing_response(
             &mut rng,
+            &secret,
             &phone,
             &cli_pin,
+            &request,
             DeviceInfo {
                 kind: "phone".into(),
                 name: "anssi-iphone".into(),
@@ -384,8 +416,10 @@ mod tests {
             &policy,
         )
         .unwrap();
+        // The response echoes the request's rid.
+        assert_eq!(response.header().rid, request.header().rid);
         let (_body, phone_pin) =
-            open_pairing_response(&cli, &response, now + 1, &policy, &mut store).unwrap();
+            open_pairing_response(&cli, &secret, &response, now + 1, &policy, &mut store).unwrap();
         assert_eq!(phone_pin.enc_pub, hex_encode(&phone.encryption_public()));
         assert_eq!(
             phone_pin.sig_pub,
@@ -451,6 +485,56 @@ mod tests {
     }
 
     #[test]
+    fn forged_response_without_secret_rejected() {
+        // The attack CoPilot's review flagged: an attacker who knows the
+        // CLI's public keys crafts a response pinning their own identity.
+        // The binding proof under the pairing secret must stop them.
+        let mut rng = OsRng;
+        let cli = IdentityKeys::generate(&mut rng).unwrap();
+        let attacker = IdentityKeys::generate(&mut rng).unwrap();
+        let secret = PairingSecret::generate(&mut rng);
+        let policy = Policy::default();
+
+        let request = seal_pairing_request(
+            &mut rng,
+            &secret,
+            &cli,
+            DeviceInfo {
+                kind: "cli".into(),
+                name: "mbp".into(),
+                version: "4".into(),
+            },
+            1,
+            &policy,
+        )
+        .unwrap();
+        let mut store = InMemoryNonceStore::default();
+        let (_body, cli_pin) =
+            open_pairing_request(&secret, &request, 2, &policy, &mut store).unwrap();
+
+        // Attacker responds with THEIR keys but no knowledge of the secret.
+        let forged = seal_pairing_response(
+            &mut rng,
+            &PairingSecret::from_bytes(&[9u8; 32]).unwrap(), // wrong secret
+            &attacker,
+            &cli_pin,
+            &request,
+            DeviceInfo {
+                kind: "phone".into(),
+                name: "evil".into(),
+                version: "1".into(),
+            },
+            1,
+            &policy,
+        )
+        .unwrap();
+        assert!(matches!(
+            open_pairing_response(&cli, &secret, &forged, 2, &policy, &mut store),
+            Err(Error::Pairing(_))
+        ));
+    }
+
+    #[test]
     fn replayed_pairing_request_rejected() {
         let mut rng = OsRng;
         let cli = IdentityKeys::generate(&mut rng).unwrap();
@@ -482,7 +566,24 @@ mod tests {
         let mut rng = OsRng;
         let cli = IdentityKeys::generate(&mut rng).unwrap();
         let phone = IdentityKeys::generate(&mut rng).unwrap();
+        let secret = PairingSecret::generate(&mut rng);
         let policy = Policy::default();
+        let request = seal_pairing_request(
+            &mut rng,
+            &secret,
+            &cli,
+            DeviceInfo {
+                kind: "cli".into(),
+                name: "mbp".into(),
+                version: "4".into(),
+            },
+            1,
+            &policy,
+        )
+        .unwrap();
+        let mut store = InMemoryNonceStore::default();
+        let (_body, _cli_pin) =
+            open_pairing_request(&secret, &request, 2, &policy, &mut store).unwrap();
         // Response sealed to a *different* CLI key than the one opening it.
         let other_cli = IdentityKeys::generate(&mut rng).unwrap();
         let cli_pin = PeerPin {
@@ -494,8 +595,10 @@ mod tests {
         };
         let response = seal_pairing_response(
             &mut rng,
+            &secret,
             &phone,
             &cli_pin,
+            &request,
             DeviceInfo {
                 kind: "phone".into(),
                 name: "p".into(),
@@ -506,6 +609,6 @@ mod tests {
         )
         .unwrap();
         let mut store = InMemoryNonceStore::default();
-        assert!(open_pairing_response(&cli, &response, 2, &policy, &mut store).is_err());
+        assert!(open_pairing_response(&cli, &secret, &response, 2, &policy, &mut store).is_err());
     }
 }

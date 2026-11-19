@@ -19,7 +19,7 @@ use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use rand::{CryptoRng, RngCore};
 use zeroize::Zeroizing;
 
-use crate::crypto::{self, HpkeBytes};
+use crate::crypto;
 use crate::encoding::{hex_decode, hex_encode};
 use crate::error::{Error, Result};
 
@@ -73,8 +73,8 @@ impl IdentityKeys {
         *self.sig_secret.verifying_key()
     }
 
-    pub(crate) fn hpke_secret(&self) -> HpkeBytes {
-        self.enc_secret.to_vec()
+    pub(crate) fn hpke_secret(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(self.enc_secret.to_vec())
     }
 
     /// Key id of this party's encryption identity (see [`crate::keys`] docs).

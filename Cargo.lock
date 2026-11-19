@@ -1081,6 +1081,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs4"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,6 +2322,7 @@ name = "passlane-approval"
 version = "0.1.0"
 dependencies = [
  "aes-gcm 0.10.3",
+ "fs4",
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "hpke-rs",

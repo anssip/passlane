@@ -121,8 +121,8 @@ pub(crate) fn psk_seal(
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Nonce};
 
-    let key = pairing_key(secret, msg_type);
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("32-byte key");
+    let key = Zeroizing::new(pairing_key(secret, msg_type));
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("32-byte key");
     let mut nonce_bytes = [0u8; 12];
     rng.fill_bytes(&mut nonce_bytes);
     let ct = cipher
@@ -153,8 +153,8 @@ pub(crate) fn psk_open(
         return Err(Error::Decrypt);
     }
     let (nonce, ct) = blob.split_at(12);
-    let key = pairing_key(secret, msg_type);
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("32-byte key");
+    let key = Zeroizing::new(pairing_key(secret, msg_type));
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("32-byte key");
     cipher
         .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad })
         .map_err(|_| Error::Decrypt)
@@ -168,6 +168,49 @@ fn pairing_key(secret: &[u8; 32], msg_type: u8) -> [u8; 32] {
     hk.expand(&info, &mut key)
         .expect("32 bytes fits HKDF-SHA256 output");
     key
+}
+
+/// Key that binds a pairing response to the QR-borne pairing secret.
+fn pairing_binding_key(secret: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(PAIRING_SALT), secret);
+    let mut key = [0u8; 32];
+    hk.expand(b"response-binding", &mut key)
+        .expect("32 bytes fits HKDF-SHA256 output");
+    Zeroizing::new(key)
+}
+
+/// HMAC-SHA256 binding proof over the keys a pairing response declares.
+/// Without it, anyone knowing the CLI's public keys could forge a response
+/// pinning their own identity (see SPEC §5).
+pub(crate) fn pairing_binding_proof(
+    secret: &[u8; 32],
+    enc_pub_hex: &str,
+    sig_pub_hex: &str,
+) -> Result<Vec<u8>> {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_binding_key(secret).as_ref())
+        .expect("HMAC accepts any key length");
+    mac.update(b"pairing-response-bind");
+    mac.update(enc_pub_hex.as_bytes());
+    mac.update(sig_pub_hex.as_bytes());
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+/// Verify a binding proof in constant time.
+pub(crate) fn verify_pairing_binding_proof(
+    secret: &[u8; 32],
+    enc_pub_hex: &str,
+    sig_pub_hex: &str,
+    proof: &[u8],
+) -> Result<()> {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pairing_binding_key(secret).as_ref())
+        .expect("HMAC accepts any key length");
+    mac.update(b"pairing-response-bind");
+    mac.update(enc_pub_hex.as_bytes());
+    mac.update(sig_pub_hex.as_bytes());
+    mac.verify_slice(proof)
+        .map_err(|_| Error::Pairing("pairing proof mismatch".into()))
 }
 
 /// Verify an ECDSA P-256 DER signature over SHA-256(message).

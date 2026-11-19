@@ -49,10 +49,10 @@
 //! let (_body, cli_pin) = open_pairing_request(&secret, &request, 1_001, &policy, &mut store)?;
 //!
 //! let response = seal_pairing_response(
-//!     &mut rng, &phone, &cli_pin,
+//!     &mut rng, &secret, &phone, &cli_pin, &request,
 //!     DeviceInfo { kind: "phone".into(), name: "iphone".into(), version: "1".into() },
 //!     1_000, &policy)?;
-//! let (_body, phone_pin) = open_pairing_response(&cli, &response, 1_001, &policy, &mut store)?;
+//! let (_body, phone_pin) = open_pairing_response(&cli, &secret, &response, 1_001, &policy, &mut store)?;
 //!
 //! // -- an approval round-trip (link/QR transport) --
 //! let request = seal(&mut rng, &cli, &phone_pin, Body::ApprovalRequest {
@@ -61,7 +61,7 @@
 //!     operation: Operation::Unlock,
 //!     requester: "anssi@macbook".into(),
 //!     scope: Scope::Once,
-//!     challenge: Some(SecretHex::from_bytes(&[0x11; 20])),
+//!     challenge: Some(SecretHex::from_bytes(&[0x11; 32])),
 //! }, 2_000, &policy)?;
 //!
 //! // ... the envelope travels as `request.to_base64url()` ...
@@ -95,7 +95,9 @@ pub use crate::error::{Error, Result};
 
 /// Everything worth importing in one `use`.
 pub mod prelude {
-    pub use crate::envelope::{Envelope, Signature, open, seal};
+    pub use crate::envelope::{
+        Envelope, Signature, attach_webauthn_assertion, open, seal, seal_reply, seal_webauthn,
+    };
     pub use crate::error::{Error, Result};
     pub use crate::keys::{IdentityKeys, PeerPin, PublicKey, WebauthnPin};
     pub use crate::message::{
