@@ -13,7 +13,24 @@ fn table_secret(value: &str, policy: AgentPolicy) -> String {
     }
 }
 
-pub fn show_credentials_table(credentials: &[Credential], show_password: bool, plain: bool) {
+/// Whether an entry's note may appear in a table cell. Notes can carry
+/// secrets: `ask` entries stay redacted until the approval prompt (in any
+/// context), and `never` entries only show for the owner — in agent
+/// contexts nothing but `allow` notes are displayed.
+fn table_note_visible(policy: AgentPolicy, agent_context: bool) -> bool {
+    match policy {
+        AgentPolicy::Allow => true,
+        AgentPolicy::Ask => false,
+        AgentPolicy::Never => !agent_context,
+    }
+}
+
+pub fn show_credentials_table(
+    credentials: &[Credential],
+    show_password: bool,
+    plain: bool,
+    agent_context: bool,
+) {
     let mut table = Table::new();
     apply_plain(&mut table, plain);
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
@@ -42,7 +59,11 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
             lines.push(format!("🏷 {}", creds.tags().join(", ")));
         }
         if let Some(note) = creds.note() {
-            lines.push(format!("📝 {}", note));
+            if table_note_visible(creds.agent_policy(), agent_context) {
+                lines.push(format!("📝 {}", note));
+            } else {
+                lines.push(format!("📝 [withheld: agent={}]", creds.agent_policy().as_str()));
+            }
         }
         lines.push(format!("🕐 {}", modified));
         let title_cell = lines.join("\n");
@@ -287,6 +308,18 @@ mod tests {
         assert_eq!(table_secret("hunter2", AgentPolicy::Never), "hunter2");
     }
 
+    #[test]
+    fn table_notes_follow_the_policy_and_context() {
+        // Notes can carry secrets: ask stays redacted everywhere until the
+        // approval prompt; never shows only for the owner.
+        assert!(!table_note_visible(AgentPolicy::Ask, false));
+        assert!(!table_note_visible(AgentPolicy::Ask, true));
+        assert!(table_note_visible(AgentPolicy::Allow, true));
+        assert!(table_note_visible(AgentPolicy::Allow, false));
+        assert!(table_note_visible(AgentPolicy::Never, false));
+        assert!(!table_note_visible(AgentPolicy::Never, true));
+    }
+
     // Renders without panicking; run with --nocapture to eyeball the layout.
     #[test]
     fn show_credential_renders_all_fields() {
@@ -314,6 +347,6 @@ mod tests {
             None,
         )
         .with_url(Some("https://example.com/パスワード/とても長いURLを切り詰めるテスト"));
-        show_credentials_table(&[credential], false, true);
+        show_credentials_table(&[credential], false, true, false);
     }
 }

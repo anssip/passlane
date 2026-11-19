@@ -39,7 +39,7 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, false, false);
+        show_credentials_table(&matches, false, false, crate::agent::in_agent_context(false));
         match ui::input::ask_index(
             "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,

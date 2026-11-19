@@ -108,12 +108,23 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         // A verbose table reveals every matched password up front. That is
         // the owner's own view at a terminal; in an agent-facing context it
         // must not include restricted entries.
-        guard_cleartext_table(
+        let agent_ctx = agent::in_agent_context(self.stdout_only);
+        if let Err(e) = guard_cleartext_table(
             self.verbose,
             RevealContext::for_reveal(self.stdout_only),
             matches.iter().map(|c| c.agent_policy()),
-        )?;
-        show_credentials_table(&matches, self.verbose, self.plain);
+        ) {
+            // The refused table's ask entries still enter the ask flow.
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|c| (c.title().to_string(), c.agent_policy())),
+                "password",
+                false,
+            );
+            return Err(e);
+        }
+        show_credentials_table(&matches, self.verbose, self.plain, agent_ctx);
 
         let prompt = if self.stdout_only {
             "To print one of these passwords, please enter a row number from the table above"
@@ -183,11 +194,20 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     ) -> Result<Option<String>, Error> {
         // A cleartext table reveals every matched card number up front —
         // the owner's own view at a terminal, gated in agent contexts.
-        guard_cleartext_table(
+        if let Err(e) = guard_cleartext_table(
             self.show_cleartext,
             RevealContext::for_reveal(false),
             matches.iter().map(|c| c.agent_policy()),
-        )?;
+        ) {
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|c| (c.name().to_string(), c.agent_policy())),
+                "number",
+                false,
+            );
+            return Err(e);
+        }
         show_payment_cards_table(&matches, self.show_cleartext, self.plain);
 
         match ask_index(
@@ -243,11 +263,20 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     ) -> Result<Option<String>, Error> {
         // A cleartext table reveals every matched note up front — the
         // owner's own view at a terminal, gated in agent contexts.
-        guard_cleartext_table(
+        if let Err(e) = guard_cleartext_table(
             self.verbose,
             RevealContext::for_reveal(false),
             matches.iter().map(|n| n.agent_policy()),
-        )?;
+        ) {
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|n| (n.title().to_string(), n.agent_policy())),
+                "content",
+                false,
+            );
+            return Err(e);
+        }
         show_notes_table(&matches, self.verbose, self.plain);
 
         match ask_index(

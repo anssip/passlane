@@ -297,6 +297,13 @@ fn requester() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// True when a reveal would run in an agent-facing context. Convenience
+/// for display code (tables) that needs the same classification as the
+/// gates.
+pub fn in_agent_context(stdout_reveal: bool) -> bool {
+    RevealContext::for_reveal(stdout_reveal) == RevealContext::Agent
+}
+
 /// The current vault's name, best-effort, for log lines.
 pub(crate) fn current_vault_name() -> String {
     crate::vault_registry::current()
