@@ -338,6 +338,23 @@ fn owner_reveal_command(entry: &str, field: &str, vault: &str) -> String {
     )
 }
 
+/// The single-code retry command for an agent-facing `ask` TOTP entry:
+/// `--once` prints exactly one code (matching the single-use approval),
+/// the label is shell-quoted and `--`-separated, and the vault is
+/// targeted explicitly when it is not the active one.
+pub(crate) fn once_code_command(entry: &str, vault: &str) -> String {
+    once_code_command_for(entry, vault, crate::vault_registry::get_active().as_deref())
+}
+
+/// [`once_code_command`] with the active vault injected (testable).
+fn once_code_command_for(entry: &str, vault: &str, active: Option<&str>) -> String {
+    with_vault_targeting(
+        format!("passlane show -o --once -- {}", shell_quote(entry)),
+        vault,
+        active,
+    )
+}
+
 fn owner_reveal_base_command(entry: &str, field: &str) -> String {
     match field {
         "code" | "secret" => format!("passlane show -o {}", positional(entry)),
@@ -1144,6 +1161,40 @@ mod tests {
         assert_eq!(
             with_vault_targeting("passlane show -- -root".into(), "work", Some("default")),
             "passlane --vault work show -- -root"
+        );
+    }
+
+    #[test]
+    fn once_code_command_is_shell_safe_and_targets_the_vault() {
+        let for_active = |entry: &str, vault: &str, active: Option<&str>| {
+            once_code_command_for(entry, vault, active)
+        };
+        assert_eq!(
+            for_active("GitHub:user", "work", Some("default")),
+            "passlane --vault work show -o --once -- GitHub:user"
+        );
+        // Plain titles stay readable; the active vault needs no flag.
+        assert_eq!(
+            for_active("github.com", "work", Some("work")),
+            "passlane show -o --once -- github.com"
+        );
+        assert_eq!(
+            for_active("github.com", "work", None),
+            "passlane --vault work show -o --once -- github.com"
+        );
+        // Spaces are quoted; injection attempts cannot escape the command.
+        assert_eq!(
+            for_active("work; printf INJECTED", "work", Some("work")),
+            "passlane show -o --once -- 'work; printf INJECTED'"
+        );
+        assert_eq!(
+            for_active("x'; rm -rf ~", "work", Some("work")),
+            "passlane show -o --once -- 'x'\\''; rm -rf ~'"
+        );
+        // Leading dashes stay a positional after --.
+        assert_eq!(
+            for_active("-root", "work", Some("work")),
+            "passlane show -o --once -- -root"
         );
     }
 }

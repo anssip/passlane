@@ -79,6 +79,112 @@ if (process.argv.includes("--write-fixture")) {
   const fixturePath = join(fixtureDir, "page-response-v1.json");
   writeFileSync(fixturePath, JSON.stringify(fixture, null, 2) + "\n");
   console.log(`fixture written: ${fixturePath}`);
+
+  // The enrollment fixture: run the page's real ceremony (runEnrollment,
+  // deterministic seams) against the vector CLI keys, so the Rust
+  // verifier proves the page's binding challenge byte-for-byte.
+  const { runEnrollment } = await import(join(page, "js", "enroll.js"));
+  const { sha256, toBase64Url, utf8, ecdsaRawToDer, toHex } = await import(
+    join(page, "js", "lib.js")
+  );
+  const enrollmentNonce = hexToBytes("0a0b0c0d0e0f00112223334445556667");
+  const rpId = "approve.passlane.test";
+  const pagePair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+  const pageEcdhPub = new Uint8Array(await crypto.subtle.exportKey("raw", pagePair.publicKey));
+  const passkey = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const passkeyPub = new Uint8Array(await crypto.subtle.exportKey("raw", passkey.publicKey));
+  const credentialId = new Uint8Array(8).fill(0xc0);
+  const coseKey = concatU8(
+    new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20]),
+    passkeyPub.subarray(1, 33),
+    new Uint8Array([0x22, 0x58, 0x20]),
+    passkeyPub.subarray(33, 65),
+  );
+  const authData = concatU8(
+    await sha256(utf8(rpId)),
+    new Uint8Array([0x41, 0, 0, 0, 0]),
+    new Uint8Array(16),
+    new Uint8Array([0, credentialId.length]),
+    credentialId,
+    coseKey,
+  );
+  const text = (s) => {
+    const b = utf8(s);
+    return concatU8(new Uint8Array([0x60 | b.length]), b);
+  };
+  const attestationObject = concatU8(
+    new Uint8Array([0xa3]),
+    text("fmt"), text("none"),
+    text("attStmt"), new Uint8Array([0xa0]),
+    text("authData"),
+    new Uint8Array([0x58, authData.length]),
+    authData,
+  );
+  const { blob } = await runEnrollment(
+    {
+      nonce: enrollmentNonce,
+      cliPublicSec1: hexToBytes(cliPublic),
+      cliSigPubSec1: hexToBytes(request.sender_pin.sig_pub),
+    },
+    {
+      noStore: true,
+      generateKey: () => ({ privateNonExportable: pagePair.privateKey, publicSec1: pageEcdhPub }),
+      createCredential: async () => ({
+        response: { attestationObject: attestationObject.buffer.slice(0) },
+      }),
+      assert: async (_id, challengeBytes) => {
+        const challenge = toBase64Url(new Uint8Array(challengeBytes));
+        const clientDataJson = JSON.stringify({
+          type: "webauthn.get",
+          challenge,
+          origin: `https://${rpId}`,
+        });
+        const raw = new Uint8Array(
+          await crypto.subtle.sign(
+            { name: "ECDSA", hash: "SHA-256" },
+            passkey.privateKey,
+            concatU8(authData, await sha256(utf8(clientDataJson))),
+          ),
+        );
+        return {
+          authenticatorData: authData.buffer.slice(0),
+          clientDataJSON: utf8(clientDataJson).buffer.slice(0),
+          signature: ecdsaRawToDer(raw).buffer.slice(0),
+        };
+      },
+    },
+  );
+  const enrollFixture = {
+    note: "A page-produced enrollment blob (run.mjs --write-fixture driving page/js/enroll.js with node WebCrypto). The Rust test verifies it with the CLI's real ceremony verifier — the JS page side and the Rust CLI side derive the identical binding challenge.",
+    version: 1,
+    nonce_hex: "0a0b0c0d0e0f00112223334445556667",
+    cli: cliKeys,
+    origin: { rp_id: rpId, origin: `https://${rpId}` },
+    blob,
+    expected: { enc_pub: blob.enc_pub },
+  };
+  const enrollPath = join(fixtureDir, "page-enrollment-v1.json");
+  writeFileSync(enrollPath, JSON.stringify(enrollFixture, null, 2) + "\n");
+  console.log(`fixture written: ${enrollPath}`);
+}
+
+function concatU8(...parts) {
+  const len = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(len);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 process.exit(failed ? 1 : 0);

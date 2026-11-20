@@ -166,4 +166,5 @@ async function main() {
   }
 }
 
-main();
+// Node (the test harness) has no DOM: run only in a browser context.
+if (typeof document !== "undefined") main();

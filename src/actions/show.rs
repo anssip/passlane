@@ -379,9 +379,12 @@ impl ShowTotpTemplate {
         {
             return Err(Error::new(&format!(
                 "Entry '{}' needs owner approval (agent=ask); the continuous code view is \
-                 interactive-only. Use 'passlane show -o --once {}' for a single approved code",
+                 interactive-only. Use '{}' for a single approved code",
                 the_match.label(),
-                the_match.label()
+                crate::agent::once_code_command(
+                    &the_match.label(),
+                    &crate::agent::current_vault_name()
+                )
             )));
         }
         // The interactive code view is an owner reveal; an `ask` entry

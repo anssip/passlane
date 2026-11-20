@@ -1471,4 +1471,42 @@ mod tests {
         assert!(verify_enrollment(&bad_cose, ENROLL_NONCE, &origin, &cli).is_err());
     }
 
+    #[test]
+    fn page_enrollment_fixture_verifies_in_rust() {
+        // A blob produced by the page's real ceremony code (run.mjs drives
+        // page/js/enroll.js under node's WebCrypto, committed as a
+        // fixture). Verifying it here — recomputing the binding challenge
+        // from the CLI's own identity keys — proves both sides derive the
+        // identical SHA-256(nonce ‖ ECDH pub ‖ cli_enc ‖ cli_sig).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("page")
+            .join("tests")
+            .join("fixtures")
+            .join("page-enrollment-v1.json");
+        let doc: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).expect("enrollment fixture committed"),
+        )
+        .expect("fixture is valid JSON");
+        let cli = {
+            let c = &doc["cli"];
+            IdentityKeys::from_bytes(
+                &passlane_approval::encoding::hex_decode(c["enc_secret"].as_str().unwrap())
+                    .unwrap(),
+                &passlane_approval::encoding::hex_decode(c["sig_secret"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let origin = PageOrigin {
+            rp_id: doc["origin"]["rp_id"].as_str().unwrap().to_string(),
+            origin: doc["origin"]["origin"].as_str().unwrap().to_string(),
+        };
+        let nonce = doc["nonce_hex"].as_str().unwrap();
+        let blob = serde_json::to_string(&doc["blob"]).unwrap();
+
+        let (enc_pub, _sig_pub) = verify_enrollment(&blob, nonce, &origin, &cli)
+            .expect("the page's enrollment blob verifies with the CLI ceremony");
+        assert_eq!(enc_pub, doc["expected"]["enc_pub"].as_str().unwrap());
+    }
+
 }

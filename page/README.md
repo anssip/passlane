@@ -72,11 +72,12 @@ same primitives the browser uses — proving the DHKEM composition in
 `hpke.js` matches the Rust reference byte for byte. With
 `--write-fixture` it seals a WebAuthn-signed approval response (an ECDSA
 WebCrypto key stands in for the passkey, exactly like the Rust tests'
-mock) into `tests/fixtures/page-response-v1.json`; the CLI's Rust
-integration test (`tests/link_transport.rs` in the repo root) then opens
-and fully verifies that fixture with `passlane-approval` — the JS↔Rust
-leg of the end-to-end proof. `test.html` runs the same suite inside a
-browser.
+mock) into `tests/fixtures/page-response-v1.json`, and drives the real
+`runEnrollment` ceremony into `tests/fixtures/page-enrollment-v1.json`;
+the CLI's Rust tests then open the response envelope and verify the
+enrollment blob with passlane-approval — the JS↔Rust legs of the
+end-to-end proof. `test.html` runs the same suite inside a browser
+(the ceremony test included, via deterministic seams).
 
 What only a real device can cover: the passkey prompts themselves. The
 mocked-assertion paths are identical to the real ones up to

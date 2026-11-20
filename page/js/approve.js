@@ -236,4 +236,5 @@ async function main() {
   $("deny").addEventListener("click", () => decide("deny", $("reason").value || undefined));
 }
 
-main();
+// Node (the test harness) has no DOM: run only in a browser context.
+if (typeof document !== "undefined") main();

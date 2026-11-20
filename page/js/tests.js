@@ -522,3 +522,122 @@ test("mocked approval: JS produces a response the same JS framing accepts", asyn
   eq(parsed.sigKind, 2, "webauthn sig kind");
   if (out.passkeyPublicSec1Hex.length !== 130) throw new Error("passkey pub must be SEC1 hex");
 });
+
+// -- the enrollment ceremony (SPEC §6, with both CLI keys bound) --------------
+
+test("enrollment ceremony: the binding challenge covers both CLI keys, in order", async () => {
+  const { runEnrollment } = await import("./enroll.js");
+  const cli = caseByName("approval_request_unlock").sender_pin; // the "CLI"
+  const cliEnc = fromHex(cli.enc_pub);
+  const cliSig = fromHex(cli.sig_pub);
+  const nonce = fromHex("0a0b0c0d0e0f00112223334445556667");
+
+  // Deterministic seams: fixed page key, fixed credential, and an assert
+  // seam that captures the challenge it was handed.
+  const pagePair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+  const pagePub = new Uint8Array(await crypto.subtle.exportKey("raw", pagePair.publicKey));
+
+  const passkey = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const passkeyPub = new Uint8Array(await crypto.subtle.exportKey("raw", passkey.publicKey));
+  const credentialId = new Uint8Array(8).fill(0xc0);
+  const rpId = "page.test";
+  // Full authenticator data with attested credential data (aaguid ‖ id
+  // length ‖ id ‖ COSE key), as a real authenticator emits.
+  const coseKey = concat(
+    new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20]),
+    passkeyPub.subarray(1, 33),
+    new Uint8Array([0x22, 0x58, 0x20]),
+    passkeyPub.subarray(33, 65),
+  );
+  const authData = concat(
+    await sha256(utf8(rpId)),
+    new Uint8Array([0x41, 0, 0, 0, 0]), // UP | AT
+    new Uint8Array(16), // aaguid
+    new Uint8Array([0, credentialId.length]),
+    credentialId,
+    coseKey,
+  );
+  const attestationObject = concat(
+    new Uint8Array([0xa3]),
+    cborText("fmt"), cborText("none"),
+    cborText("attStmt"), new Uint8Array([0xa0]),
+    cborText("authData"),
+    new Uint8Array([0x58, authData.length]),
+    authData,
+  );
+
+  let seenChallenge = null;
+  const { blob } = await runEnrollment(
+    { nonce, cliPublicSec1: cliEnc, cliSigPubSec1: cliSig },
+    {
+      noStore: true,
+      generateKey: () => ({ privateNonExportable: pagePair.privateKey, publicSec1: pagePub }),
+      createCredential: async () => ({
+        response: { attestationObject: attestationObject.buffer.slice(0) },
+      }),
+      assert: async (_credId, challengeBytes) => {
+        // Record and answer like a real authenticator would.
+        seenChallenge = toBase64Url(new Uint8Array(challengeBytes));
+        const clientDataJson = JSON.stringify({
+          type: "webauthn.get",
+          challenge: seenChallenge,
+          origin: `https://${rpId}`,
+        });
+        const raw = new Uint8Array(
+          await crypto.subtle.sign(
+            { name: "ECDSA", hash: "SHA-256" },
+            passkey.privateKey,
+            concat(authData, await sha256(utf8(clientDataJson))),
+          ),
+        );
+        const { ecdsaRawToDer } = await import("./lib.js");
+        return {
+          authenticatorData: authData.buffer.slice(0),
+          clientDataJSON: utf8(clientDataJson).buffer.slice(0),
+          signature: ecdsaRawToDer(raw).buffer.slice(0),
+        };
+      },
+    },
+  );
+
+  // The exact SPEC §6 construction: nonce ‖ ECDH pub ‖ cli_enc ‖ cli_sig.
+  const expected = toBase64Url(await sha256(concat(nonce, pagePub, cliEnc, cliSig)));
+  if (seenChallenge !== expected) {
+    throw new Error(`challenge mismatch: got ${seenChallenge}, want ${expected}`);
+  }
+  // Omitting or reordering either CLI key must change it — the relay-swap
+  // defense only works if both keys are covered, in this order.
+  assertNotEqual(
+    seenChallenge,
+    toBase64Url(await sha256(concat(nonce, pagePub, cliSig, cliEnc))),
+    "reordered keys",
+  );
+  assertNotEqual(
+    seenChallenge,
+    toBase64Url(await sha256(concat(nonce, pagePub))),
+    "omitted CLI keys",
+  );
+  // And the blob is shaped for the CLI verifier.
+  eq(blob.v, 1, "blob version");
+  eq(blob.enc_pub, toHex(pagePub), "page ECDH pub");
+  if (!blob.cose_key || !blob.assertion.signature) throw new Error("blob incomplete");
+});
+
+function assertNotEqual(a, b, what) {
+  if (a === b) throw new Error(`${what}: values must differ (${a})`);
+}
+
+/** CBOR text string header + bytes (lengths under 24 only). */
+function cborText(s) {
+  const bytes = utf8(s);
+  if (bytes.length >= 24) throw new Error("test helper: text too long");
+  return concat(new Uint8Array([0x60 | bytes.length]), bytes);
+}
