@@ -849,7 +849,7 @@ mod tests {
         let (log, _dir) = log_in_tempdir();
         let state = tempfile::tempdir().unwrap();
         let (pin, _page, _passkey) = crate::approvals::mock_page();
-        crate::approvals::pin_approver(state.path(), pin).unwrap();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
 
         let result = enforce_inner(
             &log,
@@ -883,7 +883,7 @@ mod tests {
         let (log, _dir) = log_in_tempdir();
         let state = tempfile::tempdir().unwrap();
         let (pin, page, passkey) = crate::approvals::mock_page();
-        crate::approvals::pin_approver(state.path(), pin).unwrap();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
 
         // The ask flow emits the request; a mocked page approves it.
         let err = enforce_inner(

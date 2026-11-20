@@ -46,6 +46,10 @@ pub struct PendingRequest {
     pub created: u64,
     /// Envelope expiry, unix seconds — the response must arrive before it.
     pub exp: u64,
+    /// The reuse window the request asked for (SPEC §4): `None` means
+    /// `Scope::Once` — a response may not grant anything wider than this.
+    #[serde(default)]
+    pub requested_timed: Option<u32>,
     /// Where the request stands.
     pub state: RequestState,
 }
@@ -270,6 +274,7 @@ mod tests {
             field: "password".into(),
             created: 1000,
             exp: 1300,
+            requested_timed: None,
             state,
         }
     }

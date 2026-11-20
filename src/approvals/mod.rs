@@ -60,6 +60,51 @@ pub fn state_dir() -> PathBuf {
         .unwrap_or_else(crate::store::dir_path)
 }
 
+/// File mapping a pinned approver's encryption key id to the exact page
+/// base URL it was enrolled under (`approval_pages.json`). The WebAuthn
+/// origin cannot carry a deployment path (e.g. `https://example.com/passlane`),
+/// so the full base is remembered beside the pin.
+const PAGES_FILENAME: &str = "approval_pages.json";
+
+fn load_page_bases(dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let path = dir.join(PAGES_FILENAME);
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Remember (or replace) the page base URL for the approver keyed by
+/// `enc_kid`. Best-effort persistence: a missing map never blocks
+/// approvals — the link falls back to the pinned origin.
+pub fn remember_page_base(
+    dir: &std::path::Path,
+    enc_kid: &str,
+    base_url: &str,
+) -> Result<(), String> {
+    let mut map = load_page_bases(dir);
+    map.insert(enc_kid.to_string(), base_url.trim_end_matches('/').to_string());
+    std::fs::create_dir_all(dir)
+        .and_then(|()| {
+            let bytes = serde_json::to_vec(&map)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let tmp = dir.join(format!("{PAGES_FILENAME}.tmp"));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, dir.join(PAGES_FILENAME))
+        })
+        .map_err(|e| format!("could not persist the page base URL: {e}"))
+}
+
 /// The replay store path (`<dir>/.approval_nonces`).
 fn nonce_store_path(dir: &std::path::Path) -> PathBuf {
     dir.join(".approval_nonces")
@@ -127,11 +172,16 @@ pub fn enroll_link(page: &str, nonce_hex: &str, cli_enc_pub_hex: &str, cli_sig_p
     )
 }
 
-/// The link base requests to `peer` should use: the origin pinned at its
-/// enrollment (so a `--page https://custom.example` enrollment keeps
-/// emitting links there), falling back to the configured default for
-/// pins without WebAuthn metadata.
-fn link_base_for(peer: &PeerPin) -> String {
+/// The link base requests to `peer` should use: the exact deployment base
+/// recorded at its enrollment (which may carry a path, e.g.
+/// `https://example.com/passlane`), else the pinned WebAuthn origin, else
+/// the configured default.
+fn link_base_for(dir: &std::path::Path, peer: &PeerPin) -> String {
+    if let Ok(kid) = peer.enc_kid()
+        && let Some(base) = load_page_bases(dir).get(&kid)
+    {
+        return base.trim_end_matches('/').to_string();
+    }
     peer.webauthn
         .as_ref()
         .map(|w| w.origin.trim_end_matches('/').to_string())
@@ -265,7 +315,7 @@ fn emit_request(
     let rid = envelope.header().rid.clone();
     let exp = envelope.header().exp;
     let encoded = envelope.to_base64url();
-    let link = approve_link(&link_base_for(peer), &encoded);
+    let link = approve_link(&link_base_for(dir, peer), &encoded);
 
     // Recording runs under the store's exclusive lock (and persists the
     // pruning of dead records) — a concurrent consume/approve can never
@@ -279,6 +329,7 @@ fn emit_request(
             field: field.to_string(),
             created: now,
             exp,
+            requested_timed: None, // Scope::Once (see approve_response's bound)
             state: RequestState::Pending,
         });
     })
@@ -402,7 +453,12 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
         }
 
         // Full verification (the replay nonce is recorded in memory by
-        // open() only once everything above it passed).
+        // open() only once everything above it passed). Pruning the
+        // replay store here — under its own lock, before the rewrite —
+        // keeps `.approval_nonces` bounded by the replay window.
+        use passlane_approval::replay::NonceStore;
+        nonces.prune(now);
+
         let body = passlane_approval::envelope::open(
             &identity,
             &peers,
@@ -429,7 +485,24 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
             (record.vault.clone(), record.entry.clone(), record.field.clone());
         match decision {
             Decision::Allow => {
+                // The response may not grant more than the request asked
+                // for (SPEC §4): every request this CLI emits is
+                // `Scope::Once`, so a reusable scope is refused — a single
+                // approval must release exactly one reveal.
                 let once = matches!(scope, Scope::Once);
+                if !once && record.requested_timed.is_none() {
+                    return Err(format!(
+                        "request {rid} asked for a single-use approval; the response offered a                          reusable scope, which is refused"
+                    ));
+                }
+                if let Scope::Timed { seconds } = scope
+                    && record.requested_timed.is_some_and(|asked| seconds > &asked)
+                {
+                    return Err(format!(
+                        "request {rid} asked for at most {}s of reuse; the response offered {seconds}s",
+                        record.requested_timed.unwrap()
+                    ));
+                }
                 // A once-grant is bounded by the request envelope's own expiry
                 // (it lives only to be consumed); a timed grant by its window.
                 let until = if once {
@@ -480,25 +553,39 @@ pub struct PageOrigin {
 }
 
 /// Derive [`PageOrigin`] from a page base URL. Only `https` pages can host
-/// WebAuthn, so anything else is rejected before any ceremony starts.
+/// WebAuthn, so anything else is rejected before any ceremony starts. The
+/// host is lower-cased and an explicit `:443` dropped, matching how
+/// browsers normalize `clientDataJSON.origin` — a verbatim pin of
+/// `https://Host:443` would never match the assertion origin.
 pub fn page_origin(page: &str) -> Result<PageOrigin, String> {
     let rest = page
         .strip_prefix("https://")
         .ok_or_else(|| format!("the approval page must be an https URL: {page}"))?;
-    let host = rest
+    let host_port = rest
         .split(['/', '?', '#'])
         .next()
         .unwrap_or_default()
         .trim_end_matches('/');
-    if host.is_empty() || host.contains('@') {
+    if host_port.is_empty() || host_port.contains('@') {
         return Err(format!("the approval page URL has no usable host: {page}"));
     }
-    // The RP id is the registrable host (port, if any, is not part of it;
-    // origins keep it). Fragment-free base URLs keep this simple.
-    let rp_id = host.split(':').next().unwrap_or(host);
+    // Canonicalize: lower-case host, drop the default https port (origins
+    // keep non-standard ports; the RP id is the registrable host alone).
+    let host = host_port.to_ascii_lowercase();
+    let (host, port) = match host.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => (h, Some(p)),
+        _ => (host.as_str(), None),
+    };
+    if host.is_empty() || host.contains('[') {
+        return Err(format!("the approval page URL has no usable host: {page}"));
+    }
+    let origin = match port {
+        Some(p) if p != "443" => format!("https://{host}:{p}"),
+        _ => format!("https://{host}"),
+    };
     Ok(PageOrigin {
-        rp_id: rp_id.to_string(),
-        origin: format!("https://{host}"),
+        rp_id: host.to_string(),
+        origin,
     })
 }
 
@@ -583,9 +670,14 @@ pub fn verify_enrollment(
 
 /// Pin an enrolled approver (idempotent per label: re-enrolling a label
 /// replaces its pin).
-pub fn pin_approver(dir: &std::path::Path, pin: PeerPin) -> Result<(), String> {
+pub fn pin_approver(dir: &std::path::Path, pin: PeerPin, page_base: Option<&str>) -> Result<(), String> {
     let mut peers = load_peers_pinned(dir)?;
     peers.retain(|p| p.label != pin.label);
+    if let Some(base) = page_base
+        && let Ok(kid) = pin.enc_kid()
+    {
+        let _ = remember_page_base(dir, &kid, base);
+    }
     peers.push(pin);
     store_peers(dir, &peers)
 }
@@ -594,12 +686,49 @@ pub fn pin_approver(dir: &std::path::Path, pin: PeerPin) -> Result<(), String> {
 pub fn unpin_approver(dir: &std::path::Path, label: &str) -> Result<bool, String> {
     let mut peers = load_peers_pinned(dir)?;
     let before = peers.len();
+    let removed: Vec<PeerPin> = peers.iter().filter(|p| p.label == label).cloned().collect();
     peers.retain(|p| p.label != label);
     if peers.len() == before {
         return Ok(false);
     }
+    // Forget the remembered page base alongside the pin.
+    if !removed.is_empty() {
+        let mut map = load_page_bases(dir);
+        let changed = removed
+            .iter()
+            .filter_map(|p| p.enc_kid().ok())
+            .any(|kid| map.remove(&kid).is_some());
+        if changed {
+            let _ = remember_page_map(dir, &map);
+        }
+    }
     store_peers(dir, &peers)?;
     Ok(true)
+}
+
+fn remember_page_map(
+    dir: &std::path::Path,
+    map: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .and_then(|()| {
+            let bytes =
+                serde_json::to_vec(map).map_err(|e| std::io::Error::other(e.to_string()))?;
+            let tmp = dir.join(format!("{PAGES_FILENAME}.tmp"));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, dir.join(PAGES_FILENAME))
+        })
+        .map_err(|e| format!("could not persist the page base URL: {e}"))
 }
 
 // -- test seams: a mocked Phase 0 approver shared by the ask-flow tests --
@@ -734,6 +863,13 @@ mod tests {
         assert_eq!(o.rp_id, "local.test");
         assert_eq!(o.origin, "https://local.test:8443");
 
+        // Browsers normalize clientDataJSON origins: the default https
+        // port is dropped and hosts are lower-cased, so the pin must be
+        // canonical or assertion origin checks would never match.
+        let o = page_origin("https://APPROVE.Passlane.APP:443").unwrap();
+        assert_eq!(o.origin, "https://approve.passlane.app");
+        assert_eq!(o.rp_id, "approve.passlane.app");
+
         // WebAuthn needs https.
         assert!(page_origin("http://insecure.example").is_err());
         assert!(page_origin("https://").is_err());
@@ -775,7 +911,7 @@ mod tests {
         {
             // -- enroll: pin a page with an ECDH key and a passkey stand-in --
             let (pin, page, passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
 
             // -- emit: the ask flow seals a request to the pinned page --
             let emitted = emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user")
@@ -861,7 +997,7 @@ mod tests {
         let dir = state.path();
         {
             let (pin, page, passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
                 emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
@@ -908,7 +1044,7 @@ mod tests {
         let dir = state.path();
         {
             let (pin, page, passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
                 emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
@@ -928,7 +1064,7 @@ mod tests {
         let dir = state.path();
         {
             let (pin, page, passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
                 emit_approval_request(dir, "default", "prod-db", "uuid-prod", "password", "test-user").unwrap();
@@ -959,7 +1095,7 @@ mod tests {
         let dir = state.path();
         {
             let (pin, page, _passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let cli_pin = PeerPin::new(
                 "cli",
@@ -998,15 +1134,123 @@ mod tests {
     }
 
     #[test]
+    fn reusable_response_cannot_widen_a_once_request() {
+        // The page answers a Scope::Once request with Scope::Timed: the
+        // response verifies cryptographically, but the grant must be
+        // refused — one approval releases exactly one reveal.
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "GitHub",
+                "uuid-github",
+                "password",
+                "test-user",
+            )
+            .unwrap();
+
+            // Build the Allow{Timed} response the way a hostile or buggy
+            // responder would.
+            let cli_pin = PeerPin::new(
+                "cli",
+                PublicKey(cli.encryption_public()),
+                PublicKey::from_bytes(&cli.verifying_key().to_sec1_bytes()).unwrap(),
+                0,
+            );
+            let (pending, challenge) = passlane_approval::envelope::seal_webauthn(
+                &mut OsRng,
+                &page,
+                &cli_pin,
+                Body::ApprovalResponse {
+                    decision: Decision::Allow,
+                    scope: Scope::Timed { seconds: 900 },
+                    response: None,
+                },
+                &emitted.rid,
+                now_secs(),
+                &Policy::default(),
+            )
+            .unwrap();
+            use p256::ecdsa::signature::hazmat::PrehashSigner;
+            use sha2::{Digest, Sha256};
+            let rp_hash = Sha256::digest(MOCK_PAGE_RP_ID.as_bytes());
+            let mut auth_data = Vec::with_capacity(37);
+            auth_data.extend_from_slice(&rp_hash);
+            auth_data.push(0x01);
+            auth_data.extend_from_slice(&0u32.to_be_bytes());
+            let client_data_json = format!(
+                r#"{{"type":"webauthn.get","challenge":"{challenge}","origin":"https://{MOCK_PAGE_RP_ID}"}}"#
+            );
+            let mut digest = Sha256::new();
+            digest.update(&auth_data);
+            digest.update(Sha256::digest(client_data_json.as_bytes()));
+            let sig: p256::ecdsa::Signature = passkey.sign_prehash(&digest.finalize()).unwrap();
+            let env = passlane_approval::envelope::attach_webauthn_assertion(
+                pending,
+                WebauthnAssertion::from_raw(
+                    &auth_data,
+                    client_data_json.as_bytes(),
+                    sig.to_der().as_bytes(),
+                ),
+            )
+            .unwrap();
+
+            let err = approve_response(dir, &env.to_base64url()).unwrap_err();
+            assert!(
+                err.contains("single-use approval") && err.contains("reusable scope"),
+                "{err}"
+            );
+            // Nothing was released.
+            assert_eq!(consume_grant(dir, "default", "uuid-github", "password"), None);
+        }
+    }
+
+    #[test]
+    fn path_prefixed_page_base_is_remembered_for_links() {
+        // A page deployed under a path: enroll pins it, and emission
+        // builds links under that exact base (the WebAuthn origin cannot
+        // carry the path).
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, _page, _passkey) = mock_page();
+            pin_approver(dir, pin, Some("https://example.com/passlane/")).unwrap();
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "GitHub",
+                "uuid-github",
+                "password",
+                "t",
+            )
+            .unwrap();
+            assert!(
+                emitted.link.starts_with("https://example.com/passlane/approve.html#"),
+                "{}",
+                emitted.link
+            );
+
+            // Forgetting the approver forgets the base too.
+            unpin_approver(dir, "approval-page").unwrap();
+            assert!(load_page_bases(dir).is_empty());
+        }
+    }
+
+    #[test]
     fn unpin_and_repin_by_label() {
         let state = tempfile::tempdir().unwrap();
         let dir = state.path();
         {
             let (pin, _page, _passkey) = mock_page();
-            pin_approver(dir, pin.clone()).unwrap();
+            pin_approver(dir, pin.clone(), None).unwrap();
             assert_eq!(load_peers_pinned(dir).unwrap(), vec![pin.clone()]);
             // Re-enrolling the same label replaces, not duplicates.
-            pin_approver(dir, pin.clone()).unwrap();
+            pin_approver(dir, pin.clone(), None).unwrap();
             assert_eq!(load_peers_pinned(dir).unwrap().len(), 1);
             assert!(unpin_approver(dir, "approval-page").unwrap());
             assert!(!unpin_approver(dir, "approval-page").unwrap());
@@ -1020,7 +1264,7 @@ mod tests {
         let dir = state.path();
         {
             let (pin, page, _passkey) = mock_page();
-            pin_approver(dir, pin).unwrap();
+            pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let challenge = [0x5fu8; 32];
             let emitted = emit_unlock_request(dir, "default", "Main", &challenge, "test-user").unwrap();

@@ -93,7 +93,7 @@ impl ApprovalsAction {
             }),
         };
         let enc_kid = passlane_approval::keys::kid(b"enc", &pin.enc_pub_bytes().map_err(|e| Error::new(&e.to_string()))?);
-        approvals::pin_approver(&approvals::state_dir(), pin).map_err(|e| Error::new(&e))?;
+        approvals::pin_approver(&approvals::state_dir(), pin, Some(&page)).map_err(|e| Error::new(&e))?;
 
         Ok(format!(
             "Pinned approver '{label}' ({}). Approval requests will now be sealed to it; run 'passlane approvals list' to see the pin.",
@@ -132,10 +132,14 @@ impl ApprovalsAction {
 
     fn run_pending() -> Result<String, Error> {
         // The transaction holds the lock and persists the pruning of dead
-        // records while it displays them.
+        // records; pruning inside the closure means the displayed snapshot
+        // is already pruned on the *first* invocation after expiry.
         let store = crate::approvals::pending::PendingStore::transaction(
             &approvals::state_dir(),
-            |store| store.records().to_vec(),
+            |store| {
+                store.prune(approvals::now_secs());
+                store.records().to_vec()
+            },
         )
         .map_err(|e| Error::new(&format!("could not load the pending-request store: {e}")))?;
         if store.is_empty() {
