@@ -90,7 +90,10 @@ struct Subscriber {
 
 struct ConnHandle {
     id: u64,
-    writer: Arc<Mutex<UnixStream>>,
+    /// A dedicated duplicate of the socket used only for shutdown, so
+    /// stopping the agent never waits on a worker's writer mutex (a
+    /// blocked write must not be able to stall a SIGTERM).
+    shutdown_stream: UnixStream,
 }
 
 static NEXT_SUBSCRIBER_ID: AtomicU64 = AtomicU64::new(1);
@@ -253,13 +256,12 @@ impl AgentServer {
         // Close accepted sockets so connection workers blocked in a read
         // wake up immediately and stop; dispatch also refuses everything
         // once `stop` is set (belt and braces — a worker may be between
-        // frames when the wipe starts).
+        // frames when the wipe starts). The shutdown uses a dedicated
+        // duplicate per connection: no writer lock is taken, so a worker
+        // blocked mid-write on a full socket cannot stall the shutdown.
         if let Ok(connections) = self.shared.connections.lock() {
             for conn in connections.iter() {
-                if let Ok(stream) = conn.writer.lock() {
-                    // UnixStream::shutdown takes the shared std::net::Shutdown.
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                }
+                let _ = conn.shutdown_stream.shutdown(std::net::Shutdown::Both);
             }
         }
         self.shared.connections.lock().map(|mut c| c.clear()).ok();
@@ -343,13 +345,18 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
         return;
     };
     let writer = Arc::new(Mutex::new(write_half));
+    // A separate duplicate reserved for shutdown (see `ConnHandle`).
+    let shutdown_stream = stream.try_clone().ok();
     // Register so shutdown can close this socket and the worker exits
-    // promptly instead of lingering on a blocked read.
+    // promptly instead of lingering on a blocked read. The registered
+    // handle is a separate duplicate reserved for shutdown.
     let conn_id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut connections) = shared.connections.lock() {
+    if let (Some(shutdown_stream), Ok(mut connections)) =
+        (shutdown_stream, shared.connections.lock())
+    {
         connections.push(ConnHandle {
             id: conn_id,
-            writer: Arc::clone(&writer),
+            shutdown_stream,
         });
     }
     let mut reader = stream;
@@ -371,19 +378,21 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
             }
         };
         if matches!(request, Request::Subscribe) {
-            // Acknowledge *before* registering: once registered, a
-            // concurrent revocation could push an Event that would
-            // otherwise arrive ahead of the ack and break the client's
-            // subscribe handshake.
-            if write_frame(&writer, &Response::Subscribed).is_err() {
-                break;
-            }
+            // Register *before* acknowledging so no event can slip by in
+            // between (they queue on the channel), then write the ack
+            // directly, and only then start the event pump — the pump
+            // must never write an Event frame ahead of the ack. If the
+            // ack fails, deregister so queued events die with the
+            // channel.
             let (tx, rx) = mpsc::channel();
             let id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut subscribers) = shared.subscribers.lock() {
                 subscribers.push(Subscriber { id, tx });
             }
             subscriber_id = Some(id);
+            if write_frame(&writer, &Response::Subscribed).is_err() {
+                break;
+            }
             // Pump events to this client from its own thread; responses
             // and events share the write half behind one mutex, so
             // frames never interleave.
@@ -536,6 +545,7 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                             master_password: crate::protocol::SecretString::new(
                                 material.master_password(),
                             ),
+                            expires_at: session.expires_at,
                         };
                     }
                     unreachable!("filtered to unlock grants above");
@@ -554,6 +564,8 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                             master_password: crate::protocol::SecretString::new(
                                 material.master_password(),
                             ),
+                            // A once session: no expiry to revalidate.
+                            expires_at: None,
                         },
                         _ => unreachable!("filtered to unlock grants above"),
                     },

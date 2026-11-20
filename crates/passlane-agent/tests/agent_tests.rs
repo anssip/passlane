@@ -2,6 +2,11 @@
 //! semantics, expiry, revocation with cooperative notification,
 //! concurrent clients, the duration cap, and the never-on-disk guarantee.
 
+// The daemon and its Unix domain sockets are Unix-only; this whole
+// target is skipped elsewhere (the portable protocol/client tests live
+// in the lib).
+#![cfg(unix)]
+
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -125,10 +130,12 @@ fn session_lifecycle_create_list_use_reuse_revoke() {
     assert_eq!(list[0].grant, passlane_agent::protocol::GrantInfo::Unlock);
 
     // A timed session is reusable: two fetches, same password.
-    let pw1 = client.get_unlock_factors("work").unwrap();
+    let (pw1, expires1) = client.get_unlock_factors("work").unwrap();
     assert_eq!(*pw1, "master-pw");
-    let pw2 = client.get_unlock_factors("work").unwrap();
+    assert!(expires1.is_some(), "a timed session reports its expiry");
+    let (pw2, expires2) = client.get_unlock_factors("work").unwrap();
     assert_eq!(*pw2, "master-pw");
+    assert_eq!(expires2, expires1, "reuse does not change the expiry");
 
     // Revoke: the session is gone.
     assert_eq!(client.revoke_session(&created.id).unwrap(), 1);
@@ -153,8 +160,12 @@ fn once_scoped_unlock_session_is_consumed_by_first_use() {
         .create_session("work", unlock_grant("one-time-pw"), Scope::Once)
         .unwrap();
     let mut user = agent.client();
-    let pw = user.get_unlock_factors("work").unwrap();
+    let (pw, expires) = user.get_unlock_factors("work").unwrap();
     assert_eq!(*pw, "one-time-pw");
+    assert_eq!(
+        expires, None,
+        "a consumed once session has no expiry to revalidate"
+    );
     match user.get_unlock_factors("work") {
         Err(AgentError::Server { code, .. }) => assert_eq!(code, ErrorCode::NotFound),
         other => panic!("once session must be consumed, got {other:?}"),
@@ -416,7 +427,7 @@ fn concurrent_cli_clients_hammer_the_agent() {
                         Scope::Timed { seconds: 300 },
                     )
                     .expect("create");
-                let pw = client.get_unlock_factors(&vault).expect("get");
+                let (pw, _) = client.get_unlock_factors(&vault).expect("get");
                 assert_eq!(*pw, format!("pw-{c}-{i}"));
                 client.get_unlock_factors(&vault).expect("get again");
                 let list = client.list_sessions().expect("list");
@@ -589,7 +600,7 @@ fn key_material_never_reaches_disk() {
                 Scope::Timed { seconds: 300 },
             )
             .unwrap();
-        let pw: Zeroizing<String> = client.get_unlock_factors("work").unwrap();
+        let (pw, _): (Zeroizing<String>, _) = client.get_unlock_factors("work").unwrap();
         assert_eq!(*pw, canary_pw);
         client
             .check_reveal("work", &canary_entry, "password")

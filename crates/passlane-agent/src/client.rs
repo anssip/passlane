@@ -85,18 +85,25 @@ impl AgentClient {
     /// no-such-socket map to [`AgentError::NotRunning`] so callers can
     /// degrade gracefully (the agent is optional).
     ///
-    /// Before anything is sent, the socket is validated: it must be an
-    /// actual socket, owned by the connecting user, with no group/other
-    /// access bits. Without this, a socket pre-created by another user
-    /// in a shared directory (e.g. an explicit `PASSLANE_AGENT_SOCK`
-    /// pointing into `/tmp`) would receive the master password.
+    /// Before anything is sent, the socket is validated — and after
+    /// connecting it is *re*-validated: it must be an actual socket,
+    /// owned by the connecting user, with no group/other access bits.
+    /// The double check closes the create/replace race on explicitly
+    /// configured shared-directory paths (nothing is transmitted during
+    /// `connect`, so a mismatch is closed before any secret can leak),
+    /// and metadata errors fail closed instead of skipping validation.
     pub fn connect(path: &Path) -> Result<AgentClient, AgentError> {
         socket_is_trusted(path)?;
         match UnixStream::connect(path) {
-            Ok(stream) => Ok(AgentClient {
-                stream,
-                path: path.to_path_buf(),
-            }),
+            Ok(stream) => {
+                // The connection is established; make sure the path we
+                // connected to is still the one we validated.
+                socket_is_trusted(path)?;
+                Ok(AgentClient {
+                    stream,
+                    path: path.to_path_buf(),
+                })
+            }
             Err(e)
                 if matches!(
                     e.kind(),
@@ -158,12 +165,20 @@ impl AgentClient {
     }
 
     /// Fetch a vault's unlock factors from a live session (consuming a
-    /// `once`-scoped one).
-    pub fn get_unlock_factors(&mut self, vault: &str) -> Result<Zeroizing<String>, AgentError> {
+    /// `once`-scoped one). Returns the password and the serving
+    /// session's expiry (unix seconds; `None` for a consumed `once`
+    /// session) so long-running callers can revalidate.
+    pub fn get_unlock_factors(
+        &mut self,
+        vault: &str,
+    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
         match self.call(Request::GetUnlockFactors {
             vault: vault.to_string(),
         })? {
-            Response::UnlockFactors { master_password } => Ok(master_password.into_inner()),
+            Response::UnlockFactors {
+                master_password,
+                expires_at,
+            } => Ok((master_password.into_inner(), expires_at)),
             other => Err(AgentError::Protocol(format!(
                 "unexpected answer: {other:?}"
             ))),
@@ -303,7 +318,12 @@ fn socket_is_trusted(path: &Path) -> Result<(), AgentError> {
 
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
-        Err(_) => return Ok(()), // no file yet: connect reports NotRunning
+        // A missing path is not a trust question — connect reports
+        // NotRunning. Every other metadata failure (permissions, a
+        // dangling symlink, ...) fails closed: no validation, no
+        // connection.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return refuse(format!("could not inspect it ({e})")),
     };
     if !meta.file_type().is_socket() {
         return refuse("not a socket".into());

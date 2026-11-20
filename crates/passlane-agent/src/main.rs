@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clap::{Command, arg};
+#[cfg(unix)]
 use passlane_agent::AgentError;
+#[cfg(unix)]
 use passlane_agent::server::{
     AgentConfig, AgentServer, HARD_MAX_SESSION_SECS, default_max_session_secs,
 };

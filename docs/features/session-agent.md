@@ -95,14 +95,18 @@ stray `TMPDIR=/tmp` is rejected, not honored), and on Linux without
 `XDG_RUNTIME_DIR` you set `PASSLANE_AGENT_SOCK` explicitly.
 
 **Socket trust.** Before a client sends anything, it validates the
-socket path: it must be an actual socket, carry no group/other
-permission bits, and be owned by the connecting user (verified without
-libc by probing with a file the client itself creates next to the
-socket). A socket pre-created by another user in a shared directory —
-e.g. an explicit `PASSLANE_AGENT_SOCK` pointing into `/tmp` — is
-refused as *untrusted* instead of receiving your master password. The
-daemon also refuses to delete a non-socket file that happens to sit on
-the path (a `--socket` typo should not destroy data).
+socket path — and after connecting, re-validates it: it must be an
+actual socket, carry no group/other permission bits, and be owned by
+the connecting user (verified without libc by probing with a file the
+client itself creates next to the socket). Nothing is transmitted
+during `connect`, so the create/replace race on a shared-directory
+path is closed by the second check before any secret can be sent;
+metadata errors fail closed. A socket pre-created by another user in a
+shared directory — e.g. an explicit `PASSLANE_AGENT_SOCK` pointing
+into `/tmp` — is refused as *untrusted* instead of receiving your
+master password. The daemon also refuses to delete a non-socket file
+that happens to sit on the path (a `--socket` typo should not destroy
+data).
 
 On Windows there is no Unix domain socket support: the agent crate
 compiles (so the CLI builds unchanged) but reports the agent as absent,
@@ -139,9 +143,12 @@ that zeroize on drop and redact in `Debug` output.
   with a warning — never silently.
 - **Session-backed long-running actions stop when the session ends.**
   The continuous TOTP view (`show -o`) subscribes to the agent's push
-  events when the vault was unlocked through a session, and stops
-  generating and copying codes the moment the session is revoked,
-  expires, or the agent is locked.
+  events when the vault was unlocked through a session (or the reveal
+  gate itself used one), revalidates the session's expiry after
+  subscribing, and stops generating and copying codes the moment the
+  session is revoked, expires, the agent locks — or the agent itself
+  dies (the stream loss is treated as the end of session-backed
+  access).
 - **`passlane sessions list | revoke <id|all> | lock`** manage the
   agent's sessions. `revoke` accepts the short id prefix shown by
   `list`; `--vault work sessions revoke all` scopes the revocation.

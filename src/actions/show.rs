@@ -381,25 +381,57 @@ impl ShowTotpTemplate {
         let (tx_counter, rx_counter) = mpsc::channel();
         let session_ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        // When this vault was unlocked through the session agent, the
-        // continuous code view is session-backed: subscribe and stop
-        // refreshing (and copying) the moment the agent drops the
-        // session (revocation, expiry, `passlane lock`).
-        if crate::actions::last_unlock_source() == crate::actions::PasswordSource::SessionAgent
-            && let Some(mut events) = crate::session_agent::subscribe_to_events()
-        {
-            let vault = crate::agent::current_vault_name();
-            let quit = tx.clone();
-            let ended = std::sync::Arc::clone(&session_ended);
-            thread::spawn(move || {
-                while let Ok(event) = events.next_event() {
-                    if crate::session_agent::event_ends_access(&event, &vault) {
-                        ended.store(true, std::sync::atomic::Ordering::SeqCst);
-                        let _ = quit.send(());
-                        break;
+        // The continuous code view is session-backed when the vault was
+        // unlocked through the agent OR the reveal gate itself passed on
+        // a live reveal session (an agent-context view of an `ask`
+        // entry). Subscribe and stop refreshing (and copying) the moment
+        // the agent drops that session (revocation, expiry, `lock`).
+        let session_backed = crate::actions::last_unlock_source()
+            == crate::actions::PasswordSource::SessionAgent
+            || crate::agent::last_gate_used_session();
+        if session_backed && let Some(mut events) = crate::session_agent::subscribe_to_events() {
+            // Revalidate: the session may have expired between the
+            // unlock (or gate) and this subscription — its expiry event
+            // would be missed by the stream.
+            let expiry = crate::actions::last_agent_session_expiry();
+            let already_expired = expiry != 0 && {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                now >= expiry
+            };
+            if already_expired {
+                session_ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = tx.send(());
+            } else {
+                let vault = crate::agent::current_vault_name();
+                let quit = tx.clone();
+                let ended = std::sync::Arc::clone(&session_ended);
+                thread::spawn(move || {
+                    loop {
+                        match events.next_event() {
+                            Ok(event) => {
+                                if crate::session_agent::event_ends_access(&event, &vault) {
+                                    ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    let _ = quit.send(());
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                // The stream died: the agent stopped or
+                                // crashed, and its sessions died with
+                                // it. Treat that as the end of
+                                // session-backed access instead of
+                                // continuing unmonitored.
+                                ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let _ = quit.send(());
+                                break;
+                            }
+                        }
                     }
-                }
-            });
+                });
+            }
         }
 
         // Spawn a thread to listen for keyboard input

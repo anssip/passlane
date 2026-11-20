@@ -433,7 +433,21 @@ impl ListAction {
             let output = ListOutput::new("payment_cards", listed);
             Ok(Some(output.to_json()?))
         } else {
-            Ok(Some(Self::format_payments_plain(&entries)))
+            // The plain renderer decides by policy; entries released by
+            // a session get a display copy with the policy cleared so
+            // the approved card actually shows (mirroring `show`).
+            let display: Vec<PaymentCard> = entries
+                .iter()
+                .zip(&allowed)
+                .map(|(entry, allowed)| {
+                    if *allowed {
+                        entry.clone().with_agent_policy(AgentPolicy::Allow)
+                    } else {
+                        entry.clone()
+                    }
+                })
+                .collect();
+            Ok(Some(Self::format_payments_plain(&display)))
         }
     }
 
@@ -479,7 +493,20 @@ impl ListAction {
             let output = ListOutput::new("notes", listed);
             Ok(Some(output.to_json()?))
         } else {
-            Ok(Some(Self::format_notes_plain(&entries)))
+            // As with payments: session-released entries get a display
+            // copy with the policy cleared so the approved note shows.
+            let display: Vec<Note> = entries
+                .iter()
+                .zip(&allowed)
+                .map(|(entry, allowed)| {
+                    if *allowed {
+                        entry.clone().with_agent_policy(AgentPolicy::Allow)
+                    } else {
+                        entry.clone()
+                    }
+                })
+                .collect();
+            Ok(Some(Self::format_notes_plain(&display)))
         }
     }
 

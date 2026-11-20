@@ -243,6 +243,7 @@ impl ApprovalLog {
     }
 
     /// [`ApprovalLog::log_decision`] with the entry's UUID.
+    #[allow(clippy::too_many_arguments)]
     pub fn log_decision_with(
         &self,
         id: &str,
@@ -564,6 +565,18 @@ where
     )
 }
 
+/// Whether the most recent reveal gate in this process passed via a
+/// live agent session (set by the ask flow's session consult; see
+/// [`enforce_with_seams`]). Long-running reveals (the continuous TOTP
+/// view) watch for that session's end too, not just a session-backed
+/// vault unlock.
+pub(crate) fn last_gate_used_session() -> bool {
+    LAST_GATE_USED_SESSION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static LAST_GATE_USED_SESSION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// The ask flow with the agent consult and the session-creation
 /// injected, so the session integration is testable without a running
 /// agent.
@@ -583,6 +596,7 @@ where
     F: FnOnce() -> ApprovalChoice,
 {
     let vault = current_vault_name();
+    LAST_GATE_USED_SESSION.store(false, std::sync::atomic::Ordering::Relaxed);
     match decide(policy, context) {
         RevealDecision::Reveal => Ok(()),
         RevealDecision::NeedApproval => {
@@ -595,6 +609,7 @@ where
                 // inherits the approval.
                 if let Some(until) = check_session(&vault, entry_id, entry, field) {
                     log.log_session_reveal(&vault, entry_id, entry, field, policy, until);
+                    LAST_GATE_USED_SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
                     return Ok(());
                 }
                 let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);

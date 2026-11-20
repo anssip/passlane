@@ -239,6 +239,11 @@ pub enum Response {
     UnlockFactors {
         /// The held master password.
         master_password: SecretString,
+        /// When the serving session expires, unix seconds (`None` when
+        /// a `once` session was just consumed). Long-running callers
+        /// revalidate against this after subscribing to events, so an
+        /// expiry that fires during vault decryption is not missed.
+        expires_at: Option<u64>,
     },
     /// Answer to [`Request::CheckReveal`].
     RevealCheck {
@@ -359,6 +364,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn frames_roundtrip_through_a_socketpair() {
         let (mut a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
         let req = Request::CreateSession {

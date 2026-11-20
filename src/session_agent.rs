@@ -19,10 +19,30 @@ use zeroize::Zeroizing;
 /// test pins the two together.
 pub const REVEAL_SESSION_SECS: u32 = 900;
 
-/// Connect if an agent is running; `None` when not (the optional path).
+/// Connect to the agent, or report precisely why not. `Err(NotRunning)`
+/// means genuinely absent (no path configured, no socket, nothing
+/// listening) — the optional path. Every other error (untrusted socket,
+/// ownership probe failure, transient I/O) is returned to the caller:
+/// treating it as "absent" could report a vault locked while the agent
+/// still holds live sessions.
+pub fn connect_result() -> Result<AgentClient, AgentError> {
+    let path = passlane_agent::default_socket_path()
+        .ok_or_else(|| AgentError::NotRunning("no socket path configured".into()))?;
+    AgentClient::connect(&path)
+}
+
+/// Connect if an agent is running; `None` when genuinely absent (the
+/// optional path). Unexpected errors are reported on stderr, never
+/// silently treated as absence.
 pub fn try_connect() -> Option<AgentClient> {
-    let path = passlane_agent::default_socket_path()?;
-    AgentClient::connect(&path).ok()
+    match connect_result() {
+        Ok(client) => Some(client),
+        Err(AgentError::NotRunning(_)) => None,
+        Err(e) => {
+            eprintln!("Warning: could not reach the session agent: {e}");
+            None
+        }
+    }
 }
 
 /// Connect or explain how to start the agent (the required path).
@@ -45,11 +65,14 @@ pub fn to_error(e: AgentError) -> Error {
     Error::new(&format!("session agent error: {e}"))
 }
 
-/// The vault's unlock factors held by a live agent session, if any.
-/// Consumes a `once`-scoped session. Returns `None` when the agent is
-/// not running or holds nothing for the vault — callers fall through to
-/// the keychain/prompt flow.
-pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
+/// The vault's unlock factors held by a live agent session, if any,
+/// together with the serving session's expiry (unix seconds; `None`
+/// for a consumed `once` session) — long-running callers revalidate
+/// against it after subscribing to events. Consumes a `once`-scoped
+/// session. Returns `None` when the agent is not running or holds
+/// nothing for the vault — callers fall through to the keychain/prompt
+/// flow.
+pub fn try_unlock_factors_with_expiry(vault: &str) -> Option<(Zeroizing<String>, Option<u64>)> {
     let mut client = try_connect()?;
     match client.get_unlock_factors(vault) {
         Ok(factors) => Some(factors),
@@ -63,6 +86,12 @@ pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
             None
         }
     }
+}
+
+/// [`try_unlock_factors_with_expiry`] without the expiry (callers that
+/// only need the password).
+pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
+    try_unlock_factors_with_expiry(vault).map(|(password, _)| password)
 }
 
 /// Hold a vault's master password in the agent for `secs` seconds
@@ -149,8 +178,20 @@ pub enum RevokeOutcome {
 }
 
 fn revoke(action: impl FnOnce(&mut AgentClient) -> Result<usize, AgentError>) -> RevokeOutcome {
-    let Some(mut client) = try_connect() else {
-        return RevokeOutcome::AgentAbsent;
+    let mut client = match connect_result() {
+        Ok(client) => client,
+        // Genuinely absent: nothing to revoke, nothing to report.
+        Err(AgentError::NotRunning(_)) => return RevokeOutcome::AgentAbsent,
+        // Present but unreachable/untrusted: the agent may still hold
+        // live sessions — never report plain success.
+        Err(e) => {
+            eprintln!(
+                "Warning: could not reach the session agent to revoke its sessions: {e} — \
+                 the vault may remain unlockable through it (run 'passlane sessions \
+                 revoke all')."
+            );
+            return RevokeOutcome::Failed;
+        }
     };
     match action(&mut client) {
         Ok(count) => RevokeOutcome::Revoked(count),
