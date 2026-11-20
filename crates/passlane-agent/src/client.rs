@@ -391,7 +391,10 @@ impl AgentClient {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).
-    pub fn get_unlock_factors(&mut self, _vault: &str) -> Result<Zeroizing<String>, AgentError> {
+    pub fn get_unlock_factors(
+        &mut self,
+        _vault: &str,
+    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).

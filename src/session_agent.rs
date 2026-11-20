@@ -65,17 +65,14 @@ pub fn to_error(e: AgentError) -> Error {
     Error::new(&format!("session agent error: {e}"))
 }
 
-/// The vault's unlock factors held by a live agent session, if any,
-/// together with the serving session's expiry (unix seconds; `None`
-/// for a consumed `once` session) — long-running callers revalidate
-/// against it after subscribing to events. Consumes a `once`-scoped
-/// session. Returns `None` when the agent is not running or holds
-/// nothing for the vault — callers fall through to the keychain/prompt
-/// flow.
-pub fn try_unlock_factors_with_expiry(vault: &str) -> Option<(Zeroizing<String>, Option<u64>)> {
+/// The vault's unlock factors held by a live agent session, if any.
+/// Consumes a `once`-scoped session. Returns `None` when the agent is
+/// not running or holds nothing for the vault — callers fall through to
+/// the keychain/prompt flow.
+pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
     let mut client = try_connect()?;
     match client.get_unlock_factors(vault) {
-        Ok(factors) => Some(factors),
+        Ok((password, _expiry)) => Some(password),
         Err(AgentError::Server {
             code: ErrorCode::NotFound,
             ..
@@ -88,10 +85,29 @@ pub fn try_unlock_factors_with_expiry(vault: &str) -> Option<(Zeroizing<String>,
     }
 }
 
-/// [`try_unlock_factors_with_expiry`] without the expiry (callers that
-/// only need the password).
-pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
-    try_unlock_factors_with_expiry(vault).map(|(password, _)| password)
+/// Revalidate, after subscribing to agent events, that the sessions
+/// backing the current action are still live — closing the gap between
+/// the unlock (or reveal gate) and the subscription, where a
+/// revocation, lock or expiry event would be missed. Both probes are
+/// non-consuming for timed sessions, which is what the CLI creates; a
+/// `once` session was already consumed by the action that used it, so
+/// this correctly reports it as no longer live.
+pub fn session_access_live(
+    unlock_backed: bool,
+    reveal_backed: bool,
+    vault: &str,
+    entry_id: &str,
+    field: &str,
+) -> bool {
+    let unlock_live = !unlock_backed || {
+        let mut client = match connect_result() {
+            Ok(client) => client,
+            Err(_) => return false,
+        };
+        client.get_unlock_factors(vault).is_ok()
+    };
+    let reveal_live = !reveal_backed || check_reveal(vault, entry_id, field).is_some();
+    unlock_live && reveal_live
 }
 
 /// Hold a vault's master password in the agent for `secs` seconds

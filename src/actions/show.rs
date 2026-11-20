@@ -384,28 +384,36 @@ impl ShowTotpTemplate {
         // The continuous code view is session-backed when the vault was
         // unlocked through the agent OR the reveal gate itself passed on
         // a live reveal session (an agent-context view of an `ask`
-        // entry). Subscribe and stop refreshing (and copying) the moment
-        // the agent drops that session (revocation, expiry, `lock`).
-        let session_backed = crate::actions::last_unlock_source()
-            == crate::actions::PasswordSource::SessionAgent
-            || crate::agent::last_gate_used_session();
-        if session_backed && let Some(mut events) = crate::session_agent::subscribe_to_events() {
-            // Revalidate: the session may have expired between the
-            // unlock (or gate) and this subscription — its expiry event
-            // would be missed by the stream.
-            let expiry = crate::actions::last_agent_session_expiry();
-            let already_expired = expiry != 0 && {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                now >= expiry
+        // entry). Such a view must never run unmonitored: subscribe,
+        // revalidate that the backing sessions are still live (a
+        // revocation, lock or expiry during vault decryption would
+        // otherwise be missed), and stop refreshing (and copying) the
+        // moment the agent drops the session.
+        let unlock_backed =
+            crate::actions::last_unlock_source() == crate::actions::PasswordSource::SessionAgent;
+        let reveal_backed = crate::agent::last_gate_used_session();
+        if unlock_backed || reveal_backed {
+            let Some(mut events) = crate::session_agent::subscribe_to_events() else {
+                // The agent was reachable moments ago (it supplied the
+                // unlock or the approval) and now is not: fail closed
+                // instead of generating codes nobody is watching over.
+                return Err(Error::new(
+                    "The session agent became unreachable; refusing to start a \
+                     session-backed view without it (restart passlane-agent and try \
+                     again).",
+                ));
             };
-            if already_expired {
+            let vault = crate::agent::current_vault_name();
+            if !crate::session_agent::session_access_live(
+                unlock_backed,
+                reveal_backed,
+                &vault,
+                &the_match.id().to_string(),
+                "code",
+            ) {
                 session_ended.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = tx.send(());
             } else {
-                let vault = crate::agent::current_vault_name();
                 let quit = tx.clone();
                 let ended = std::sync::Arc::clone(&session_ended);
                 thread::spawn(move || {

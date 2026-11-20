@@ -1,11 +1,11 @@
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
 
-use crate::actions::{get_vault_password, Action};
+use crate::actions::{Action, get_vault_password};
 use crate::hwkey;
+use crate::vault_registry::{self, VaultConfig};
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
-use crate::vault_registry::{self, VaultConfig};
 use zeroize::Zeroize;
 
 pub struct HwKeyAction {
@@ -94,10 +94,7 @@ impl HwKeyAction {
         result?;
 
         hwkey::print_backup_reminder();
-        Ok(format!(
-            "Hardware key enrolled for vault '{}'",
-            config.name
-        ))
+        Ok(format!("Hardware key enrolled for vault '{}'", config.name))
     }
 
     fn run_remove(&self, secret: bool) -> Result<String, Error> {
@@ -131,7 +128,9 @@ impl HwKeyAction {
             if let Err(e) = vault.update_challenge_response(None) {
                 // The vault on disk still requires the key; put the config
                 // back so passlane keeps using it.
-                if let Err(restore_err) = vault_registry::set_hwkey(&config.name, Some(enrolled.clone())) {
+                if let Err(restore_err) =
+                    vault_registry::set_hwkey(&config.name, Some(enrolled.clone()))
+                {
                     return Err(Error::new(&format!(
                         "Removing the hardware key from the vault failed: {}. Restoring the \
                          enrollment also failed: {}. The vault still requires the hardware key — \

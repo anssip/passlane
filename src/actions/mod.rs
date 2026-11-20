@@ -119,12 +119,7 @@ type VaultProperties = (String, String, Option<String>, Option<ChallengeResponse
 
 fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
     get_vault_properties_with(&|name| keychain::get_master_password(name).ok(), &|name| {
-        let fetched = crate::session_agent::try_unlock_factors_with_expiry(name);
-        LAST_AGENT_SESSION_EXPIRY.store(
-            fetched.as_ref().and_then(|(_, exp)| *exp).unwrap_or(0),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        fetched.map(|(password, _)| password)
+        crate::session_agent::try_unlock_factors(name)
     })
 }
 
@@ -169,25 +164,11 @@ pub(crate) fn last_unlock_source() -> PasswordSource {
     PasswordSource::from_u8(LAST_UNLOCK_SOURCE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// When the session-agent session that supplied the last unlock expires
-/// (unix seconds; 0 = not session-backed or a `once` session).
-/// Long-running actions revalidate against this after subscribing to
-/// agent events, so an expiry firing during vault decryption is not
-/// missed.
-pub(crate) fn last_agent_session_expiry() -> u64 {
-    LAST_AGENT_SESSION_EXPIRY.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 fn set_last_unlock_source(source: PasswordSource) {
     LAST_UNLOCK_SOURCE.store(source.as_u8(), std::sync::atomic::Ordering::Relaxed);
-    if source != PasswordSource::SessionAgent {
-        LAST_AGENT_SESSION_EXPIRY.store(0, std::sync::atomic::Ordering::Relaxed);
-    }
 }
 
 static LAST_UNLOCK_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-static LAST_AGENT_SESSION_EXPIRY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 
 impl PasswordSource {
     fn as_u8(self) -> u8 {

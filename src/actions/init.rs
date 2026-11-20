@@ -1,7 +1,7 @@
-use crate::actions::vault::setup_vault;
 use crate::actions::Action;
-use passlane_core::vault::entities::Error;
+use crate::actions::vault::setup_vault;
 use crate::vault_registry;
+use passlane_core::vault::entities::Error;
 
 pub struct InitAction {}
 
