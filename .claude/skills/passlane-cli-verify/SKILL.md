@@ -183,7 +183,9 @@ json.dump(d, open(p, 'w'), indent=2)
 EOF
 ```
 
-Then confirm the user's world is intact: `cat ~/.passlane/.active_vault` unchanged,
-`$P vault list` shows no test vault, and no `approvals.log` test entries were left in
-`~/.passlane` (delete the file if it only contains test events — check the `vault`
-field on each line first).
+Then confirm the user's world is intact **without running the debug binary**: read
+`~/.passlane/.active_vault` (unchanged), and re-run the registry python check above (no
+`$NAME` entry) — do **not** use `$P vault list` here, it reads the keychain lock state of
+every real vault through the freshly built binary and blocks on permission dialogs (see
+Gotchas). Also confirm no `approvals.log` test entries were left in `~/.passlane` (delete
+the file if it only contains test events — check the `vault` field on each line first).
