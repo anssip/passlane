@@ -122,12 +122,21 @@ defers to the interactive prompt — with one deliberate limitation:
    record one request per withheld `ask` entry.
 2. The owner then handles the request out of band: they run the reveal
    themselves — e.g. `passlane show '<entry>'` — and answer the approval
-   prompt (`Approve once` / `Deny`). That interaction is its own
-   request/decision pair in the log. **There is no single-use approval
-   handoff yet**: the agent's original request stays pending, and an
-   agent-side retry simply records another request and is refused again.
-   If the owner wants the agent to have the secret, they relay it
-   themselves or switch the entry to `agent = allow`.
+   prompt (`Approve once` / `Approve for this session` / `Deny`). That
+   interaction is its own request/decision pair in the log. **The
+   session handoff is the "for this session" choice**: it creates a
+   timed `reveal` session in the [session agent](session-agent.md)
+   (15 minutes by default, memory only), and from then on agent-facing
+   reveals of that entry field pass without re-prompting until the
+   session expires — every one of them audited as a `session` event in
+   the approval log. The session is keyed by the entry's **stable
+   UUID**, so another entry reusing the title never inherits the
+   approval. Without a running agent the choice downgrades to
+   `Approve once` with a warning. A plain `Approve once` still hands
+   nothing to the agent: the agent's original request stays pending, and
+   an agent-side retry simply records another request and is refused
+   again. For permanent agent access, switch the entry to
+   `agent = allow`.
 
 When the link transport lands, step 2 becomes a real handoff: the same
 request body travels to the approver (phone or the Phase 0 static page),
@@ -148,6 +157,11 @@ changes.
 - `blocked` — an agent-facing reveal of a `never` entry was attempted and
   refused (logged for single-entry reveals, so the owner can see what an
   agent tried to take).
+- `session` — an agent-facing reveal was served from a live session-agent
+  session (an earlier *Approve for this session*); carries the session's
+  expiry as `session_until`.
+- `session_granted` — the owner chose *Approve for this session* and a
+  covering session was created in the agent.
 
 The log location can be overridden with `PASSLANE_APPROVAL_LOG` (used by
 tests and scripted verification; hiding the log only suppresses audit
@@ -166,7 +180,10 @@ is *not* a cryptographic boundary:
   "stdin is a terminal" to recognize the owner; an agent that allocates a
   pseudo-terminal (`script -q /dev/null passlane show …`) satisfies that
   check, reveals `never` entries, and can even answer an `ask` entry's
-  approval prompt with a keystroke. There is no reliable way to
+  approval prompt with a keystroke — including choosing *Approve for
+  this session*, which would then mint a 15-minute session in the agent
+  (`passlane sessions revoke`/`lock` kills it, and every use is audited,
+  but it is granted). There is no reliable way to
   distinguish such a pty from a real terminal, so the CLI does not pretend
   to. The `ask` prompt is a speed bump against quiet exfiltration, not
   proof of human presence — that arrives with the approval link, where the

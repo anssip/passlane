@@ -5,17 +5,28 @@ use crate::completion_cache;
 use crate::ui::output::{
     show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
 };
+use crate::{ItemType, MatchHandlerTemplate, UnlockingAction, handle_matches, ui};
 use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use passlane_core::vault::vault_trait::Vault;
-use crate::{handle_matches, ui, ItemType, MatchHandlerTemplate, UnlockingAction};
 
 /// The edit prompts pre-fill the entry's current values — including secret
 /// fields such as the TOTP secret, card number and note content — so an
 /// edit reveals the entry just like `show` does, and the agent policy
 /// applies the same way: `ask` entries prompt for approval, and without an
 /// interactive terminal restricted entries are refused outright.
-fn gate_edit(policy: passlane_core::vault::entities::AgentPolicy, entry: &str, field: &str) -> Result<(), Error> {
-    agent::enforce_reveal(policy, RevealContext::for_reveal(false), entry, field)
+fn gate_edit(
+    policy: passlane_core::vault::entities::AgentPolicy,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    agent::enforce_reveal(
+        policy,
+        RevealContext::for_reveal(false),
+        entry_id,
+        entry,
+        field,
+    )
 }
 
 struct EditCredentialsTemplate<'a> {
@@ -27,7 +38,12 @@ impl<'a> EditCredentialsTemplate<'a> {
         &mut self,
         credential: &Credential,
     ) -> Result<Option<String>, Error> {
-        gate_edit(credential.agent_policy(), credential.title(), "password")?;
+        gate_edit(
+            credential.agent_policy(),
+            &credential.uuid().to_string(),
+            credential.title(),
+            "password",
+        )?;
         let updated = ui::input::ask_modified_credential(credential);
         println!("Saving...");
         self.vault.update_credential(updated)?;
@@ -50,7 +66,12 @@ impl<'a> MatchHandlerTemplate for EditCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, false, false, crate::agent::in_agent_context(false));
+        show_credentials_table(
+            &matches,
+            false,
+            false,
+            crate::agent::in_agent_context(false),
+        );
         match ui::input::ask_index(
             "To edit, please enter a row number from the table above",
             matches.len() as i16 - 1,
@@ -74,7 +95,12 @@ struct EditNoteTemplate<'a> {
 
 impl<'a> EditNoteTemplate<'a> {
     fn edit_and_save_note(&mut self, note: &Note) -> Result<Option<String>, Error> {
-        gate_edit(note.agent_policy(), note.title(), "content")?;
+        gate_edit(
+            note.agent_policy(),
+            &note.id().to_string(),
+            note.title(),
+            "content",
+        )?;
         let updated = ui::input::ask_modified_note(note);
         println!("Saving...");
         self.vault.update_note(updated)?;
@@ -123,7 +149,12 @@ struct EditPaymentTemplate<'a> {
 
 impl<'a> EditPaymentTemplate<'a> {
     fn edit_and_save(&mut self, card: &PaymentCard) -> Result<Option<String>, Error> {
-        gate_edit(card.agent_policy(), card.name(), "number")?;
+        gate_edit(
+            card.agent_policy(),
+            &card.id().to_string(),
+            card.name(),
+            "number",
+        )?;
         let updated = ui::input::ask_modified_payment_info(card);
         println!("Saving...");
         self.vault.update_payment(updated)?;
@@ -173,7 +204,12 @@ struct EditTotpTemplate<'a> {
 impl<'a> EditTotpTemplate<'a> {
     fn edit_and_save(&mut self, totp: &Totp) -> Result<Option<String>, Error> {
         // The edit prompt pre-fills the stored secret in cleartext.
-        gate_edit(totp.agent_policy(), totp.label(), "secret")?;
+        gate_edit(
+            totp.agent_policy(),
+            &totp.id().to_string(),
+            totp.label(),
+            "secret",
+        )?;
         let updated = ui::input::ask_modified_totp(totp);
         println!("Saving...");
         self.vault.update_totp(updated)?;
@@ -239,7 +275,7 @@ impl UnlockingAction for EditAction {
                     None => {
                         return Err(Error {
                             message: "No search term provided".to_string(),
-                        })
+                        });
                     }
                 };
                 handle_matches(

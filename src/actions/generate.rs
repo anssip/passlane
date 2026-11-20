@@ -1,7 +1,7 @@
-use crate::actions::{copy_to_clipboard_timed, Action};
+use crate::actions::{Action, copy_to_clipboard_timed};
+use clap::ArgMatches;
 use passlane_core::generator;
 use passlane_core::vault::entities::Error;
-use clap::ArgMatches;
 
 pub struct GeneratePasswordAction {
     pub stdout_only: bool,

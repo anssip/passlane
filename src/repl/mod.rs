@@ -250,7 +250,7 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             }
         }
         ReplCommand::Unlock => {
-            let action = UnlockAction::new();
+            let action = UnlockAction::new(None);
             match action.run() {
                 Ok(msg) => println!("{}", msg),
                 Err(e) => return Err(e.message),
