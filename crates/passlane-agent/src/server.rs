@@ -20,7 +20,7 @@ use passlane_approval::policy::Policy;
 use crate::error::AgentError;
 use crate::protocol::{
     self, ErrorCode, Event, GrantInfo, GrantSpec, MAX_ENTRY_NAME_LEN, MAX_FIELD_NAME_LEN,
-    MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, Request, Response, SessionInfo,
+    MAX_ID_LEN, MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, Request, Response, SessionInfo,
 };
 use crate::session::{Grant, KeyMaterial, Session};
 
@@ -76,6 +76,9 @@ impl AgentConfig {
 struct Shared {
     inner: Mutex<HashMap<String, Session>>,
     subscribers: Mutex<Vec<Subscriber>>,
+    /// Live connections; shutdown closes their sockets so blocked
+    /// readers wake and no request is served after the wipe.
+    connections: Mutex<Vec<ConnHandle>>,
     max_session_secs: u64,
     stop: AtomicBool,
 }
@@ -83,6 +86,11 @@ struct Shared {
 struct Subscriber {
     id: u64,
     tx: mpsc::Sender<Event>,
+}
+
+struct ConnHandle {
+    id: u64,
+    writer: Arc<Mutex<UnixStream>>,
 }
 
 static NEXT_SUBSCRIBER_ID: AtomicU64 = AtomicU64::new(1);
@@ -174,6 +182,7 @@ impl AgentServer {
             shared: Arc::new(Shared {
                 inner: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(Vec::new()),
+                connections: Mutex::new(Vec::new()),
                 max_session_secs: config.max_session_secs,
                 stop: AtomicBool::new(false),
             }),
@@ -197,7 +206,9 @@ impl AgentServer {
 
     /// Serve until [`ServerHandle::stop`] (or a fatal listener error).
     /// On exit every session is dropped — key material wiped — the
-    /// subscribers are released and the socket file is unlinked.
+    /// subscribers are released, accepted connections are shut down so
+    /// their workers cannot accept or serve anything further, and the
+    /// socket file is unlinked.
     pub fn serve(self) -> Result<(), AgentError> {
         let sweeper = {
             let shared = Arc::clone(&self.shared);
@@ -239,6 +250,19 @@ impl AgentServer {
         // Dropping the senders closes the channels; the pump threads
         // exit and the connection threads notice the closed peer.
         self.shared.subscribers.lock().map(|mut s| s.clear()).ok();
+        // Close accepted sockets so connection workers blocked in a read
+        // wake up immediately and stop; dispatch also refuses everything
+        // once `stop` is set (belt and braces — a worker may be between
+        // frames when the wipe starts).
+        if let Ok(connections) = self.shared.connections.lock() {
+            for conn in connections.iter() {
+                if let Ok(stream) = conn.writer.lock() {
+                    // UnixStream::shutdown takes the shared std::net::Shutdown.
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        }
+        self.shared.connections.lock().map(|mut c| c.clear()).ok();
         let _ = std::fs::remove_file(&self.config.socket_path);
         log::info!("stopped; all sessions were dropped");
     }
@@ -308,8 +332,8 @@ fn error_response(code: ErrorCode, message: impl Into<String>) -> Response {
     }
 }
 
-/// Handle one client connection: read a frame, answer, repeat. EOF or a
-/// malformed frame ends the connection.
+/// Handle one client connection: read a frame, answer, repeat. EOF, a
+/// malformed frame, or a stop ends the connection.
 fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
     // The listener is non-blocking for the accept poll; make sure the
     // connection itself blocks normally (accepted sockets may inherit
@@ -319,10 +343,22 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
         return;
     };
     let writer = Arc::new(Mutex::new(write_half));
+    // Register so shutdown can close this socket and the worker exits
+    // promptly instead of lingering on a blocked read.
+    let conn_id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut connections) = shared.connections.lock() {
+        connections.push(ConnHandle {
+            id: conn_id,
+            writer: Arc::clone(&writer),
+        });
+    }
     let mut reader = stream;
     let mut subscriber_id: Option<u64> = None;
 
     loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            break;
+        }
         let frame = match protocol::read_frame(&mut reader) {
             Ok(frame) => frame,
             Err(_) => break, // EOF or protocol garbage: close quietly
@@ -335,6 +371,13 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
             }
         };
         if matches!(request, Request::Subscribe) {
+            // Acknowledge *before* registering: once registered, a
+            // concurrent revocation could push an Event that would
+            // otherwise arrive ahead of the ack and break the client's
+            // subscribe handshake.
+            if write_frame(&writer, &Response::Subscribed).is_err() {
+                break;
+            }
             let (tx, rx) = mpsc::channel();
             let id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut subscribers) = shared.subscribers.lock() {
@@ -354,9 +397,6 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
                         }
                     }
                 });
-            if write_frame(&writer, &Response::Subscribed).is_err() {
-                break;
-            }
             continue;
         }
         let response = dispatch(&shared, request);
@@ -368,6 +408,9 @@ fn handle_connection(shared: Arc<Shared>, stream: UnixStream) {
         && let Ok(mut subscribers) = shared.subscribers.lock()
     {
         subscribers.retain(|s| s.id != id);
+    }
+    if let Ok(mut connections) = shared.connections.lock() {
+        connections.retain(|c| c.id != conn_id);
     }
 }
 
@@ -382,8 +425,13 @@ fn write_frame<T: serde::Serialize>(
 }
 
 /// Apply one request. Pure with respect to `Shared`: takes the locks it
-/// needs, never blocks on the network, never logs secrets.
+/// needs, never blocks on the network, never logs secrets. Refuses
+/// everything once a stop has been signaled, so no session can appear
+/// after the shutdown wipe.
 fn dispatch(shared: &Shared, request: Request) -> Response {
+    if shared.stop.load(Ordering::SeqCst) {
+        return error_response(ErrorCode::Protocol, "the agent is shutting down");
+    }
     // Drop anything already expired first, so every request sees a
     // consistent store and expiry events fire promptly even between
     // sweeps.
@@ -412,7 +460,13 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                     format!("vault name must be 1..={MAX_VAULT_NAME_LEN} bytes"),
                 );
             }
-            if let GrantSpec::Reveal { entry, field } = &grant {
+            if let GrantSpec::Reveal { id, entry, field } = &grant {
+                if id.is_empty() || id.len() > MAX_ID_LEN {
+                    return error_response(
+                        ErrorCode::Invalid,
+                        format!("entry id must be 1..={MAX_ID_LEN} bytes"),
+                    );
+                }
                 if entry.is_empty() || entry.len() > MAX_ENTRY_NAME_LEN {
                     return error_response(
                         ErrorCode::Invalid,
@@ -441,7 +495,7 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                 GrantSpec::Unlock { master_password } => {
                     Grant::Unlock(KeyMaterial::new(master_password.expose()))
                 }
-                GrantSpec::Reveal { entry, field } => Grant::Reveal { entry, field },
+                GrantSpec::Reveal { id, entry, field } => Grant::Reveal { id, entry, field },
             };
             let vault_name = vault.clone();
             let grant_kind = match grant.info() {
@@ -511,16 +565,12 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
             }
             Err(_) => error_response(ErrorCode::Protocol, "state mutex poisoned"),
         },
-        Request::CheckReveal {
-            vault,
-            entry,
-            field,
-        } => match shared.inner.lock() {
+        Request::CheckReveal { vault, id, field } => match shared.inner.lock() {
             Ok(mut sessions) => {
                 let now = now_secs();
                 let timed = sessions.values().find(|s| {
                     s.vault == vault
-                        && s.grant.covers_reveal(&entry, &field)
+                        && s.grant.covers_reveal(&id, &field)
                         && !s.expired(now)
                         && matches!(s.scope, Scope::Timed { .. })
                 });
@@ -535,7 +585,7 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                     .values()
                     .find(|s| {
                         s.vault == vault
-                            && s.grant.covers_reveal(&entry, &field)
+                            && s.grant.covers_reveal(&id, &field)
                             && matches!(s.scope, Scope::Once)
                     })
                     .map(|s| s.id.clone());
@@ -665,6 +715,7 @@ mod tests {
         Arc::new(Shared {
             inner: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(Vec::new()),
+            connections: Mutex::new(Vec::new()),
             max_session_secs: cap,
             stop: AtomicBool::new(false),
         })
@@ -740,6 +791,7 @@ mod tests {
             Request::CreateSession {
                 vault: "work".into(),
                 grant: GrantSpec::Reveal {
+                    id: "11111111-1111-1111-1111-111111111111".into(),
                     entry: "e".repeat(MAX_ENTRY_NAME_LEN + 1),
                     field: "password".into(),
                 },

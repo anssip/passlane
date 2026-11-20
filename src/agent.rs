@@ -61,12 +61,20 @@ impl RevealContext {
     /// (verbose tables, note cells) would carry secrets into a redirect
     /// or pager instead of the owner's screen.
     pub fn for_reveal(stdout_reveal: bool) -> Self {
-        Self::classify(stdin_is_interactive(), stdout_reveal, stdout_is_interactive())
+        Self::classify(
+            stdin_is_interactive(),
+            stdout_reveal,
+            stdout_is_interactive(),
+        )
     }
 
     /// The classification rule, with the terminal checks injected so the
     /// rule itself is deterministically testable.
-    pub fn classify(interactive_stdin: bool, stdout_reveal: bool, interactive_stdout: bool) -> Self {
+    pub fn classify(
+        interactive_stdin: bool,
+        stdout_reveal: bool,
+        interactive_stdout: bool,
+    ) -> Self {
         if stdout_reveal || !interactive_stdin || !interactive_stdout {
             Self::Agent
         } else {
@@ -125,6 +133,11 @@ struct ApprovalEvent<'a> {
     id: Option<&'a str>,
     vault: &'a str,
     entry: &'a str,
+    /// The entry's stable UUID — what reveal sessions are actually keyed
+    /// by, so an audit line can be tied to the exact entry even when
+    /// titles collide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry_id: Option<&'a str>,
     field: &'a str,
     /// The policy that was in effect.
     policy: &'a str,
@@ -184,6 +197,20 @@ impl ApprovalLog {
         field: &str,
         policy: AgentPolicy,
     ) -> String {
+        self.log_request_with(vault, None, entry, field, policy)
+    }
+
+    /// [`ApprovalLog::log_request`] with the entry's stable UUID, so
+    /// session grants (which are keyed by UUID) can be audited against
+    /// the exact entry even when titles collide.
+    pub fn log_request_with(
+        &self,
+        vault: &str,
+        entry_id: Option<&str>,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+    ) -> String {
         let id = Uuid::new_v4().to_string();
         self.append(&ApprovalEvent {
             ts: Utc::now().to_rfc3339(),
@@ -191,6 +218,7 @@ impl ApprovalLog {
             id: Some(&id),
             vault,
             entry,
+            entry_id,
             field,
             policy: policy.as_str(),
             requester: requester(),
@@ -211,12 +239,27 @@ impl ApprovalLog {
         policy: AgentPolicy,
         approved: bool,
     ) {
+        self.log_decision_with(id, vault, None, entry, field, policy, approved)
+    }
+
+    /// [`ApprovalLog::log_decision`] with the entry's UUID.
+    pub fn log_decision_with(
+        &self,
+        id: &str,
+        vault: &str,
+        entry_id: Option<&str>,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+        approved: bool,
+    ) {
         self.append(&ApprovalEvent {
             ts: Utc::now().to_rfc3339(),
             event: "decision",
             id: Some(id),
             vault,
             entry,
+            entry_id,
             field,
             policy: policy.as_str(),
             requester: requester(),
@@ -232,6 +275,7 @@ impl ApprovalLog {
     pub fn log_session_reveal(
         &self,
         vault: &str,
+        entry_id: &str,
         entry: &str,
         field: &str,
         policy: AgentPolicy,
@@ -243,6 +287,7 @@ impl ApprovalLog {
             id: None,
             vault,
             entry,
+            entry_id: Some(entry_id),
             field,
             policy: policy.as_str(),
             requester: requester(),
@@ -254,13 +299,21 @@ impl ApprovalLog {
 
     /// Record that the owner chose "Approve for this session" and a
     /// covering session was created in the agent.
-    pub fn log_session_granted(&self, vault: &str, entry: &str, field: &str, policy: AgentPolicy) {
+    pub fn log_session_granted(
+        &self,
+        vault: &str,
+        entry_id: &str,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+    ) {
         self.append(&ApprovalEvent {
             ts: Utc::now().to_rfc3339(),
             event: "session_granted",
             id: None,
             vault,
             entry,
+            entry_id: Some(entry_id),
             field,
             policy: policy.as_str(),
             requester: requester(),
@@ -278,6 +331,7 @@ impl ApprovalLog {
             id: None,
             vault,
             entry,
+            entry_id: None,
             field,
             policy: AgentPolicy::Never.as_str(),
             requester: requester(),
@@ -459,13 +513,25 @@ pub enum ApprovalChoice {
 /// Enforce `policy` for one reveal using the default approval log, running
 /// the Phase 0 ask flow (interactive prompt) for `ask` entries in an owner
 /// context.
+///
+/// `entry_id` is the entry's stable UUID — what reveal sessions are keyed
+/// by — while `entry` is the display title used in prompts and the audit
+/// log.
 pub fn enforce_reveal(
     policy: AgentPolicy,
     context: RevealContext,
+    entry_id: &str,
     entry: &str,
     field: &str,
 ) -> Result<(), Error> {
-    enforce_with(&ApprovalLog::default_path(), policy, context, entry, field)
+    enforce_with(
+        &ApprovalLog::default_path(),
+        policy,
+        context,
+        entry_id,
+        entry,
+        field,
+    )
 }
 
 /// [`enforce_reveal`] with the approval log injected, and the interactive
@@ -475,6 +541,7 @@ pub fn enforce_with_prompt<F>(
     log: &ApprovalLog,
     policy: AgentPolicy,
     context: RevealContext,
+    entry_id: &str,
     entry: &str,
     field: &str,
     prompt: F,
@@ -486,11 +553,12 @@ where
         log,
         policy,
         context,
+        entry_id,
         entry,
         field,
-        &|vault, entry, field| crate::session_agent::check_reveal(vault, entry, field),
-        &|vault, entry, field| {
-            crate::session_agent::open_reveal_session(vault, entry, field).unwrap_or(false)
+        &|vault, id, _entry, field| crate::session_agent::check_reveal(vault, id, field),
+        &|vault, id, entry, field| {
+            crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
         },
         prompt,
     )
@@ -499,14 +567,16 @@ where
 /// The ask flow with the agent consult and the session-creation
 /// injected, so the session integration is testable without a running
 /// agent.
+#[allow(clippy::too_many_arguments)]
 fn enforce_with_seams<F>(
     log: &ApprovalLog,
     policy: AgentPolicy,
     context: RevealContext,
+    entry_id: &str,
     entry: &str,
     field: &str,
-    check_session: &dyn Fn(&str, &str, &str) -> Option<u64>,
-    open_session: &dyn Fn(&str, &str, &str) -> bool,
+    check_session: &dyn Fn(&str, &str, &str, &str) -> Option<u64>,
+    open_session: &dyn Fn(&str, &str, &str, &str) -> bool,
     prompt: F,
 ) -> Result<(), Error>
 where
@@ -520,11 +590,14 @@ where
                 // An owner's earlier "Approve for this session" covers
                 // this agent-facing reveal — the reusable form of the
                 // approval (passlane#54). It is audited like any reveal.
-                if let Some(until) = check_session(&vault, entry, field) {
-                    log.log_session_reveal(&vault, entry, field, policy, until);
+                // The covering session is matched by the entry's stable
+                // UUID, so a title reused by another entry never
+                // inherits the approval.
+                if let Some(until) = check_session(&vault, entry_id, entry, field) {
+                    log.log_session_reveal(&vault, entry_id, entry, field, policy, until);
                     return Ok(());
                 }
-                let id = log.log_request(&vault, entry, field, policy);
+                let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
                 Err(Error::new(&format!(
                     "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
                      recorded in the approval log ({}). The owner can approve it \
@@ -536,23 +609,47 @@ where
                     owner_reveal_command(entry, field, &vault)
                 )))
             } else {
-                let id = log.log_request(&vault, entry, field, policy);
+                let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
                 match prompt() {
                     ApprovalChoice::Deny => {
-                        log.log_decision(&id, &vault, entry, field, policy, false);
+                        log.log_decision_with(
+                            &id,
+                            &vault,
+                            Some(entry_id),
+                            entry,
+                            field,
+                            policy,
+                            false,
+                        );
                         Err(Error::new(&format!(
                             "Reveal of '{}' denied by the owner",
                             entry
                         )))
                     }
                     ApprovalChoice::Once => {
-                        log.log_decision(&id, &vault, entry, field, policy, true);
+                        log.log_decision_with(
+                            &id,
+                            &vault,
+                            Some(entry_id),
+                            entry,
+                            field,
+                            policy,
+                            true,
+                        );
                         Ok(())
                     }
                     ApprovalChoice::Session => {
-                        log.log_decision(&id, &vault, entry, field, policy, true);
-                        if open_session(&vault, entry, field) {
-                            log.log_session_granted(&vault, entry, field, policy);
+                        log.log_decision_with(
+                            &id,
+                            &vault,
+                            Some(entry_id),
+                            entry,
+                            field,
+                            policy,
+                            true,
+                        );
+                        if open_session(&vault, entry_id, entry, field) {
+                            log.log_session_granted(&vault, entry_id, entry, field, policy);
                             Ok(())
                         } else {
                             // Approving something weaker than the owner
@@ -590,10 +687,11 @@ pub fn enforce_with(
     log: &ApprovalLog,
     policy: AgentPolicy,
     context: RevealContext,
+    entry_id: &str,
     entry: &str,
     field: &str,
 ) -> Result<(), Error> {
-    enforce_with_prompt(log, policy, context, entry, field, || {
+    enforce_with_prompt(log, policy, context, entry_id, entry, field, || {
         ask_approval(entry, field)
     })
 }
@@ -650,9 +748,48 @@ pub fn log_bulk_ask_requests_with(
     }
 }
 
+/// Bulk stdout outputs (`list --json` and friends): may this entry's
+/// field be included? `allow` passes; a live reveal session covering the
+/// entry passes and its use is audited; `never` and uncovered `ask`
+/// stay withheld. Sessions are matched by the entry's stable UUID.
+pub fn bulk_reveal_allowed(policy: AgentPolicy, entry_id: &str, entry: &str, field: &str) -> bool {
+    let log = ApprovalLog::default_path();
+    bulk_reveal_allowed_with(&log, policy, entry_id, entry, field, &|vault, id, field| {
+        crate::session_agent::check_reveal(vault, id, field)
+    })
+}
+
+/// [`bulk_reveal_allowed`] with the log and session check injected
+/// (tests).
+pub fn bulk_reveal_allowed_with(
+    log: &ApprovalLog,
+    policy: AgentPolicy,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+    check_session: &dyn Fn(&str, &str, &str) -> Option<u64>,
+) -> bool {
+    match decide(policy, RevealContext::Agent) {
+        RevealDecision::Reveal => true,
+        RevealDecision::NeedApproval => {
+            let vault = current_vault_name();
+            match check_session(&vault, entry_id, field) {
+                Some(until) => {
+                    log.log_session_reveal(&vault, entry_id, entry, field, policy, until);
+                    true
+                }
+                None => false,
+            }
+        }
+        RevealDecision::Block => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ENTRY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
     fn log_in_tempdir() -> (ApprovalLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -821,6 +958,7 @@ mod tests {
             &log,
             AgentPolicy::Never,
             RevealContext::Agent,
+            ENTRY_ID,
             "Stripe test key",
             "password",
             || panic!("no prompt in an agent context"),
@@ -843,6 +981,7 @@ mod tests {
             &log,
             AgentPolicy::Ask,
             RevealContext::Agent,
+            ENTRY_ID,
             "Stripe test key",
             "password",
             || panic!("no prompt in an agent context"),
@@ -868,6 +1007,7 @@ mod tests {
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
+            ENTRY_ID,
             "Stripe test key",
             "password",
             || ApprovalChoice::Once,
@@ -887,6 +1027,7 @@ mod tests {
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
+            ENTRY_ID,
             "Stripe test key",
             "password",
             || ApprovalChoice::Deny,
@@ -904,6 +1045,7 @@ mod tests {
                 &log,
                 policy,
                 RevealContext::Owner,
+                ENTRY_ID,
                 "any",
                 "password",
                 || panic!("owner never/allow must not prompt"),
@@ -923,6 +1065,7 @@ mod tests {
             &log,
             AgentPolicy::Allow,
             RevealContext::Agent,
+            ENTRY_ID,
             "any",
             "password",
             || panic!("allow must not prompt"),
@@ -988,13 +1131,16 @@ mod tests {
             log,
             policy,
             context,
+            ENTRY_ID,
             entry,
             "password",
-            &|_, e, _f| {
+            &|_, id, e, _f| {
+                assert_eq!(id, ENTRY_ID);
                 assert_eq!(e, entry);
                 covered
             },
-            &|_, e, _f| {
+            &|_, id, e, _f| {
+                assert_eq!(id, ENTRY_ID);
                 assert_eq!(e, entry);
                 opened
             },
@@ -1101,12 +1247,64 @@ mod tests {
     #[test]
     fn session_reveal_event_shape_is_stable() {
         let (log, _dir) = log_in_tempdir();
-        log.log_session_reveal("default", "GitHub", "code", AgentPolicy::Ask, 42);
+        log.log_session_reveal("default", ENTRY_ID, "GitHub", "code", AgentPolicy::Ask, 42);
         let events = lines(&log);
         assert_eq!(events[0]["event"], "session");
         assert_eq!(events[0]["session_until"], 42);
         assert_eq!(events[0]["policy"], "ask");
+        assert_eq!(events[0]["entry_id"], ENTRY_ID);
         assert!(events[0].get("id").is_none() || events[0]["id"].is_null());
+    }
+
+    #[test]
+    fn bulk_reveal_allowed_matrix() {
+        let (log, _dir) = log_in_tempdir();
+        // allow passes without consulting anything.
+        assert!(bulk_reveal_allowed_with(
+            &log,
+            AgentPolicy::Allow,
+            ENTRY_ID,
+            "GitHub",
+            "password",
+            &|_, _, _| panic!("allow must not consult the agent"),
+        ));
+        // never stays withheld, session or not.
+        assert!(!bulk_reveal_allowed_with(
+            &log,
+            AgentPolicy::Never,
+            ENTRY_ID,
+            "GitHub",
+            "password",
+            &|_, _, _| panic!("never must not consult the agent"),
+        ));
+        // ask + covering session (by UUID): allowed and audited.
+        assert!(bulk_reveal_allowed_with(
+            &log,
+            AgentPolicy::Ask,
+            ENTRY_ID,
+            "GitHub",
+            "password",
+            &|_, id, field| {
+                assert_eq!((id, field), (ENTRY_ID, "password"));
+                Some(99)
+            },
+        ));
+        let events = lines(&log);
+        assert_eq!(events.len(), 1, "the session release is audited");
+        assert_eq!(events[0]["event"], "session");
+        assert_eq!(events[0]["entry_id"], ENTRY_ID);
+        // ask without a session: withheld, nothing logged here (the
+        // caller records the pending request).
+        let (log2, _dir) = log_in_tempdir();
+        assert!(!bulk_reveal_allowed_with(
+            &log2,
+            AgentPolicy::Ask,
+            ENTRY_ID,
+            "GitHub",
+            "password",
+            &|_, _, _| None,
+        ));
+        assert!(!log2.path().exists());
     }
 
     #[test]

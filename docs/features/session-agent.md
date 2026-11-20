@@ -51,6 +51,10 @@ A **session** is one granted approval:
 | `unlock` | the vault's master password | `passlane unlock --session` (later: a phone approval of `Operation::Unlock`) | expiry, revoke, `lock`, agent stop |
 | `reveal` | no secret — a recorded "approve for this session" covering one entry field | the ask flow's *Approve for this session* | first use (`once`), expiry, revoke, `lock`, agent stop |
 
+Reveal sessions are keyed by the entry's **stable UUID** (the title travels
+along for display and audit only), so a different entry that reuses a
+title — or a new one created with it — never inherits an approval.
+
 Scopes come from the approval protocol (`passlane-approval`): `once`
 dies on first use, `timed { seconds }` is reusable until it expires.
 A `timed` unlock session is what lets **one approval serve many CLI
@@ -85,11 +89,24 @@ Discovery, in order:
 3. `$TMPDIR/passlane-agent.sock` (macOS; `TMPDIR` is per-user)
 
 There is deliberately **no `/tmp` fallback**: a shared directory with a
-guessed name is a slot for pre-created sockets. On a Linux box without
-`XDG_RUNTIME_DIR`, set `PASSLANE_AGENT_SOCK` explicitly. The socket is
-chmod 0600; a stale socket from a crashed agent is replaced, but the
-agent refuses to delete a non-socket file that happens to sit on the
-path (a `--socket` typo should not destroy data).
+guessed name is a slot for pre-created sockets. Discovery skips any
+candidate runtime directory that is writable by group or others (a
+stray `TMPDIR=/tmp` is rejected, not honored), and on Linux without
+`XDG_RUNTIME_DIR` you set `PASSLANE_AGENT_SOCK` explicitly.
+
+**Socket trust.** Before a client sends anything, it validates the
+socket path: it must be an actual socket, carry no group/other
+permission bits, and be owned by the connecting user (verified without
+libc by probing with a file the client itself creates next to the
+socket). A socket pre-created by another user in a shared directory —
+e.g. an explicit `PASSLANE_AGENT_SOCK` pointing into `/tmp` — is
+refused as *untrusted* instead of receiving your master password. The
+daemon also refuses to delete a non-socket file that happens to sit on
+the path (a `--socket` typo should not destroy data).
+
+On Windows there is no Unix domain socket support: the agent crate
+compiles (so the CLI builds unchanged) but reports the agent as absent,
+and the CLI falls back to its keychain/prompt flow.
 
 The wire protocol is 4-byte big-endian length + JSON frames of
 requests/responses (`ping`, `create_session`, `get_unlock_factors`,
@@ -115,10 +132,16 @@ that zeroize on drop and redact in `Debug` output.
   this session* / *Deny*. "For this session" records a `reveal` session
   (15 minutes by default) in the agent: agent-facing reveals of that
   entry field — `show --out`, `list --json`, non-interactive runs — then
-  pass without re-prompting until it expires. Every such reveal is
-  audited in `approvals.log` (`session` events); the grant is audited as
-  a `session_granted` event. If the agent is not running, the choice
-  downgrades to a single-use approval with a warning — never silently.
+  pass without re-prompting until it expires, matched by the entry's
+  UUID. Every such reveal is audited in `approvals.log` (`session`
+  events); the grant is audited as a `session_granted` event. If the
+  agent is not running, the choice downgrades to a single-use approval
+  with a warning — never silently.
+- **Session-backed long-running actions stop when the session ends.**
+  The continuous TOTP view (`show -o`) subscribes to the agent's push
+  events when the vault was unlocked through a session, and stops
+  generating and copying codes the moment the session is revoked,
+  expires, or the agent is locked.
 - **`passlane sessions list | revoke <id|all> | lock`** manage the
   agent's sessions. `revoke` accepts the short id prefix shown by
   `list`; `--vault work sessions revoke all` scopes the revocation.

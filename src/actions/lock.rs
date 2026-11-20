@@ -33,10 +33,19 @@ fn lock_vault(name: &str) -> String {
         ),
     };
     // Locking must not leave the vault effectively unlocked through a
-    // live agent session; silent best-effort when the agent is down.
-    let revoked = crate::session_agent::revoke_vault_sessions(name);
-    if revoked > 0 {
-        message.push_str(&format!("; revoked {revoked} agent session(s)"));
+    // live agent session. A missing agent is a no-op; an agent that is
+    // running but fails to revoke is called out — the vault would stay
+    // unlockable through it, which must never be reported as plain
+    // success.
+    match crate::session_agent::revoke_vault_sessions(name) {
+        crate::session_agent::RevokeOutcome::Revoked(count) if count > 0 => {
+            message.push_str(&format!("; revoked {count} agent session(s)"));
+        }
+        crate::session_agent::RevokeOutcome::Revoked(_) => {}
+        crate::session_agent::RevokeOutcome::AgentAbsent => {}
+        crate::session_agent::RevokeOutcome::Failed => {
+            message.push_str("; WARNING: agent sessions may still be live");
+        }
     }
     message
 }
@@ -50,12 +59,19 @@ impl Action for LockAction {
             }
             let lines: Vec<String> = vaults.iter().map(|v| lock_vault(&v.name)).collect();
             // Also drop any agent session left for unregistered vaults.
-            let strays = crate::session_agent::revoke_all_sessions();
             let mut summary = lines.join("\n");
-            if strays > 0 {
-                summary.push_str(&format!(
-                    "\nRevoked {strays} agent session(s) of unregistered vaults"
-                ));
+            match crate::session_agent::revoke_all_sessions() {
+                crate::session_agent::RevokeOutcome::Revoked(strays) if strays > 0 => {
+                    summary.push_str(&format!(
+                        "\nRevoked {strays} agent session(s) of unregistered vaults"
+                    ));
+                }
+                crate::session_agent::RevokeOutcome::Failed => {
+                    summary.push_str(
+                        "\nWARNING: agent sessions may still be live (see the warning above)",
+                    );
+                }
+                _ => {}
             }
             Ok(summary)
         } else {

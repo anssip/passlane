@@ -89,12 +89,16 @@ fn unlock_grant(pw: &str) -> GrantSpec {
     }
 }
 
-fn reveal_grant(entry: &str, field: &str) -> GrantSpec {
+fn reveal_grant(id: &str, entry: &str, field: &str) -> GrantSpec {
     GrantSpec::Reveal {
+        id: id.to_string(),
         entry: entry.to_string(),
         field: field.to_string(),
     }
 }
+
+const GITHUB_ID: &str = "11111111-1111-1111-1111-111111111111";
+const STRIPE_ID: &str = "22222222-2222-2222-2222-222222222222";
 
 #[test]
 fn session_lifecycle_create_list_use_reuse_revoke() {
@@ -165,41 +169,48 @@ fn reveal_sessions_cover_entry_and_field_once_or_timed() {
     owner
         .create_session(
             "work",
-            reveal_grant("github.com", "password"),
+            reveal_grant(GITHUB_ID, "github.com", "password"),
             Scope::Timed { seconds: 300 },
         )
         .unwrap();
     owner
-        .create_session("work", reveal_grant("stripe", "password"), Scope::Once)
+        .create_session(
+            "work",
+            reveal_grant(STRIPE_ID, "stripe", "password"),
+            Scope::Once,
+        )
         .unwrap();
 
     let mut user = agent.client();
     // Timed: reusable, with an expiry.
-    match user.check_reveal("work", "github.com", "password").unwrap() {
+    match user.check_reveal("work", GITHUB_ID, "password").unwrap() {
         passlane_agent::client::RevealAnswer::Allowed { until } => assert!(until.is_some()),
         passlane_agent::client::RevealAnswer::Denied => panic!("timed session must cover"),
     }
     assert!(matches!(
-        user.check_reveal("work", "github.com", "password").unwrap(),
+        user.check_reveal("work", GITHUB_ID, "password").unwrap(),
         passlane_agent::client::RevealAnswer::Allowed { until: Some(_) }
     ));
     // A different field (or entry) is not covered.
     assert_eq!(
-        user.check_reveal("work", "github.com", "code").unwrap(),
+        user.check_reveal("work", GITHUB_ID, "code").unwrap(),
         passlane_agent::client::RevealAnswer::Denied
     );
+    // A different entry reusing the SAME TITLE must not inherit the
+    // approval — reveal sessions are keyed by the entry's stable UUID.
     assert_eq!(
-        user.check_reveal("work", "gitlab", "password").unwrap(),
+        user.check_reveal("work", "33333333-3333-3333-3333-333333333333", "password")
+            .unwrap(),
         passlane_agent::client::RevealAnswer::Denied
     );
     // Once: the first use is allowed and consumes the approval...
     assert_eq!(
-        user.check_reveal("work", "stripe", "password").unwrap(),
+        user.check_reveal("work", STRIPE_ID, "password").unwrap(),
         passlane_agent::client::RevealAnswer::Allowed { until: None }
     );
     // ...and the second is not covered anymore.
     assert_eq!(
-        user.check_reveal("work", "stripe", "password").unwrap(),
+        user.check_reveal("work", STRIPE_ID, "password").unwrap(),
         passlane_agent::client::RevealAnswer::Denied
     );
     agent.stop();
@@ -296,7 +307,7 @@ fn lock_drops_every_session_and_broadcasts() {
     filler
         .create_session(
             "b",
-            reveal_grant("e", "password"),
+            reveal_grant(GITHUB_ID, "e", "password"),
             Scope::Timed { seconds: 600 },
         )
         .unwrap();
@@ -433,6 +444,117 @@ fn concurrent_cli_clients_hammer_the_agent() {
     agent.stop();
 }
 
+/// Env vars are process-global; tests that set them must not race.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn discovery_rejects_shared_runtime_directories() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let shared = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(shared.path()).unwrap().permissions();
+    perms.set_mode(0o1777); // a /tmp-like sticky, world-writable dir
+    std::fs::set_permissions(shared.path(), perms).unwrap();
+
+    // SAFETY of test hygiene: save and restore both vars.
+    let saved_tmpdir = std::env::var_os("TMPDIR");
+    let saved_sock = std::env::var_os("PASSLANE_AGENT_SOCK");
+    unsafe { std::env::set_var("TMPDIR", shared.path()) };
+    unsafe { std::env::remove_var("PASSLANE_AGENT_SOCK") };
+    // No XDG_RUNTIME_DIR in the test env normally; remove defensively.
+    let saved_xdg = std::env::var_os("XDG_RUNTIME_DIR");
+    unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+
+    assert_eq!(
+        passlane_agent::default_socket_path(),
+        None,
+        "a world-writable TMPDIR must not be used for discovery"
+    );
+
+    // A private directory qualifies.
+    let mut perms = std::fs::metadata(shared.path()).unwrap().permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(shared.path(), perms).unwrap();
+    assert_eq!(
+        passlane_agent::default_socket_path(),
+        Some(shared.path().join("passlane-agent.sock"))
+    );
+    // An explicit PASSLANE_AGENT_SOCK always wins.
+    unsafe { std::env::set_var("PASSLANE_AGENT_SOCK", "/explicit/agent.sock") };
+    assert_eq!(
+        passlane_agent::default_socket_path(),
+        Some("/explicit/agent.sock".into())
+    );
+
+    unsafe {
+        match saved_sock {
+            Some(v) => std::env::set_var("PASSLANE_AGENT_SOCK", v),
+            None => std::env::remove_var("PASSLANE_AGENT_SOCK"),
+        }
+        match saved_xdg {
+            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+        match saved_tmpdir {
+            Some(v) => std::env::set_var("TMPDIR", v),
+            None => std::env::remove_var("TMPDIR"),
+        }
+    }
+}
+
+#[test]
+fn client_refuses_untrusted_sockets() {
+    let dir = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    // A regular file where the socket should be: refused.
+    let not_socket = dir.path().join("plain.file");
+    std::fs::write(&not_socket, "x").unwrap();
+    let err = AgentClient::connect(&not_socket).unwrap_err();
+    assert!(err.to_string().contains("untrusted"), "{err}");
+
+    // A socket with group/other permission bits: refused.
+    let permissive = dir.path().join("permissive.sock");
+    let listener = UnixListener::bind(&permissive).unwrap();
+    let mut perms = std::fs::metadata(&permissive).unwrap().permissions();
+    perms.set_mode(0o666);
+    std::fs::set_permissions(&permissive, perms).unwrap();
+    let err = AgentClient::connect(&permissive).unwrap_err();
+    assert!(err.to_string().contains("untrusted"), "{err}");
+    drop(listener);
+
+    // An owner-only socket in a private directory: accepted (NotRunning,
+    // not untrusted — nothing is listening, but the path itself is fine).
+    let ok = dir.path().join("good.sock");
+    let listener = UnixListener::bind(&ok).unwrap();
+    let mut perms = std::fs::metadata(&ok).unwrap().permissions();
+    perms.set_mode(0o600); // as AgentServer::bind would have it
+    std::fs::set_permissions(&ok, perms).unwrap();
+    drop(listener); // stale but 0600: the path is trusted, just dead
+    match AgentClient::connect(&ok) {
+        Err(AgentError::NotRunning(_)) => {}
+        other => panic!("expected NotRunning for a trusted dead socket, got {other:?}"),
+    }
+}
+
+#[test]
+fn stopping_the_agent_closes_open_connections() {
+    let agent = RunningAgent::start();
+    let client = agent.client();
+    let mut events = client.subscribe().unwrap();
+    events
+        .set_read_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    // Server stops: the subscriber must see EOF promptly (its socket is
+    // shut down) instead of waiting forever.
+    agent.stop();
+    match events.next_event() {
+        Err(_) => {} // EOF / closed peer: exactly what we want
+        Ok(ev) => panic!("unexpected event while shutting down: {ev:?}"),
+    }
+}
+
 #[test]
 fn key_material_never_reaches_disk() {
     let dir = tempfile::tempdir().unwrap();
@@ -463,7 +585,7 @@ fn key_material_never_reaches_disk() {
         client
             .create_session(
                 "work",
-                reveal_grant(&canary_entry, "password"),
+                reveal_grant(GITHUB_ID, &canary_entry, "password"),
                 Scope::Timed { seconds: 300 },
             )
             .unwrap();

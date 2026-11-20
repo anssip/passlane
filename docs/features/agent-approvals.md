@@ -129,7 +129,9 @@ defers to the interactive prompt — with one deliberate limitation:
    (15 minutes by default, memory only), and from then on agent-facing
    reveals of that entry field pass without re-prompting until the
    session expires — every one of them audited as a `session` event in
-   the approval log. Without a running agent the choice downgrades to
+   the approval log. The session is keyed by the entry's **stable
+   UUID**, so another entry reusing the title never inherits the
+   approval. Without a running agent the choice downgrades to
    `Approve once` with a warning. A plain `Approve once` still hands
    nothing to the agent: the agent's original request stays pending, and
    an agent-side retry simply records another request and is refused

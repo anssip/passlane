@@ -63,7 +63,7 @@ fn short_id(id: &str) -> String {
 fn render_grant(grant: &GrantInfo) -> String {
     match grant {
         GrantInfo::Unlock => "unlock".to_string(),
-        GrantInfo::Reveal { entry, field } => format!("reveal {entry}/{field}"),
+        GrantInfo::Reveal { entry, field, .. } => format!("reveal {entry}/{field}"),
     }
 }
 
@@ -217,6 +217,7 @@ mod tests {
                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                 "work",
                 GrantInfo::Reveal {
+                    id: "11111111-1111-1111-1111-111111111111".into(),
                     entry: "github.com".into(),
                     field: "password".into(),
                 },

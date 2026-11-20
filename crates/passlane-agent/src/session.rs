@@ -46,9 +46,13 @@ pub enum Grant {
     /// Vault unlock factors (the ssh-agent "key").
     Unlock(KeyMaterial),
     /// Agent-facing reveal of one entry field (an owner's recorded
-    /// "approve for this session" choice; carries no secret).
+    /// "approve for this session" choice; carries no secret). Matched by
+    /// the entry's stable UUID — titles are display strings and can be
+    /// reused by other entries.
     Reveal {
-        /// Entry title the approval covers.
+        /// Entry UUID the approval covers.
+        id: String,
+        /// Entry title (display/audit only, never matched).
         entry: String,
         /// Field the approval covers (e.g. `password`, `code`).
         field: String,
@@ -61,11 +65,11 @@ impl Grant {
         matches!(self, Grant::Unlock(_))
     }
 
-    /// Whether this grant covers the given reveal.
-    pub fn covers_reveal(&self, entry: &str, field: &str) -> bool {
+    /// Whether this grant covers the given reveal, by UUID and field.
+    pub fn covers_reveal(&self, id: &str, field: &str) -> bool {
         matches!(
             self,
-            Grant::Reveal { entry: e, field: f } if e == entry && f == field
+            Grant::Reveal { id: e, field: f, .. } if e == id && f == field
         )
     }
 
@@ -73,7 +77,8 @@ impl Grant {
     pub fn info(&self) -> GrantInfo {
         match self {
             Grant::Unlock(_) => GrantInfo::Unlock,
-            Grant::Reveal { entry, field } => GrantInfo::Reveal {
+            Grant::Reveal { id, entry, field } => GrantInfo::Reveal {
+                id: id.clone(),
                 entry: entry.clone(),
                 field: field.clone(),
             },
@@ -159,6 +164,7 @@ mod tests {
         let s = Session::new(
             "work",
             Grant::Reveal {
+                id: "11111111-1111-1111-1111-111111111111".into(),
                 entry: "github.com".into(),
                 field: "password".into(),
             },
@@ -171,13 +177,28 @@ mod tests {
 
     #[test]
     fn grant_matching() {
+        let id = "11111111-1111-1111-1111-111111111111";
         let g = Grant::Reveal {
+            id: id.into(),
             entry: "github.com".into(),
             field: "password".into(),
         };
-        assert!(g.covers_reveal("github.com", "password"));
-        assert!(!g.covers_reveal("github.com", "code"), "field must match");
-        assert!(!g.covers_reveal("stripe", "password"), "entry must match");
+        assert!(g.covers_reveal(id, "password"));
+        assert!(!g.covers_reveal(id, "code"), "field must match");
+        assert!(
+            !g.covers_reveal("22222222-2222-2222-2222-222222222222", "password"),
+            "id must match"
+        );
+        // A different entry with the SAME TITLE must not inherit the approval.
+        assert!(
+            !Grant::Reveal {
+                id: "22222222-2222-2222-2222-222222222222".into(),
+                entry: "github.com".into(),
+                field: "password".into(),
+            }
+            .covers_reveal(id, "password"),
+            "title collision must not grant access"
+        );
         assert!(!g.is_unlock());
 
         let u = Grant::Unlock(KeyMaterial::new("pw"));

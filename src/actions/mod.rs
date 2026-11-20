@@ -19,12 +19,12 @@ pub mod vault;
 use crate::keychain;
 
 use crate::ui::input::ask_master_password;
+use arboard::Clipboard;
+use clap::ArgMatches;
+use keepass_ng::ChallengeResponseKey;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::Vault;
-use clap::ArgMatches;
-use arboard::Clipboard;
-use keepass_ng::ChallengeResponseKey;
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) trait MatchHandlerTemplate
@@ -157,9 +157,41 @@ fn get_vault_properties_with(
     ))
 }
 
+/// How the current process last unlocked a vault (see [`unlock`]), so
+/// long-running actions can tell whether they are session-backed and
+/// should watch for the agent dropping that session.
+pub(crate) fn last_unlock_source() -> PasswordSource {
+    PasswordSource::from_u8(LAST_UNLOCK_SOURCE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn set_last_unlock_source(source: PasswordSource) {
+    LAST_UNLOCK_SOURCE.store(source.as_u8(), std::sync::atomic::Ordering::Relaxed);
+}
+
+static LAST_UNLOCK_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+impl PasswordSource {
+    fn as_u8(self) -> u8 {
+        match self {
+            PasswordSource::Keychain => 0,
+            PasswordSource::SessionAgent => 1,
+            PasswordSource::Prompt => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PasswordSource::SessionAgent,
+            2 => PasswordSource::Prompt,
+            _ => PasswordSource::Keychain,
+        }
+    }
+}
+
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
     let ((mut master_pwd, filepath, keyfile_path, challenge_response), source) =
         get_vault_properties()?;
+    set_last_unlock_source(source);
     if source == PasswordSource::SessionAgent {
         eprintln!("Unlocking vault via the session agent...");
     } else {

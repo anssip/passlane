@@ -20,13 +20,19 @@
 //! daemon ever creates is its socket. Session key material is held in
 //! `zeroize`-protected buffers and wiped on expiry, revocation, lock and
 //! shutdown. See docs/features/session-agent.md for the full design.
+//!
+//! The daemon and its transport are Unix-only (macOS, Linux). The
+//! protocol, session and error types compile everywhere so the CLI —
+//! which is built on Windows too — can link this crate and degrade
+//! gracefully: on non-Unix platforms there is never an agent to talk to,
+//! and [`AgentClient::connect`] fails with [`AgentError::NotRunning`].
 
-#![cfg(unix)]
 #![warn(missing_docs)]
 
 pub mod client;
 pub mod error;
 pub mod protocol;
+#[cfg(unix)]
 pub mod server;
 pub mod session;
 
@@ -42,26 +48,45 @@ pub const SOCKET_FILENAME: &str = "passlane-agent.sock";
 /// Where the agent's socket lives: `$PASSLANE_AGENT_SOCK`, else
 /// `$XDG_RUNTIME_DIR/passlane-agent.sock` (Linux, per-user and 0700 by
 /// spec), else `$TMPDIR/passlane-agent.sock` (macOS, where TMPDIR is
-/// per-user). `None` when no per-user runtime directory is known — the
-/// caller should then ask for an explicit path rather than fall back to a
-/// shared directory like `/tmp`.
+/// per-user). Candidate runtime directories that are writable by anyone
+/// but the user (a shared `/tmp`, say) are rejected — another user could
+/// pre-create the socket path and receive the secrets sent to it. `None`
+/// when no private per-user runtime directory is known — the caller
+/// should then ask for an explicit path rather than fall back to a shared
+/// directory. Non-Unix platforms have no Unix domain sockets: `None`
+/// unless `PASSLANE_AGENT_SOCK` is set (for symmetry; the client still
+/// refuses to connect).
 pub fn default_socket_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(SOCKET_ENV)
         && !p.is_empty()
     {
         return Some(PathBuf::from(p));
     }
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
-        && !dir.is_empty()
+    #[cfg(unix)]
     {
-        return Some(PathBuf::from(dir).join(SOCKET_FILENAME));
-    }
-    if let Some(dir) = std::env::var_os("TMPDIR")
-        && !dir.is_empty()
-    {
-        return Some(PathBuf::from(dir).join(SOCKET_FILENAME));
+        for var in ["XDG_RUNTIME_DIR", "TMPDIR"] {
+            if let Some(dir) = std::env::var_os(var)
+                && !dir.is_empty()
+                && runtime_dir_is_private(&dir)
+            {
+                return Some(PathBuf::from(dir).join(SOCKET_FILENAME));
+            }
+        }
     }
     None
+}
+
+/// A runtime directory qualifies only when it is not writable by group
+/// or others. An attacker cannot chmod a directory they do not own, so
+/// this is enough to rule out shared directories like `/tmp` being used
+/// through a stray `TMPDIR`.
+#[cfg(unix)]
+fn runtime_dir_is_private(dir: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(dir) {
+        Ok(meta) => meta.permissions().mode() & 0o022 == 0,
+        Err(_) => false,
+    }
 }
 
 pub use client::AgentClient;

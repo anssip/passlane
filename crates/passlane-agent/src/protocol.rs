@@ -32,6 +32,8 @@ pub const MAX_VAULT_NAME_LEN: usize = 256;
 pub const MAX_ENTRY_NAME_LEN: usize = 512;
 /// Sanity limit on a reveal field name.
 pub const MAX_FIELD_NAME_LEN: usize = 128;
+/// Sanity limit on an entry id (a KeePass UUID is 36 bytes).
+pub const MAX_ID_LEN: usize = 128;
 
 /// A secret string on the wire. Serializes as a plain JSON string (the
 /// socket is 0600 and local), but is held zeroized in memory and renders
@@ -93,9 +95,14 @@ pub enum GrantSpec {
     },
     /// A recorded owner approval ("approve for this session") covering
     /// agent-facing reveals of one entry field. Carries no secret — it
-    /// is the reusable form of an `agent = ask` approval.
+    /// is the reusable form of an `agent = ask` approval. Keyed by the
+    /// entry's **stable UUID** so a display title reused by another
+    /// entry never inherits the approval; the title travels along for
+    /// display and audit only.
     Reveal {
-        /// Entry title the approval covers.
+        /// Entry UUID (the id shown by the vault layer).
+        id: String,
+        /// Entry title (display/audit only, never matched).
         entry: String,
         /// Field the approval covers (e.g. `password`, `code`).
         field: String,
@@ -126,12 +133,13 @@ pub enum Request {
         vault: String,
     },
     /// Does a live reveal session cover this entry field? Consumes
-    /// `once`-scoped reveal sessions.
+    /// `once`-scoped reveal sessions. Matching is by the entry's stable
+    /// UUID, never by title.
     CheckReveal {
         /// Vault name.
         vault: String,
-        /// Entry title.
-        entry: String,
+        /// Entry UUID the approval covers.
+        id: String,
         /// Field name.
         field: String,
     },
@@ -198,7 +206,9 @@ pub enum GrantInfo {
     Unlock,
     /// Agent-facing reveal of one entry field.
     Reveal {
-        /// Entry title.
+        /// Entry UUID.
+        id: String,
+        /// Entry title (display only).
         entry: String,
         /// Field name.
         field: String,

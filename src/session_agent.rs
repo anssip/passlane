@@ -7,7 +7,7 @@
 //! (`passlane sessions ...`, `passlane unlock --session`) require it and
 //! say so.
 
-use passlane_agent::client::{AgentClient, RevealAnswer};
+use passlane_agent::client::{AgentClient, EventStream, RevealAnswer};
 use passlane_agent::error::AgentError;
 use passlane_agent::protocol::{ErrorCode, GrantSpec, SecretString};
 use passlane_approval::message::Scope;
@@ -87,11 +87,12 @@ pub fn create_unlock_session(vault: &str, master_password: &str, secs: u64) -> R
     }
 }
 
-/// Does a live agent session cover this agent-facing reveal? Returns the
-/// covering session's expiry. Consumes a `once`-scoped approval.
-pub fn check_reveal(vault: &str, entry: &str, field: &str) -> Option<u64> {
+/// Does a live agent session cover this agent-facing reveal, matched by
+/// the entry's stable UUID? Returns the covering session's expiry.
+/// Consumes a `once`-scoped approval.
+pub fn check_reveal(vault: &str, entry_id: &str, field: &str) -> Option<u64> {
     let mut client = try_connect()?;
-    match client.check_reveal(vault, entry, field) {
+    match client.check_reveal(vault, entry_id, field) {
         Ok(RevealAnswer::Allowed { until }) => Some(until.unwrap_or_else(now_secs)),
         Ok(RevealAnswer::Denied) => None,
         Err(_) => None,
@@ -100,12 +101,19 @@ pub fn check_reveal(vault: &str, entry: &str, field: &str) -> Option<u64> {
 
 /// Record an owner's "Approve for this session" choice in the agent.
 /// `Ok(false)` means the agent is not running (the caller downgrades to
-/// a single-use approval with a warning).
-pub fn open_reveal_session(vault: &str, entry: &str, field: &str) -> Result<bool, Error> {
+/// a single-use approval with a warning). The grant is keyed by the
+/// entry's UUID; the title travels for display only.
+pub fn open_reveal_session(
+    vault: &str,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+) -> Result<bool, Error> {
     let Some(mut client) = try_connect() else {
         return Ok(false);
     };
     let grant = GrantSpec::Reveal {
+        id: entry_id.to_string(),
         entry: entry.to_string(),
         field: field.to_string(),
     };
@@ -128,20 +136,62 @@ pub fn open_reveal_session(vault: &str, entry: &str, field: &str) -> Result<bool
     }
 }
 
-/// Revoke every agent session of one vault (best-effort, silent when the
-/// agent is down). Returns how many were dropped.
-pub fn revoke_vault_sessions(vault: &str) -> usize {
-    try_connect()
-        .and_then(|mut client| client.revoke_vault(vault).ok())
-        .unwrap_or(0)
+/// What happened when asking the agent to drop sessions for `lock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// No agent is running: nothing to revoke, nothing to report.
+    AgentAbsent,
+    /// The agent dropped this many sessions.
+    Revoked(usize),
+    /// The agent is running but the revocation failed — the vault may
+    /// still be unlockable through it. `lock` must not claim success.
+    Failed,
 }
 
-/// Revoke every agent session (best-effort, silent when the agent is
-/// down). Returns how many were dropped.
-pub fn revoke_all_sessions() -> usize {
-    try_connect()
-        .and_then(|mut client| client.revoke_all().ok())
-        .unwrap_or(0)
+fn revoke(action: impl FnOnce(&mut AgentClient) -> Result<usize, AgentError>) -> RevokeOutcome {
+    let Some(mut client) = try_connect() else {
+        return RevokeOutcome::AgentAbsent;
+    };
+    match action(&mut client) {
+        Ok(count) => RevokeOutcome::Revoked(count),
+        Err(e) => {
+            eprintln!(
+                "Warning: could not revoke the session agent's sessions: {e} — the vault \
+                 may remain unlockable through the agent (run 'passlane sessions revoke all')."
+            );
+            RevokeOutcome::Failed
+        }
+    }
+}
+
+/// Revoke every agent session of one vault (silent only when the agent
+/// is absent).
+pub fn revoke_vault_sessions(vault: &str) -> RevokeOutcome {
+    revoke(|client| client.revoke_vault(vault))
+}
+
+/// Revoke every agent session (silent only when the agent is absent).
+pub fn revoke_all_sessions() -> RevokeOutcome {
+    revoke(|client| client.revoke_all())
+}
+
+/// Subscribe to the agent's push events, for long-running actions that
+/// should stop when the session they rely on ends (revocation, expiry,
+/// lock). `None` when no agent is running.
+pub fn subscribe_to_events() -> Option<EventStream> {
+    try_connect().and_then(|client| client.subscribe().ok())
+}
+
+/// Whether a pushed event means the given vault's session-backed access
+/// just ended.
+pub fn event_ends_access(event: &passlane_agent::protocol::Event, vault: &str) -> bool {
+    use passlane_agent::protocol::Event;
+    match event {
+        Event::SessionsLocked => true,
+        Event::SessionRevoked { vault: v, .. } | Event::SessionExpired { vault: v, .. } => {
+            v == vault
+        }
+    }
 }
 
 fn now_secs() -> u64 {
@@ -165,5 +215,33 @@ mod tests {
             REVEAL_SESSION_SECS as u64,
             Policy::default().max_session_secs
         );
+    }
+
+    #[test]
+    fn events_that_end_access() {
+        use passlane_agent::protocol::Event;
+        assert!(event_ends_access(
+            &Event::SessionRevoked {
+                id: "x".into(),
+                vault: "work".into()
+            },
+            "work"
+        ));
+        assert!(event_ends_access(
+            &Event::SessionExpired {
+                id: "x".into(),
+                vault: "work".into()
+            },
+            "work"
+        ));
+        assert!(!event_ends_access(
+            &Event::SessionRevoked {
+                id: "x".into(),
+                vault: "other".into()
+            },
+            "work"
+        ));
+        // A lock drops everything, any vault.
+        assert!(event_ends_access(&Event::SessionsLocked, "work"));
     }
 }

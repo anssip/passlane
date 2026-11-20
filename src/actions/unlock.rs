@@ -1,4 +1,4 @@
-use crate::actions::{unlock, Action};
+use crate::actions::{Action, unlock};
 use crate::completion_cache;
 use crate::keychain;
 use crate::vault_registry;
