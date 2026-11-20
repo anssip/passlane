@@ -26,26 +26,53 @@ scriptable except where noted.
 ## Setup
 
 ```bash
-cargo build
+cargo build          # cargo test does NOT refresh target/debug/passlane — build explicitly
 T=$PWD/../agent-verify   # or a session temp dir; anywhere outside the repo
 mkdir -p $T
 P=$PWD/target/debug/passlane
 NAME=clitest-<unique>
 ```
 
-Create the vault (interactive, driven through a pty — see the pty section):
+Create the vault with **`/usr/bin/expect`** (ships with macOS). Expect waits for each
+prompt *pattern* instead of sleeping, and matching the final message tells you the run
+**completed** — with printf+sleep, an Argon2 build that outlasts the sleeps wedges the
+flow at a prompt invisibly (the transcript is buffered until EOF):
 
 ```bash
-(printf '\n%s\n\n\n<pw>\n<pw>\n' "$T/$NAME.kdbx"; sleep 25; printf 'n'; sleep 3; printf '\n'; sleep 5) \
-  | script -q /dev/null $P vault add $NAME
+/usr/bin/expect -c '
+set timeout 120
+spawn passlane vault add NAME_PLACEHOLDER
+expect "existing one?"        ; send "\r"                  ;# New
+expect "Enter vault location" ; send "'$T'/'$NAME'.kdbx\r"
+expect "Keyfile"              ; send "\r"                  ;# none
+expect "hardware key"         ; send "\r"                  ;# No
+expect "new master password"  ; send "<pw>\r"
+expect "Retype"               ; send "<pw>\r"
+expect "active vault?"        ; send "n\r"                 ;# not active; the Enter may feed the next prompt
+expect "added."               ;# completion marker — without this you cannot tell wedged from done
+'
 ```
 
-Answer order: New (Enter) → vault location (type the temp path) → keyfile (Enter) →
-hardware key (Enter = No) → new master password ×2 → **Argon2 gap, in a debug build this
-is 10–25 s — wait it out** → make active (**`n`**) → store master password in keychain
-(Enter = Yes). Bytes that arrive while a prompt is not yet up are flushed, so get the
-timing right or check afterwards; if the run dies before the keychain step, the item is
-missing — fix it with `unlock` below, not with `security`.
+Prompt patterns in order: New/Existing select → vault location → keyfile → hardware-key
+confirm → new master password ×2 → make-active (**`n`**) → store-keychain (Y/n). Do not
+rely on the add flow's store-keychain answer under expect — the keystroke timing across
+the two confirms is unreliable; **always seed the keychain with `unlock` next** (single
+prompt, deterministic):
+
+```bash
+/usr/bin/expect -c '
+set timeout 60
+spawn '"$P"' --vault '"$NAME"' unlock
+expect "master password"
+send "<pw>\r"
+expect "unlocked"
+'
+```
+
+Completion markers (`added.`, `unlocked`, `Imported N`, `Exported N`) are the signal to
+move on. If an expect step times out, the transcript printed so far shows exactly which
+prompt is stuck — kill by the vault name (`pkill -f "passlane.*$NAME"`), never a bare
+`pkill -f passlane`.
 
 ### Keychain: never seed it with `security` — stay popup-free
 
@@ -88,12 +115,16 @@ Rules:
   ```
 
   Do **not** add `expires`/`expiry_time` columns with empty values — an empty string fails
-  bool/DateTime parsing; omit the columns entirely.
+  bool/DateTime parsing; omit the columns entirely. Mind CSV column counts: a trailing
+  `,,` row means *empty* custom attributes, and the entry silently lands on the default
+  policy — check with a plain `list` run that `agent: ask` actually shows.
 
-- **TOTP / payment cards:** interactive `add -o` / `add -p` through the pty (see below).
-- **Notes via `add -n` don't work under the pty** — the multiline editor only ends on
-  EOF, which `script` never forwards. Verify note behavior with unit tests, or add the
-  note another way.
+- **TOTP / payment cards:** interactive `add -o` / `add -p` via expect (same pattern as
+  above; TOTP asks label → issuer → secret → defaults-confirm, cards ask name → color →
+  number → holder → month → year → cvv → address).
+- **Notes via `add -n` don't work under a pty** — the multiline editor only ends on
+  EOF, which neither `script` nor expect forwards cleanly. Verify note behavior with
+  unit tests, or add the note another way.
 
 ## Driving interactive prompts: the pty recipe
 
