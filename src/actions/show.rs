@@ -26,9 +26,16 @@ fn gate_reveal(
     policy: AgentPolicy,
     stdout_reveal: bool,
     entry: &str,
+    entry_id: &str,
     field: &str,
 ) -> Result<(), Error> {
-    agent::enforce_reveal(policy, RevealContext::for_reveal(stdout_reveal), entry, field)
+    agent::enforce_reveal(
+        policy,
+        RevealContext::for_reveal(stdout_reveal),
+        entry,
+        entry_id,
+        field,
+    )
 }
 
 /// A verbose (cleartext) table would reveal every matched entry at once,
@@ -89,6 +96,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
             the_match.agent_policy(),
             self.stdout_only,
             the_match.title(),
+            &the_match.uuid().to_string(),
             "password",
         )?;
         if self.stdout_only {
@@ -142,6 +150,7 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
                     matches[index].agent_policy(),
                     self.stdout_only,
                     matches[index].title(),
+                    &matches[index].uuid().to_string(),
                     "password",
                 )?;
                 if self.stdout_only {
@@ -174,7 +183,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        gate_reveal(the_match.agent_policy(), false, the_match.name(), "number")?;
+        gate_reveal(
+            the_match.agent_policy(),
+            false,
+            the_match.name(),
+            &the_match.id().to_string(),
+            "number",
+        )?;
         // The gate above passed (allow, owner's own reveal, or an approved
         // ask), so the table renders a display copy with the policy
         // cleared — otherwise ask cells would stay redacted after the
@@ -225,6 +240,7 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
                     matches[index].agent_policy(),
                     false,
                     matches[index].name(),
+                    &matches[index].id().to_string(),
                     "number",
                 )?;
                 show_card(&matches[index]);
@@ -250,7 +266,13 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        gate_reveal(the_match.agent_policy(), false, the_match.title(), "content")?;
+        gate_reveal(
+            the_match.agent_policy(),
+            false,
+            the_match.title(),
+            &the_match.id().to_string(),
+            "content",
+        )?;
         // As with payment cards: the reveal is approved, so the verbose
         // table renders a display copy instead of redacted ask cells.
         let display = the_match.clone().with_agent_policy(AgentPolicy::Allow);
@@ -297,6 +319,7 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
                     matches[index].agent_policy(),
                     false,
                     matches[index].title(),
+                    &matches[index].id().to_string(),
                     "content",
                 )?;
                 show_note(&matches[index]);
@@ -345,9 +368,34 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
+        // The continuous code view is an owner's interactive surface: it
+        // streams fresh codes until 'q'. A single-use approval must never
+        // fund that, so in an agent-facing context an `ask` entry is told
+        // to use `--once` (one code, one grant) instead of consuming a
+        // grant here and looping forever on a non-interactive stdin.
+        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
+            && crate::agent::decide(the_match.agent_policy(), crate::agent::RevealContext::Agent)
+                == crate::agent::RevealDecision::NeedApproval
+        {
+            return Err(Error::new(&format!(
+                "Entry '{}' needs owner approval (agent=ask); the continuous code view is \
+                 interactive-only. Use '{}' for a single approved code",
+                the_match.label(),
+                crate::agent::once_code_command(
+                    &the_match.label(),
+                    &crate::agent::current_vault_name()
+                )
+            )));
+        }
         // The interactive code view is an owner reveal; an `ask` entry
         // prompts for its approval before the first code appears.
-        gate_reveal(the_match.agent_policy(), false, the_match.label(), "code")?;
+        gate_reveal(
+            the_match.agent_policy(),
+            false,
+            the_match.label(),
+            &the_match.id().to_string(),
+            "code",
+        )?;
         let (tx, rx) = mpsc::channel();
         let (tx_counter, rx_counter) = mpsc::channel();
 
@@ -444,7 +492,13 @@ impl ShowAction {
         match matches.len() {
             1 => {
                 let totp = &matches[0];
-                gate_reveal(totp.agent_policy(), true, totp.label(), "code")?;
+                gate_reveal(
+                    totp.agent_policy(),
+                    true,
+                    totp.label(),
+                    &totp.id().to_string(),
+                    "code",
+                )?;
                 let code = totp.get_code()?;
                 Ok(Some(code.value))
             }

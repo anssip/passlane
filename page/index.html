@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>passlane approvals</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <h1>passlane approvals</h1>
+    <p>
+      This is the passlane approval page: the Phase 0 approver before the iOS
+      app exists (see the
+      <a href="https://github.com/anssip/passlane">passlane</a> repository and
+      <code>crates/passlane-approval/SPEC.md</code>).
+    </p>
+    <p>
+      You normally land here through a link passlane printed:
+    </p>
+    <ul>
+      <li><code>/enroll.html#…</code> — one-time enrollment of this device's ECDH
+        key and passkey (<code>passlane approvals enroll</code> on the
+        computer). The link material rides the URL fragment, which is never
+        sent to this site.</li>
+      <li><code>/approve.html#…</code> — an approval request sealed to the key
+        enrolled here. Approve with the passkey, paste the reply back into the
+        terminal.</li>
+    </ul>
+    <p>
+      No secrets reach this site's server: everything sensitive travels in the
+      URL fragment and inside end-to-end encrypted envelopes whose keys are
+      pinned between your terminal and this device at enrollment.
+    </p>
+  </main>
+</body>
+</html>
