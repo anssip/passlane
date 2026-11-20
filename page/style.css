@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  background: #f7f7f8;
+  color: #1c1c21;
+}
+
+@media (prefers-color-scheme: dark) {
+  body { background: #151519; color: #ececf1; }
+}
+
+main {
+  max-width: 34rem;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  background: #fff;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  main { background: #1e1e24; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); }
+}
+
+h1 { font-size: 1.3rem; margin-top: 0; }
+
+dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; }
+dt { font-weight: 600; opacity: 0.8; }
+dd { margin: 0; }
+
+button {
+  font: inherit;
+  padding: 0.5rem 1.1rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #222;
+  color: #fff;
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  button { background: #eee; color: #111; }
+}
+
+button.secondary { background: #888; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+
+textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  box-sizing: border-box;
+}
+
+.error { color: #b3261e; }
+.note { opacity: 0.8; font-size: 0.9rem; }
+
+#status { min-height: 1.5rem; }

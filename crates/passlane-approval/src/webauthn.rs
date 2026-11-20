@@ -126,6 +126,21 @@ pub fn verify_assertion(
         .map_err(|_| Error::Webauthn("signature does not verify".into()))
 }
 
+/// The Phase 0 **enrollment** challenge (SPEC §6): the binding assertion is
+/// a `credentials.get()` whose challenge is
+/// `base64url(SHA-256(enrollment_nonce ‖ ECDH_public_key))`.
+///
+/// The credential-key signature over this value is what vouches that the
+/// passkey (and the human behind it) binds to this exact ECDH encryption
+/// key; the CLI issues the nonce and verifies the returned assertion
+/// against this same derivation.
+pub fn enrollment_challenge(enrollment_nonce: &[u8], ecdh_public_key: &[u8]) -> String {
+    let mut input = Vec::with_capacity(enrollment_nonce.len() + ecdh_public_key.len());
+    input.extend_from_slice(enrollment_nonce);
+    input.extend_from_slice(ecdh_public_key);
+    base64url_encode(&crate::crypto::sha256(&input))
+}
+
 /// Constant-time byte-string comparison (lengths are public here).
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -292,5 +307,33 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn enrollment_challenge_matches_spec_construction() {
+        // SPEC §6: base64url(SHA-256(enrollment_nonce ‖ ECDH_public_key)).
+        // Deterministic construction, so both sides (CLI and page) derive
+        // the identical value from the same inputs.
+        let nonce = [0x0au8; 16];
+        let ecdh_pub = [0x04u8; 65];
+        let challenge = enrollment_challenge(&nonce, &ecdh_pub);
+
+        use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        digest.update(nonce);
+        digest.update(ecdh_pub);
+        assert_eq!(
+            challenge,
+            crate::encoding::base64url_encode(&digest.finalize())
+        );
+        // Bound to both inputs: neither side can be swapped unnoticed.
+        assert_ne!(challenge, enrollment_challenge(&[0x0b; 16], &ecdh_pub));
+        assert_ne!(challenge, enrollment_challenge(&nonce, &[0x05; 65]));
+        // It is a valid unpadded base64url string of a 32-byte digest.
+        assert_eq!(
+            crate::encoding::base64url_decode(&challenge).unwrap().len(),
+            32
+        );
+        assert!(!challenge.contains('='));
     }
 }

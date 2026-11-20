@@ -179,10 +179,26 @@ impl ApprovalLog {
         policy: AgentPolicy,
     ) -> String {
         let id = Uuid::new_v4().to_string();
+        self.log_request_for(&id, vault, entry, field, policy);
+        id
+    }
+
+    /// [`Self::log_request`] with a caller-chosen id — the link transport
+    /// correlates by the protocol request id (`rid`) instead of a fresh
+    /// uuid, so `passlane approve --response` decisions line up with the
+    /// request events.
+    pub fn log_request_for(
+        &self,
+        id: &str,
+        vault: &str,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+    ) {
         self.append(&ApprovalEvent {
             ts: Utc::now().to_rfc3339(),
             event: "request",
-            id: Some(&id),
+            id: Some(id),
             vault,
             entry,
             field,
@@ -191,7 +207,6 @@ impl ApprovalLog {
             request: Some(approval_request_body(vault, entry, field)),
             decision: None,
         });
-        id
     }
 
     /// Record how an approval request was resolved.
@@ -400,11 +415,50 @@ pub fn enforce_reveal(
     enforce_with(&ApprovalLog::default_path(), policy, context, entry, field)
 }
 
-/// [`enforce_reveal`] with the approval log injected, and the interactive
+/// [`enforce_with_prompt`] with the real interactive prompt.
+pub fn enforce_with(
+    log: &ApprovalLog,
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    enforce_with_prompt(log, policy, context, entry, field, || {
+        ask_approval(entry, field)
+    })
+}
+
+/// [`enforce_with_prompt`] with the approval log injected, and the interactive
 /// approval prompt injected so the ask flow is testable without a
 /// terminal.
 pub fn enforce_with_prompt<F>(
     log: &ApprovalLog,
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry: &str,
+    field: &str,
+    prompt: F,
+) -> Result<(), Error>
+where
+    F: FnOnce() -> bool,
+{
+    enforce_inner(
+        log,
+        &crate::approvals::state_dir(),
+        policy,
+        context,
+        entry,
+        field,
+        prompt,
+    )
+}
+
+/// The ask flow, with the approval-log and approvals-state locations
+/// injected: the link transport (emission, grants) reads the same state
+/// directory `passlane approve` writes.
+fn enforce_inner<F>(
+    log: &ApprovalLog,
+    approvals_dir: &std::path::Path,
     policy: AgentPolicy,
     context: RevealContext,
     entry: &str,
@@ -419,16 +473,59 @@ where
         RevealDecision::Reveal => Ok(()),
         RevealDecision::NeedApproval => {
             if context == RevealContext::Agent {
-                let id = log.log_request(&vault, entry, field, policy);
-                Err(Error::new(&format!(
-                    "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
-                     recorded in the approval log ({}). Until the approval link ships, the \
-                     owner performs the reveal interactively instead: {}",
+                // A grant released by 'passlane approve --response' stands
+                // in for the owner's answer: consume it and reveal.
+                if let Some(rid) =
+                    crate::approvals::consume_grant(approvals_dir, &vault, entry, field)
+                {
+                    log.log_decision(&rid, &vault, entry, field, policy, true);
+                    return Ok(());
+                }
+
+                // Emit the request over the link transport when an approver
+                // is pinned: link on stdout (an agent relays it in chat),
+                // QR on stderr (the human at the terminal scans it).
+                match crate::approvals::emit_approval_request(
+                    approvals_dir,
+                    &vault,
                     entry,
-                    id,
-                    log.path().display(),
-                    owner_reveal_command(entry, field, &vault)
-                )))
+                    field,
+                    &requester(),
+                ) {
+                    Ok(emitted) => {
+                        println!("{}", emitted.link);
+                        if let Ok(qr) = crate::approvals::render_qr(&emitted.link) {
+                            eprintln!("{qr}");
+                        }
+                        log.log_request_for(&emitted.rid, &vault, entry, field, policy);
+                        Err(Error::new(&format!(
+                            "Entry '{}' needs owner approval (agent=ask). Approval request {} has \
+                             been emitted: scan the QR or relay the link to the approver, approve \
+                             it on the page, then run 'passlane approve --response <blob-from-the-page>' \
+                             and re-run this command to receive the {}. The request is recorded in \
+                             the approval log ({}).",
+                            entry,
+                            &emitted.rid[..8],
+                            field,
+                            log.path().display()
+                        )))
+                    }
+                    Err(_) => {
+                        // No pinned approver (or a transport failure): keep
+                        // the pre-transport guidance.
+                        let id = log.log_request(&vault, entry, field, policy);
+                        Err(Error::new(&format!(
+                            "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
+                             recorded in the approval log ({}). Until an approver is enrolled, the \
+                             owner performs the reveal interactively instead: {} (or enroll the \
+                             approval page with 'passlane approvals enroll' to approve remotely)",
+                            entry,
+                            id,
+                            log.path().display(),
+                            owner_reveal_command(entry, field, &vault)
+                        )))
+                    }
+                }
             } else {
                 let id = log.log_request(&vault, entry, field, policy);
                 let approved = prompt();
@@ -458,19 +555,6 @@ where
             }
         }
     }
-}
-
-/// [`enforce_with_prompt`] with the real interactive prompt.
-pub fn enforce_with(
-    log: &ApprovalLog,
-    policy: AgentPolicy,
-    context: RevealContext,
-    entry: &str,
-    field: &str,
-) -> Result<(), Error> {
-    enforce_with_prompt(log, policy, context, entry, field, || {
-        ask_approval(entry, field)
-    })
 }
 
 /// The Phase 0 ask flow in an owner context: the interactive prompt *is*
@@ -525,6 +609,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = ApprovalLog::at(dir.path().join("approvals.log"));
         (log, dir)
+    }
+
+    /// The ask flow against a scratch approvals state directory, so tests
+    /// never touch `~/.passlane` (a pinned approver there would turn the
+    /// withheld-reveal assertions into emission paths).
+    fn enforce_scratch<F>(
+        log: &ApprovalLog,
+        policy: AgentPolicy,
+        context: RevealContext,
+        entry: &str,
+        field: &str,
+        prompt: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce() -> bool,
+    {
+        let state = tempfile::tempdir().unwrap();
+        enforce_inner(log, state.path(), policy, context, entry, field, prompt)
     }
 
     fn lines(log: &ApprovalLog) -> Vec<serde_json::Value> {
@@ -679,7 +781,7 @@ mod tests {
     #[test]
     fn enforce_agent_never_blocks_and_logs() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Never,
             RevealContext::Agent,
@@ -701,7 +803,7 @@ mod tests {
     #[test]
     fn enforce_agent_ask_withholds_and_logs_request() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Agent,
@@ -724,9 +826,108 @@ mod tests {
     }
 
     #[test]
+    fn enforce_agent_ask_with_pinned_approver_emits_the_link() {
+        // With an approver pinned, the ask flow emits the request envelope
+        // over the link transport instead of only recording it: the error
+        // guides through 'passlane approve --response', and the log
+        // correlates by the protocol rid.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, _page, _passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin).unwrap();
+
+        let result = enforce_inner(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        );
+        let err = result.expect_err("ask must still withhold until approved");
+        assert!(
+            err.message.contains("passlane approve --response"),
+            "{}",
+            err.message
+        );
+
+        // A pending request exists, and the log's request id is its rid.
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        assert_eq!(pending.records().len(), 1);
+        let rid = pending.records()[0].rid.clone();
+        let events = lines(&log);
+        assert_eq!(events[0]["id"].as_str().unwrap(), rid);
+    }
+
+    #[test]
+    fn enforce_agent_ask_released_by_grant_exactly_once() {
+        // A grant created by 'passlane approve --response' releases the
+        // agent reveal; a Scope::Once grant works a single time.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, page, passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin).unwrap();
+
+        // The ask flow emits the request; a mocked page approves it.
+        let err = enforce_inner(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        )
+        .expect_err("still withheld before the approval");
+        assert!(
+            err.message.contains("passlane approve --response"),
+            "{}",
+            err.message
+        );
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let rid = pending.records()[0].rid.clone();
+        let cli = crate::approvals::load_identity(state.path()).unwrap();
+        let response =
+            crate::approvals::mock_page_response(&cli, &page, &passkey, &rid, passlane_approval::message::Decision::Allow);
+        crate::approvals::approve_response(state.path(), &response.to_base64url()).unwrap();
+
+        // The re-run reveals: the grant stands in for the owner's answer.
+        enforce_inner(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            "password",
+            || panic!("a grant must not prompt"),
+        )
+        .expect("the grant releases the reveal");
+        // The log records the approving decision, correlated by rid.
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["decision"], "approved");
+        assert_eq!(events.last().unwrap()["id"].as_str().unwrap(), rid);
+
+        // Once granted, once only: the second reveal is withheld again.
+        let result = enforce_inner(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        );
+        assert!(
+            result.is_err(),
+            "a Scope::Once grant is consumed by the first reveal"
+        );
+    }
+
+    #[test]
     fn enforce_owner_ask_approved_reveals() {
         let (log, _dir) = log_in_tempdir();
-        enforce_with_prompt(
+        enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
@@ -745,7 +946,7 @@ mod tests {
     #[test]
     fn enforce_owner_ask_denied_errors() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
@@ -762,7 +963,7 @@ mod tests {
     fn enforce_owner_never_and_all_allow_reveal_without_logging() {
         let (log, _dir) = log_in_tempdir();
         for policy in [AgentPolicy::Never, AgentPolicy::Allow] {
-            enforce_with_prompt(
+            enforce_scratch(
                 &log,
                 policy,
                 RevealContext::Owner,
@@ -781,7 +982,7 @@ mod tests {
     #[test]
     fn enforce_agent_allow_reveals_without_logging() {
         let (log, _dir) = log_in_tempdir();
-        enforce_with_prompt(
+        enforce_scratch(
             &log,
             AgentPolicy::Allow,
             RevealContext::Agent,

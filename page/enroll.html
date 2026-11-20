@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>passlane enrollment</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <h1>Enroll as a passlane approver</h1>
+    <p id="link-error" class="error" hidden></p>
+    <div id="link-ok" hidden>
+      <p>
+        This device will hold two keys for approvals (SPEC §6): a
+        <strong>WebCrypto ECDH key</strong> that approval requests are
+        encrypted to, and a <strong>WebAuthn passkey</strong> that signs your
+        decisions. The passkey creation prompt also asks you to confirm once
+        more with a second prompt — that second signature is what binds the
+        passkey to this exact ECDH key.
+      </p>
+      <button id="start">Create the passkey and enroll</button>
+      <p id="status" aria-live="polite"></p>
+      <div id="blob-wrap" hidden>
+        <p>Paste this into the waiting terminal:</p>
+        <textarea id="blob" rows="6" readonly></textarea>
+        <button id="copy">Copy</button>
+      </div>
+    </div>
+  </main>
+  <script type="module" src="./js/enroll.js"></script>
+  <script type="module">
+    document.getElementById("copy")?.addEventListener("click", async () => {
+      const blob = document.getElementById("blob");
+      await navigator.clipboard.writeText(blob.value);
+    });
+  </script>
+</body>
+</html>

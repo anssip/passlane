@@ -42,7 +42,8 @@ agent workflows on a dedicated vault if that matters.
 The policy governs **agent-facing reveals**: passlane output that a program
 (an AI agent, a script) consumes, as opposed to the owner's own interactive
 use. It is the CLI half of the approvals feature (passlane#50,
-[passlane-ios PLAN §3.3]); the phone/app side lands later.
+[passlane-ios PLAN §3.3]); the approver half is the link transport — the
+[static approval page] and, later, the app.
 
 ## Semantics
 
@@ -110,31 +111,54 @@ owner-only.
   context is agent-facing, the cleartext table is refused with guidance
   rather than partially redacted.
 
-## The `ask` flow (Phase 0)
+## The `ask` flow
 
-Until the approval link transport ships (passlane#51), the approval flow
-defers to the interactive prompt — with one deliberate limitation:
+The approval link transport (passlane#51) carries `ask` requests to a
+human approver over the cheapest possible channel: the CLI prints the
+request as a terminal QR plus a copyable link, the approver opens it on
+the [static approval page] (Phase 0; the iOS app later), decides with a
+passkey, and pastes the signed reply back. One-time setup:
+
+```
+passlane approvals enroll     # pin the approval page (ECDH + passkey ceremony)
+```
+
+State lives under `~/.passlane` (override with `PASSLANE_APPROVALS_DIR`):
+the CLI's protocol identity (`approval_identity.json`), pinned approvers
+(`approval_peers.json`), the replay store (`.approval_nonces`) and
+pending requests (`approval_pending.json`). See
+`crates/passlane-approval/SPEC.md` for the protocol itself.
 
 1. An agent requests an `ask` entry through an agent-facing path. The CLI
-   does not reveal. It appends an **approval request** to the local
-   approval log and tells the requester the entry needs approval. Bulk
-   paths behave the same way: `list` redaction and `export` filtering
-   record one request per withheld `ask` entry.
-2. The owner then handles the request out of band: they run the reveal
-   themselves — e.g. `passlane show '<entry>'` — and answer the approval
-   prompt (`Approve once` / `Deny`). That interaction is its own
-   request/decision pair in the log. **There is no single-use approval
-   handoff yet**: the agent's original request stays pending, and an
-   agent-side retry simply records another request and is refused again.
-   If the owner wants the agent to have the secret, they relay it
-   themselves or switch the entry to `agent = allow`.
+   does not reveal. It appends an **approval request** to the approval
+   log and — when an approver is pinned — emits the request envelope over
+   the link transport: the link goes to **stdout** (an agent can relay it
+   in the chat the owner already uses), the QR to **stderr** (for the
+   human at the terminal to scan). The envelope rides the URL fragment
+   only, so the page's domain never sees it.
+2. The owner approves or denies on the page. The reply is
+   end-to-end encrypted to the CLI's key and signed by the passkey
+   (assertion over the exact envelope bytes).
+3. `passlane approve --response '<blob>'` (or `--response @file`)
+   verifies the reply — pinned keys, replay store, and the reply's
+   request id must match a pending request — and releases it: an `Allow`
+   becomes a **single-use grant** for exactly that entry and field.
+4. The agent re-runs the original command and receives the secret. The
+   grant is consumed by that one reveal; a replayed response blob is
+   refused (`already approved` / replay), so the CLI proceeds exactly
+   once.
 
-When the link transport lands, step 2 becomes a real handoff: the same
-request body travels to the approver (phone or the Phase 0 static page),
-and the signed approval it returns is what releases the entry. The CLI
-already records each request as the protocol's real `approval_request`
-body (`crates/passlane-approval`), so nothing about what is being asked
-changes.
+Without a pinned approver (or with the transport unavailable) the flow
+falls back to the pre-link behavior: the request is recorded in the log
+and the owner performs the reveal interactively themselves
+(`passlane show '<entry>'`), or switches the entry to `agent = allow`.
+Bulk paths (`list`, `export`) still record requests without emitting
+links — one QR per entry would be approval fatigue; the emission rate
+limiting hook (SPEC §4) belongs to the session agent (passlane#54).
+
+`passlane approvals list` / `pending` / `remove <label>` manage the pins
+and show what is awaiting an answer. Requests expire with their envelope
+(a few minutes); expired requests are pruned automatically.
 
 ### The approval log
 
@@ -169,8 +193,10 @@ is *not* a cryptographic boundary:
   approval prompt with a keystroke. There is no reliable way to
   distinguish such a pty from a real terminal, so the CLI does not pretend
   to. The `ask` prompt is a speed bump against quiet exfiltration, not
-  proof of human presence — that arrives with the approval link, where the
-  approver must produce a passkey/Face ID the relaying agent cannot forge.
+  proof of human presence. Real proof of a human arrives with the approval
+  link: the approver must produce a passkey signature over the exact
+  request bytes, which a relaying agent cannot forge — enroll an approver
+  (`passlane approvals enroll`) and keep `ask` on the entries that matter.
 - An agent driving the owner's interactive terminal is trusted to be the
   owner; the `ask` prompt is the only speed bump there.
 - The completion cache and non-verbose listings expose entry *names* by
@@ -186,3 +212,5 @@ agent does. Passlane's multi-vault model already supports this — keep an
 "agent vault" with only the entries a workflow needs (`agent = allow`),
 and keep the crown jewels in the phone-gated vault that agents never see
 unlocked.
+
+[static approval page]: ../../page/README.md
