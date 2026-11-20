@@ -84,12 +84,6 @@ mocked-assertion paths are identical to the real ones up to
 
 ## Honest limitations
 
-- The ECDH key is generated extractable and immediately re-imported as
-  non-extractable (WebCrypto cannot export a public key from a
-  non-extractable pair); a transient copy of the JWK exists in JS memory
-  until garbage collection. The *stored* key can never be exported; the
-  page never persists the extractable form. The iOS app removes this
-  caveat (Secure Enclave keys).
 - Approvals over a chat-relayed link carry no proximity signal; the page
   says so on every approval screen (BLE adds it in protocol v1.1).
 - Unlock requests (`Operation::Unlock`) need the HMAC-SHA1 answer the

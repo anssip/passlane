@@ -126,18 +126,29 @@ pub fn verify_assertion(
         .map_err(|_| Error::Webauthn("signature does not verify".into()))
 }
 
-/// The Phase 0 **enrollment** challenge (SPEC §6): the binding assertion is
-/// a `credentials.get()` whose challenge is
-/// `base64url(SHA-256(enrollment_nonce ‖ ECDH_public_key))`.
+/// The Phase 0 **enrollment** challenge (SPEC §6): the binding assertion
+/// is a `credentials.get()` whose challenge is
+/// `base64url(SHA-256(enrollment_nonce ‖ ECDH_public_key ‖ cli_enc_pub ‖ cli_sig_pub))`.
 ///
 /// The credential-key signature over this value is what vouches that the
 /// passkey (and the human behind it) binds to this exact ECDH encryption
-/// key; the CLI issues the nonce and verifies the returned assertion
-/// against this same derivation.
-pub fn enrollment_challenge(enrollment_nonce: &[u8], ecdh_public_key: &[u8]) -> String {
-    let mut input = Vec::with_capacity(enrollment_nonce.len() + ecdh_public_key.len());
+/// key. The CLI's two public keys are covered too: a relay that swaps the
+/// link's key material (`c=`/`s=`) would otherwise leave the page trusting
+/// the relay's "CLI" identity, whose signatures could then dress up a
+/// forged request with a real pending request's id. The CLI recomputes
+/// the challenge from **its own** identity keys, never from the link.
+pub fn enrollment_challenge(
+    enrollment_nonce: &[u8],
+    ecdh_public_key: &[u8],
+    cli_enc_pub: &[u8],
+    cli_sig_pub: &[u8],
+) -> String {
+    let mut input =
+        Vec::with_capacity(enrollment_nonce.len() + ecdh_public_key.len() + cli_enc_pub.len() + cli_sig_pub.len());
     input.extend_from_slice(enrollment_nonce);
     input.extend_from_slice(ecdh_public_key);
+    input.extend_from_slice(cli_enc_pub);
+    input.extend_from_slice(cli_sig_pub);
     base64url_encode(&crate::crypto::sha256(&input))
 }
 
@@ -311,24 +322,43 @@ mod tests {
 
     #[test]
     fn enrollment_challenge_matches_spec_construction() {
-        // SPEC §6: base64url(SHA-256(enrollment_nonce ‖ ECDH_public_key)).
+        // SPEC §6: base64url(SHA-256(nonce ‖ ECDH pub ‖ CLI keys)).
         // Deterministic construction, so both sides (CLI and page) derive
         // the identical value from the same inputs.
         let nonce = [0x0au8; 16];
         let ecdh_pub = [0x04u8; 65];
-        let challenge = enrollment_challenge(&nonce, &ecdh_pub);
+        let cli_enc = [0x11u8; 65];
+        let cli_sig = [0x22u8; 65];
+        let challenge = enrollment_challenge(&nonce, &ecdh_pub, &cli_enc, &cli_sig);
 
         use sha2::{Digest, Sha256};
         let mut digest = Sha256::new();
         digest.update(nonce);
         digest.update(ecdh_pub);
+        digest.update(cli_enc);
+        digest.update(cli_sig);
         assert_eq!(
             challenge,
             crate::encoding::base64url_encode(&digest.finalize())
         );
-        // Bound to both inputs: neither side can be swapped unnoticed.
-        assert_ne!(challenge, enrollment_challenge(&[0x0b; 16], &ecdh_pub));
-        assert_ne!(challenge, enrollment_challenge(&nonce, &[0x05; 65]));
+        // Bound to every input: swapping either side's keys must change it
+        // (the relay-swap defense).
+        assert_ne!(
+            challenge,
+            enrollment_challenge(&[0x0b; 16], &ecdh_pub, &cli_enc, &cli_sig)
+        );
+        assert_ne!(
+            challenge,
+            enrollment_challenge(&nonce, &[0x05; 65], &cli_enc, &cli_sig)
+        );
+        assert_ne!(
+            challenge,
+            enrollment_challenge(&nonce, &ecdh_pub, &[0x33; 65], &cli_sig)
+        );
+        assert_ne!(
+            challenge,
+            enrollment_challenge(&nonce, &ecdh_pub, &cli_enc, &[0x44; 65])
+        );
         // It is a valid unpadded base64url string of a 32-byte digest.
         assert_eq!(
             crate::encoding::base64url_decode(&challenge).unwrap().len(),

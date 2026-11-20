@@ -68,27 +68,17 @@ export async function deleteApprover(rkid) {
 /**
  * Generate the page's ECDH identity for one enrollment.
  *
- * The key is generated extractable (to export the public bytes), then
- * immediately re-imported non-extractable; only the non-extractable
- * handle is kept. The transient JWK copy is dropped on return — the
- * stored key can never be exported again, per SPEC §6.
+ * Generated non-extractable: WebCrypto always leaves a generated pair's
+ * *public* key exportable, so the public bytes can be exported while the
+ * private key never exists in exportable form — no JWK copy touches
+ * JavaScript memory (SPEC §6: non-extractable, IndexedDB).
  */
 export async function generateEnrollmentKey() {
   const pair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveBits"],
-  );
-  const publicSec1 = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
-  jwk.key_ops = ["deriveBits"]; // lock down before re-import
-  const privateNonExportable = await crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
     false,
     ["deriveBits"],
   );
-  jwk.d = ""; // best-effort wipe of the transient scalar copy
-  return { privateNonExportable, publicSec1 };
+  const publicSec1 = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  return { privateNonExportable: pair.privateKey, publicSec1 };
 }

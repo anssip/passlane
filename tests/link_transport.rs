@@ -99,6 +99,10 @@ impl Scratch {
         let keeper = tempfile::tempdir().unwrap();
         let dir = keeper.path().join("approvals");
         std::fs::create_dir_all(&dir).unwrap();
+        // The scratch HOME the subprocesses get (they must not touch the
+        // developer's real one); it has to exist before passlane creates
+        // `~/.passlane` inside it.
+        std::fs::create_dir_all(keeper.path().join("home")).unwrap();
         let cli = IdentityKeys::generate(&mut OsRng).unwrap();
         let page = IdentityKeys::generate(&mut OsRng).unwrap();
         let passkey = {
@@ -226,10 +230,14 @@ impl Scratch {
             .to_base64url()
     }
 
-    /// Run the compiled binary against this scratch state.
+    /// Run the compiled binary against this scratch state. The
+    /// subprocess also gets a scratch `HOME`: approval-only commands must
+    /// not touch the developer's real `~/.passlane` (legacy migration,
+    /// completion-cache refresh) or their keychain.
     fn run(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_passlane"))
             .args(args)
+            .env("HOME", self.keeper.path().join("home"))
             .env("PASSLANE_APPROVALS_DIR", &self.dir)
             .env(
                 "PASSLANE_APPROVAL_LOG",
@@ -260,7 +268,12 @@ fn binary_approve_releases_and_replays_exactly_once() {
 
     // The pinned approver is visible to the CLI.
     let list = scratch.run(&["approvals", "list"]);
-    assert!(list.status.success());
+    assert!(
+        list.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list.stdout),
+        String::from_utf8_lossy(&list.stderr)
+    );
     let stdout = String::from_utf8_lossy(&list.stdout);
     assert!(stdout.contains("approval-page"), "{stdout}");
     assert!(stdout.contains(RP_ID), "{stdout}");

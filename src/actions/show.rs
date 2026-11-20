@@ -368,6 +368,22 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
+        // The continuous code view is an owner's interactive surface: it
+        // streams fresh codes until 'q'. A single-use approval must never
+        // fund that, so in an agent-facing context an `ask` entry is told
+        // to use `--once` (one code, one grant) instead of consuming a
+        // grant here and looping forever on a non-interactive stdin.
+        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
+            && crate::agent::decide(the_match.agent_policy(), crate::agent::RevealContext::Agent)
+                == crate::agent::RevealDecision::NeedApproval
+        {
+            return Err(Error::new(&format!(
+                "Entry '{}' needs owner approval (agent=ask); the continuous code view is \
+                 interactive-only. Use 'passlane show -o --once {}' for a single approved code",
+                the_match.label(),
+                the_match.label()
+            )));
+        }
         // The interactive code view is an owner reveal; an `ask` entry
         // prompts for its approval before the first code appears.
         gate_reveal(

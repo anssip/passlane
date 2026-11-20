@@ -168,7 +168,8 @@ pub fn approve_link(base: &str, envelope_b64url: &str) -> String {
 /// Everything stays in the fragment.
 pub fn enroll_link(page: &str, nonce_hex: &str, cli_enc_pub_hex: &str, cli_sig_pub_hex: &str) -> String {
     format!(
-        "{page}/enroll.html#n={nonce_hex}&c={cli_enc_pub_hex}&s={cli_sig_pub_hex}",
+        "{}/enroll.html#n={nonce_hex}&c={cli_enc_pub_hex}&s={cli_sig_pub_hex}",
+        page.trim_end_matches('/')
     )
 }
 
@@ -355,10 +356,15 @@ pub fn consume_grant(
     entry_id: &str,
     field: &str,
 ) -> Option<String> {
-    let now = now_secs();
-    PendingStore::transaction(dir, |pending| pending.take_grant(vault, entry_id, field, now))
-        .ok()
-        .flatten()
+    // The clock is read inside the lock: a `now` captured earlier could
+    // consume a grant that expired while this process waited for another
+    // transaction to finish.
+    PendingStore::transaction(dir, |pending| {
+        let now = now_secs();
+        pending.take_grant(vault, entry_id, field, now)
+    })
+    .ok()
+    .flatten()
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +410,6 @@ pub enum ApproveOutcome {
 /// runs inside one exclusive-locked transaction (load through atomic
 /// save), so concurrent approvals and reveals serialize on the same view.
 pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutcome, String> {
-    let now = now_secs();
     let cleaned: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
     let envelope = Envelope::from_base64url(&cleaned)
         .map_err(|e| format!("the response is not a valid envelope: {e}"))?;
@@ -421,7 +426,12 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
     let mut nonces = FileNonceStore::load(&nonce_store_path(dir))
         .map_err(|e| format!("replay store: {e}"))?;
 
-    let outcome = PendingStore::transaction(dir, |pending| -> Result<ApproveOutcome, String> {
+    PendingStore::transaction(dir, |pending| -> Result<ApproveOutcome, String> {
+        // The clock is read here, after both the pending-store and
+        // replay-store locks are held: a timestamp captured before
+        // waiting on a lock could pass a response that expired in the
+        // meantime.
+        let now = now_secs();
         let record = pending
             .find(&rid)
             .ok_or_else(|| {
@@ -535,8 +545,7 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
             }
         }
     })
-    .map_err(|e| format!("could not update the pending-request store: {e}"))?;
-    outcome
+    .map_err(|e| format!("could not update the pending-request store: {e}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -613,18 +622,23 @@ pub struct EnrollmentBlob {
     pub assertion: WebauthnAssertion,
 }
 
-/// Verify an enrollment blob against the ceremony nonce and the page
-/// origin, returning the two keys to pin (`enc_pub`, `sig_pub`, both hex
-/// SEC1).
+/// Verify an enrollment blob against the ceremony nonce, the page origin
+/// and **this CLI's own identity keys**, returning the two keys to pin
+/// (`enc_pub`, `sig_pub`, both hex SEC1).
 ///
 /// Verification is the SPEC §6 binding ceremony: the passkey must have
-/// signed (with user presence) the challenge `SHA-256(enrollment_nonce ‖
-/// ECDH_public_key)` on the page's origin — the signature vouches that
-/// this exact ECDH key belongs to this passkey's owner.
+/// signed (with user presence) the challenge
+/// `SHA-256(enrollment_nonce ‖ ECDH_public_key ‖ cli_enc_pub ‖
+/// cli_sig_pub)` on the page's origin — the signature vouches that this
+/// exact ECDH key belongs to this passkey's owner, and covering this
+/// CLI's keys means a relay that swapped the link's key material cannot
+/// elicit an assertion the genuine CLI will accept (the challenge is
+/// recomputed from `cli_identity`, never from the link).
 pub fn verify_enrollment(
     blob_json: &str,
     enrollment_nonce: &str,
     origin: &PageOrigin,
+    cli_identity: &IdentityKeys,
 ) -> Result<(String, String), String> {
     let blob: EnrollmentBlob = serde_json::from_str(blob_json)
         .map_err(|e| format!("the enrollment blob is not valid JSON: {e}"))?;
@@ -649,7 +663,12 @@ pub fn verify_enrollment(
     let sig_key = PublicKey::from_bytes(&sig_sec1)
         .map_err(|e| format!("the passkey public key is not a valid P-256 point: {e}"))?;
 
-    let challenge = passlane_approval::webauthn::enrollment_challenge(&nonce, &enc_key.0);
+    let challenge = passlane_approval::webauthn::enrollment_challenge(
+        &nonce,
+        &enc_key.0,
+        &cli_identity.encryption_public(),
+        &cli_identity.verifying_key().to_sec1_bytes(),
+    );
     let verifying = sig_key
         .verifying_key()
         .map_err(|e| format!("the passkey public key is unusable: {e}"))?;
@@ -669,8 +688,11 @@ pub fn verify_enrollment(
 }
 
 /// Pin an enrolled approver (idempotent per label: re-enrolling a label
-/// replaces its pin).
+/// replaces its pin). The whole load-mutate-save span holds a stable
+/// sidecar lock (`approval_peers.json.lock`), so concurrent enrollment
+/// and removal cannot lose each other's writes.
 pub fn pin_approver(dir: &std::path::Path, pin: PeerPin, page_base: Option<&str>) -> Result<(), String> {
+    let _guard = PeersLock::take(dir)?;
     let mut peers = load_peers_pinned(dir)?;
     peers.retain(|p| p.label != pin.label);
     if let Some(base) = page_base
@@ -682,8 +704,10 @@ pub fn pin_approver(dir: &std::path::Path, pin: PeerPin, page_base: Option<&str>
     store_peers(dir, &peers)
 }
 
-/// Remove a pinned approver by label.
+/// Remove a pinned approver by label (same locked transaction as
+/// [`pin_approver`]).
 pub fn unpin_approver(dir: &std::path::Path, label: &str) -> Result<bool, String> {
+    let _guard = PeersLock::take(dir)?;
     let mut peers = load_peers_pinned(dir)?;
     let before = peers.len();
     let removed: Vec<PeerPin> = peers.iter().filter(|p| p.label == label).cloned().collect();
@@ -729,6 +753,27 @@ fn remember_page_map(
             std::fs::rename(&tmp, dir.join(PAGES_FILENAME))
         })
         .map_err(|e| format!("could not persist the page base URL: {e}"))
+}
+
+/// Exclusive cross-process lock over the pinned-peers file, held for the
+/// guard's lifetime. The lock sits on a stable sidecar file because the
+/// data file is rewritten in place.
+struct PeersLock(#[allow(dead_code)] std::fs::File);
+
+impl PeersLock {
+    fn take(dir: &std::path::Path) -> Result<Self, String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("could not access the approvals directory: {e}"))?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(dir.join("approval_peers.json.lock"))
+            .map_err(|e| format!("could not lock the peers store: {e}"))?;
+        fs4::FileExt::lock(&lock).map_err(|e| format!("could not lock the peers store: {e}"))?;
+        Ok(Self(lock))
+    }
 }
 
 // -- test seams: a mocked Phase 0 approver shared by the ask-flow tests --
@@ -1303,7 +1348,12 @@ mod tests {
     /// An enrollment blob with a real binding assertion, built the way the
     /// page builds it: ECDH pub + COSE passkey pub + a passkey signature
     /// over SHA-256(nonce ‖ ECDH pub).
-    fn enrollment_blob(nonce_hex: &str, rp_id: &str, origin: &str) -> String {
+    fn enrollment_blob(
+        nonce_hex: &str,
+        rp_id: &str,
+        origin: &str,
+        cli: &IdentityKeys,
+    ) -> String {
         use p256::ecdsa::signature::hazmat::PrehashSigner;
         use sha2::{Digest, Sha256};
 
@@ -1329,7 +1379,12 @@ mod tests {
 
         let nonce = passlane_approval::encoding::hex_decode(nonce_hex).unwrap();
         let page_pub = page.encryption_public();
-        let challenge = passlane_approval::webauthn::enrollment_challenge(&nonce, &page_pub);
+        let challenge = passlane_approval::webauthn::enrollment_challenge(
+            &nonce,
+            &page_pub,
+            &cli.encryption_public(),
+            &cli.verifying_key().to_sec1_bytes(),
+        );
         let rp_hash = Sha256::digest(rp_id.as_bytes());
         let mut auth_data = Vec::with_capacity(37);
         auth_data.extend_from_slice(&rp_hash);
@@ -1367,8 +1422,9 @@ mod tests {
             rp_id: "page.test".into(),
             origin: "https://page.test".into(),
         };
-        let blob = enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin);
-        let (enc_pub, sig_pub) = verify_enrollment(&blob, ENROLL_NONCE, &origin)
+        let cli = IdentityKeys::generate(&mut OsRng).unwrap();
+        let blob = enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin, &cli);
+        let (enc_pub, sig_pub) = verify_enrollment(&blob, ENROLL_NONCE, &origin, &cli)
             .expect("a genuine ceremony passes");
         assert_eq!(enc_pub.len(), 130, "65 bytes hex");
         assert_eq!(sig_pub.len(), 130);
@@ -1383,10 +1439,11 @@ mod tests {
             rp_id: "page.test".into(),
             origin: "https://page.test".into(),
         };
-        let blob = enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin);
+        let cli = IdentityKeys::generate(&mut OsRng).unwrap();
+        let blob = enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin, &cli);
 
         // A different ceremony nonce (the page answered a stale request).
-        let err = verify_enrollment(&blob, &"f".repeat(32), &origin).unwrap_err();
+        let err = verify_enrollment(&blob, &"f".repeat(32), &origin, &cli).unwrap_err();
         assert!(err.contains("assertion"), "{err}");
 
         // A different origin than the page's real one.
@@ -1394,13 +1451,24 @@ mod tests {
             rp_id: "other.test".into(),
             origin: "https://other.test".into(),
         };
-        assert!(verify_enrollment(&blob, ENROLL_NONCE, &other).is_err());
+        assert!(verify_enrollment(&blob, ENROLL_NONCE, &other, &cli).is_err());
+
+        // A relay-swapped link: the page bound the ATTACKER's keys into
+        // the challenge, so this genuine CLI must refuse the blob.
+        let attacker = IdentityKeys::generate(&mut OsRng).unwrap();
+        let swapped =
+            enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin, &attacker);
+        let err = verify_enrollment(&swapped, ENROLL_NONCE, &origin, &cli).unwrap_err();
+        assert!(err.contains("assertion"), "{err}");
 
         // Garbage JSON and shape errors.
-        assert!(verify_enrollment("not json", ENROLL_NONCE, &origin).is_err());
-        assert!(verify_enrollment(&blob.replace("\"v\":1", "\"v\":2"), ENROLL_NONCE, &origin).is_err());
+        assert!(verify_enrollment("not json", ENROLL_NONCE, &origin, &cli).is_err());
+        assert!(
+            verify_enrollment(&blob.replace("\"v\":1", "\"v\":2"), ENROLL_NONCE, &origin, &cli)
+                .is_err()
+        );
         let bad_cose = blob.replace("cose_key", "coseKey"); // missing field
-        assert!(verify_enrollment(&bad_cose, ENROLL_NONCE, &origin).is_err());
+        assert!(verify_enrollment(&bad_cose, ENROLL_NONCE, &origin, &cli).is_err());
     }
 
 }

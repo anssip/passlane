@@ -79,9 +79,12 @@ impl ApprovalsAction {
             .prompt()
             .map_err(|_| Error::new("enrollment aborted: no label given"))?;
 
-        // 3. Verify the ceremony before pinning anything.
+        // 3. Verify the ceremony before pinning anything. The challenge is
+        //    recomputed from THIS CLI's identity keys — never from the
+        //    link — so relay-swapped key material cannot pass.
         let (enc_pub, sig_pub) =
-            approvals::verify_enrollment(&blob, &nonce, &origin).map_err(|e| Error::new(&e))?;
+            approvals::verify_enrollment(&blob, &nonce, &origin, &identity)
+                .map_err(|e| Error::new(&e))?;
         let pin = PeerPin {
             label: label.clone(),
             enc_pub,

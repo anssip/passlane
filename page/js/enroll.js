@@ -60,8 +60,11 @@ export async function runEnrollment({ nonce, cliPublicSec1, cliSigPubSec1 }, opt
   const created = await (options.createCredential ?? createPasskey)();
   const parsed = parseAttestationObject(new Uint8Array(created.response.attestationObject));
 
-  // 3. The binding assertion: the passkey signs SHA-256(nonce ‖ pub).
-  const challenge = await sha256(concat(nonce, publicSec1));
+  // 3. The binding assertion: the passkey signs
+  //    SHA-256(nonce ‖ ECDH pub ‖ CLI keys) — covering the CLI's keys
+  //    makes a swapped enrollment link produce a challenge the genuine
+  //    CLI never issued (it recomputes the challenge from its own keys).
+  const challenge = await sha256(concat(nonce, publicSec1, cliPublicSec1, cliSigPubSec1));
   const assertion = await (options.assert ?? assertWithPasskey)(parsed.credentialId, challenge);
 
   // 4. Store and produce the paste-back blob. The record is keyed by the
