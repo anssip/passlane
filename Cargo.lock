@@ -2305,6 +2305,7 @@ dependencies = [
  "keepass-ng",
  "keyring",
  "log",
+ "passlane-agent",
  "passlane-approval",
  "passlane-core",
  "percent-encoding",
@@ -2315,6 +2316,23 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "tempfile",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "passlane-agent"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "env_logger",
+ "log",
+ "passlane-approval",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
  "uuid",
  "zeroize",
 ]

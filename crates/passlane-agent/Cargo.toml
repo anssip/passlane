@@ -1,0 +1,38 @@
+[package]
+name = "passlane-agent"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Anssi Piirainen <anssip@email.com>"]
+license = "GPL-3.0-or-later"
+description = "ssh-agent-style session agent for passlane: holds vault unlock approvals in memory only"
+repository = "https://github.com/anssip/passlane"
+homepage = "https://github.com/anssip/passlane"
+
+[dependencies]
+# The session model reuses the approval protocol's `Scope` (once / timed)
+# and its default session cap, so a phone-granted approval and an agent
+# session agree on what a session is (passlane#54 depends on passlane#55).
+passlane-approval = { path = "../passlane-approval", version = "0.1.0" }
+serde = { version = "1.0.198", features = ["derive"] }
+serde_json = "1.0.116"
+zeroize = "1.8"
+thiserror = "2"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+log = "0.4.16"
+clap = { version = "4.5.4", features = ["env"] }
+# "termination" so SIGTERM (launchd/systemd stops) runs the graceful
+# shutdown too, not just Ctrl+C.
+ctrlc = { version = "3.4", features = ["termination"] }
+env_logger = "0.10.0"
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[lib]
+name = "passlane_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "passlane-agent"
+path = "src/main.rs"

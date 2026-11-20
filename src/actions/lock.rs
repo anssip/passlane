@@ -1,8 +1,8 @@
 use crate::actions::Action;
 use crate::completion_cache;
 use crate::keychain;
-use passlane_core::vault::entities::Error;
 use crate::vault_registry;
+use passlane_core::vault::entities::Error;
 
 pub struct LockAction {
     /// Lock every registered vault instead of just the current one.
@@ -15,12 +15,13 @@ impl LockAction {
     }
 }
 
-/// A vault is locked when its master password is gone from the keychain.
-/// "No entry" is the normal already-locked case; any other error means the
+/// A vault is locked when its master password is gone from the keychain
+/// **and** the session agent no longer holds a session for it. "No
+/// entry" is the normal already-locked case; any other error means the
 /// stored password may still be there and must not be reported as locked.
 /// Cache removal is best-effort: a leftover cache only leaks service names.
 fn lock_vault(name: &str) -> String {
-    match keychain::delete_master_password_if_stored(name) {
+    let mut message = match keychain::delete_master_password_if_stored(name) {
         Ok(true) => {
             completion_cache::clear_cache_for(name);
             format!("Vault '{}' locked", name)
@@ -30,7 +31,14 @@ fn lock_vault(name: &str) -> String {
             "Warning: could not lock vault '{}': {} — its stored master password may still be in the keychain",
             name, e
         ),
+    };
+    // Locking must not leave the vault effectively unlocked through a
+    // live agent session; silent best-effort when the agent is down.
+    let revoked = crate::session_agent::revoke_vault_sessions(name);
+    if revoked > 0 {
+        message.push_str(&format!("; revoked {revoked} agent session(s)"));
     }
+    message
 }
 
 impl Action for LockAction {
@@ -41,7 +49,15 @@ impl Action for LockAction {
                 return Ok("No vaults configured".to_string());
             }
             let lines: Vec<String> = vaults.iter().map(|v| lock_vault(&v.name)).collect();
-            Ok(lines.join("\n"))
+            // Also drop any agent session left for unregistered vaults.
+            let strays = crate::session_agent::revoke_all_sessions();
+            let mut summary = lines.join("\n");
+            if strays > 0 {
+                summary.push_str(&format!(
+                    "\nRevoked {strays} agent session(s) of unregistered vaults"
+                ));
+            }
+            Ok(summary)
         } else {
             let config = vault_registry::current()?;
             Ok(lock_vault(&config.name))

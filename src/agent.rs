@@ -116,7 +116,9 @@ pub fn decide(policy: AgentPolicy, context: RevealContext) -> RevealDecision {
 struct ApprovalEvent<'a> {
     /// RFC 3339 timestamp.
     ts: String,
-    /// `request`, `decision` or `blocked`.
+    /// `request`, `decision`, `blocked`, `session` (a reveal served from
+    /// a live agent session) or `session_granted` (the owner chose
+    /// "Approve for this session").
     event: &'a str,
     /// Correlates a `decision` with its `request`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,6 +136,10 @@ struct ApprovalEvent<'a> {
     /// `approved` or `denied` on decisions.
     #[serde(skip_serializing_if = "Option::is_none")]
     decision: Option<&'a str>,
+    /// On `session`/`session_granted`: when the covering session expires,
+    /// unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_until: Option<u64>,
 }
 
 /// The local approval log: `~/.passlane/approvals.log` by default, plain
@@ -190,6 +196,7 @@ impl ApprovalLog {
             requester: requester(),
             request: Some(approval_request_body(vault, entry, field)),
             decision: None,
+            session_until: None,
         });
         id
     }
@@ -215,6 +222,51 @@ impl ApprovalLog {
             requester: requester(),
             request: None,
             decision: Some(if approved { "approved" } else { "denied" }),
+            session_until: None,
+        });
+    }
+
+    /// Record that an agent-facing reveal was served from a live agent
+    /// session (an earlier "Approve for this session"): the reusable
+    /// form of an approval, audited like any other reveal.
+    pub fn log_session_reveal(
+        &self,
+        vault: &str,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+        until: u64,
+    ) {
+        self.append(&ApprovalEvent {
+            ts: Utc::now().to_rfc3339(),
+            event: "session",
+            id: None,
+            vault,
+            entry,
+            field,
+            policy: policy.as_str(),
+            requester: requester(),
+            request: None,
+            decision: Some("approved"),
+            session_until: Some(until),
+        });
+    }
+
+    /// Record that the owner chose "Approve for this session" and a
+    /// covering session was created in the agent.
+    pub fn log_session_granted(&self, vault: &str, entry: &str, field: &str, policy: AgentPolicy) {
+        self.append(&ApprovalEvent {
+            ts: Utc::now().to_rfc3339(),
+            event: "session_granted",
+            id: None,
+            vault,
+            entry,
+            field,
+            policy: policy.as_str(),
+            requester: requester(),
+            request: None,
+            decision: Some("approved"),
+            session_until: None,
         });
     }
 
@@ -231,6 +283,7 @@ impl ApprovalLog {
             requester: requester(),
             request: None,
             decision: None,
+            session_until: None,
         });
     }
 
@@ -349,9 +402,10 @@ fn positional(entry: &str) -> String {
 /// stay unquoted for readability.
 fn shell_quote(value: &str) -> String {
     let safe = !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@' | '+' | '%'));
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@' | '+' | '%')
+        });
     if safe {
         value.to_string()
     } else {
@@ -388,6 +442,20 @@ pub(crate) fn current_vault_name() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// How the owner answered the ask-flow prompt. "Approve for this
+/// session" additionally records a reusable reveal session in the
+/// passlane session agent (passlane#54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalChoice {
+    /// Approve this one reveal.
+    Once,
+    /// Approve and hold a timed session covering further agent-facing
+    /// reveals of this entry field.
+    Session,
+    /// Deny.
+    Deny,
+}
+
 /// Enforce `policy` for one reveal using the default approval log, running
 /// the Phase 0 ask flow (interactive prompt) for `ask` entries in an owner
 /// context.
@@ -412,18 +480,56 @@ pub fn enforce_with_prompt<F>(
     prompt: F,
 ) -> Result<(), Error>
 where
-    F: FnOnce() -> bool,
+    F: FnOnce() -> ApprovalChoice,
+{
+    enforce_with_seams(
+        log,
+        policy,
+        context,
+        entry,
+        field,
+        &|vault, entry, field| crate::session_agent::check_reveal(vault, entry, field),
+        &|vault, entry, field| {
+            crate::session_agent::open_reveal_session(vault, entry, field).unwrap_or(false)
+        },
+        prompt,
+    )
+}
+
+/// The ask flow with the agent consult and the session-creation
+/// injected, so the session integration is testable without a running
+/// agent.
+fn enforce_with_seams<F>(
+    log: &ApprovalLog,
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry: &str,
+    field: &str,
+    check_session: &dyn Fn(&str, &str, &str) -> Option<u64>,
+    open_session: &dyn Fn(&str, &str, &str) -> bool,
+    prompt: F,
+) -> Result<(), Error>
+where
+    F: FnOnce() -> ApprovalChoice,
 {
     let vault = current_vault_name();
     match decide(policy, context) {
         RevealDecision::Reveal => Ok(()),
         RevealDecision::NeedApproval => {
             if context == RevealContext::Agent {
+                // An owner's earlier "Approve for this session" covers
+                // this agent-facing reveal — the reusable form of the
+                // approval (passlane#54). It is audited like any reveal.
+                if let Some(until) = check_session(&vault, entry, field) {
+                    log.log_session_reveal(&vault, entry, field, policy, until);
+                    return Ok(());
+                }
                 let id = log.log_request(&vault, entry, field, policy);
                 Err(Error::new(&format!(
                     "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
-                     recorded in the approval log ({}). Until the approval link ships, the \
-                     owner performs the reveal interactively instead: {}",
+                     recorded in the approval log ({}). The owner can approve it \
+                     interactively with {} — choosing 'Approve for this session' there \
+                     covers repeated agent use until the session expires.",
                     entry,
                     id,
                     log.path().display(),
@@ -431,15 +537,34 @@ where
                 )))
             } else {
                 let id = log.log_request(&vault, entry, field, policy);
-                let approved = prompt();
-                log.log_decision(&id, &vault, entry, field, policy, approved);
-                if approved {
-                    Ok(())
-                } else {
-                    Err(Error::new(&format!(
-                        "Reveal of '{}' denied by the owner",
-                        entry
-                    )))
+                match prompt() {
+                    ApprovalChoice::Deny => {
+                        log.log_decision(&id, &vault, entry, field, policy, false);
+                        Err(Error::new(&format!(
+                            "Reveal of '{}' denied by the owner",
+                            entry
+                        )))
+                    }
+                    ApprovalChoice::Once => {
+                        log.log_decision(&id, &vault, entry, field, policy, true);
+                        Ok(())
+                    }
+                    ApprovalChoice::Session => {
+                        log.log_decision(&id, &vault, entry, field, policy, true);
+                        if open_session(&vault, entry, field) {
+                            log.log_session_granted(&vault, entry, field, policy);
+                            Ok(())
+                        } else {
+                            // Approving something weaker than the owner
+                            // chose must never pass silently.
+                            eprintln!(
+                                "Warning: the session agent is not running, so the \
+                                 approval covers this reveal only. Start 'passlane-agent' \
+                                 to hold 'for this session' approvals."
+                            );
+                            Ok(())
+                        }
+                    }
                 }
             }
         }
@@ -475,14 +600,17 @@ pub fn enforce_with(
 
 /// The Phase 0 ask flow in an owner context: the interactive prompt *is*
 /// the deferred approval. A failed prompt (no terminal, EOF) denies.
-fn ask_approval(entry: &str, field: &str) -> bool {
-    inquire::Select::new(
+fn ask_approval(entry: &str, field: &str) -> ApprovalChoice {
+    let choice = inquire::Select::new(
         &format!("Approve revealing the {field} of '{entry}'? (agent=ask)"),
-        vec!["Approve once", "Deny"],
+        vec!["Approve once", "Approve for this session", "Deny"],
     )
-    .prompt()
-    .map(|answer| answer == "Approve once")
-    .unwrap_or(false)
+    .prompt();
+    match choice {
+        Ok("Approve once") => ApprovalChoice::Once,
+        Ok("Approve for this session") => ApprovalChoice::Session,
+        _ => ApprovalChoice::Deny,
+    }
 }
 
 /// Bulk stdout outputs (`list`, `export`) withhold `ask` entries without
@@ -496,7 +624,12 @@ pub fn log_bulk_ask_requests(
     field: &str,
     approved_by_owner: bool,
 ) {
-    log_bulk_ask_requests_with(&ApprovalLog::default_path(), entries, field, approved_by_owner);
+    log_bulk_ask_requests_with(
+        &ApprovalLog::default_path(),
+        entries,
+        field,
+        approved_by_owner,
+    );
 }
 
 /// [`log_bulk_ask_requests`] with the approval log injected (tests).
@@ -659,7 +792,12 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let log = ApprovalLog::at(path.as_ref());
                 for i in 0..25 {
-                    log.log_request("default", &format!("entry-{t}-{i}"), "password", AgentPolicy::Ask);
+                    log.log_request(
+                        "default",
+                        &format!("entry-{t}-{i}"),
+                        "password",
+                        AgentPolicy::Ask,
+                    );
                 }
             }));
         }
@@ -732,7 +870,7 @@ mod tests {
             RevealContext::Owner,
             "Stripe test key",
             "password",
-            || true,
+            || ApprovalChoice::Once,
         )
         .expect("an approved ask must reveal");
         let events = lines(&log);
@@ -751,7 +889,7 @@ mod tests {
             RevealContext::Owner,
             "Stripe test key",
             "password",
-            || false,
+            || ApprovalChoice::Deny,
         );
         assert!(result.is_err());
         let events = lines(&log);
@@ -834,6 +972,141 @@ mod tests {
         assert_eq!(events[1]["event"], "decision");
         assert_eq!(events[1]["decision"], "approved");
         assert_eq!(events[1]["id"], events[0]["id"]);
+    }
+
+    /// Drive the ask flow with injected session-agent seams.
+    fn enforce_sessions(
+        log: &ApprovalLog,
+        policy: AgentPolicy,
+        context: RevealContext,
+        entry: &str,
+        covered: Option<u64>,
+        opened: Result<bool, ()>,
+    ) -> Result<(), Error> {
+        let opened = opened.unwrap_or(false);
+        enforce_with_seams(
+            log,
+            policy,
+            context,
+            entry,
+            "password",
+            &|_, e, _f| {
+                assert_eq!(e, entry);
+                covered
+            },
+            &|_, e, _f| {
+                assert_eq!(e, entry);
+                opened
+            },
+            || ApprovalChoice::Session,
+        )
+    }
+
+    #[test]
+    fn agent_ask_covered_by_a_session_reveals_and_audits_it() {
+        let (log, _dir) = log_in_tempdir();
+        enforce_sessions(
+            &log,
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            Some(1_800_000_000),
+            Err(()),
+        )
+        .expect("a covering session must satisfy an agent ask");
+        let events = lines(&log);
+        assert_eq!(
+            events.len(),
+            1,
+            "no request is pending: the session answers it"
+        );
+        assert_eq!(events[0]["event"], "session");
+        assert_eq!(events[0]["decision"], "approved");
+        assert_eq!(events[0]["session_until"], 1_800_000_000);
+        assert_eq!(events[0]["entry"], "Stripe test key");
+    }
+
+    #[test]
+    fn agent_ask_without_a_covering_session_still_withholds() {
+        let (log, _dir) = log_in_tempdir();
+        let result = enforce_sessions(
+            &log,
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "Stripe test key",
+            None,
+            Err(()),
+        );
+        let err = result.expect_err("no session, no reveal");
+        assert!(
+            err.message.contains("needs owner approval"),
+            "{}",
+            err.message
+        );
+        let events = lines(&log);
+        assert_eq!(events[0]["event"], "request");
+    }
+
+    #[test]
+    fn sessions_never_override_the_never_policy() {
+        let (log, _dir) = log_in_tempdir();
+        let result = enforce_sessions(
+            &log,
+            AgentPolicy::Never,
+            RevealContext::Agent,
+            "root",
+            Some(1_800_000_000),
+            Err(()),
+        );
+        assert!(result.is_err(), "a session must not loosen agent=never");
+        let events = lines(&log);
+        assert_eq!(events[0]["event"], "blocked");
+    }
+
+    #[test]
+    fn owner_approve_for_session_creates_and_grants_a_session() {
+        let (log, _dir) = log_in_tempdir();
+        enforce_sessions(
+            &log,
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            "Stripe test key",
+            None,
+            Ok(true),
+        )
+        .expect("approving for the session must reveal");
+        let events = lines(&log);
+        assert_eq!(events.len(), 3, "request, decision, session_granted");
+        assert_eq!(events[1]["decision"], "approved");
+        assert_eq!(events[2]["event"], "session_granted");
+    }
+
+    #[test]
+    fn owner_approve_for_session_downgrades_to_once_without_an_agent() {
+        let (log, _dir) = log_in_tempdir();
+        enforce_sessions(
+            &log,
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            "Stripe test key",
+            None,
+            Ok(false),
+        )
+        .expect("the reveal is still approved, just single-use");
+        let events = lines(&log);
+        assert_eq!(events.len(), 2, "no session_granted event");
+        assert_eq!(events[1]["decision"], "approved");
+    }
+
+    #[test]
+    fn session_reveal_event_shape_is_stable() {
+        let (log, _dir) = log_in_tempdir();
+        log.log_session_reveal("default", "GitHub", "code", AgentPolicy::Ask, 42);
+        let events = lines(&log);
+        assert_eq!(events[0]["event"], "session");
+        assert_eq!(events[0]["session_until"], 42);
+        assert_eq!(events[0]["policy"], "ask");
+        assert!(events[0].get("id").is_none() || events[0]["id"].is_null());
     }
 
     #[test]
