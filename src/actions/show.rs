@@ -411,8 +411,14 @@ impl ShowTotpTemplate {
                 &the_match.id().to_string(),
                 "code",
             ) {
-                session_ended.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = tx.send(());
+                // The session ended during vault decryption. No code may
+                // be revealed on an ended session — return before the
+                // generation loop instead of queueing an exit signal
+                // that the loop would only see after one more code.
+                return Err(Error::new(
+                    "The session backing this view ended (revoked, expired or locked) \
+                     before any code was shown.",
+                ));
             } else {
                 let quit = tx.clone();
                 let ended = std::sync::Arc::clone(&session_ended);
