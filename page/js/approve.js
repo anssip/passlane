@@ -19,9 +19,39 @@ import {
 } from "./envelope.js";
 import { hpkeOpen, hpkeSeal, kid } from "./hpke.js";
 import { getApprover } from "./keystore.js";
-import { fromUtf8, nowSeconds, toBase64Url } from "./lib.js";
+import { ecdsaDerToRaw, fromUtf8, nowSeconds, toBase64Url } from "./lib.js";
 
 const $ = (id) => document.getElementById(id);
+
+/**
+ * Verify the request envelope's sender signature (SPEC §3: ECDSA P-256
+ * over the transcript). HPKE base mode encrypts but does not authenticate
+ * the sender, so the page must check this before showing anything
+ * actionable: only the CLI whose verifying key was pinned at enrollment
+ * can have produced the request. A forged envelope (sealed to the page's
+ * public key with a doctored body) fails here.
+ */
+export async function verifySenderSignature(envelope, cliSigPubSec1) {
+  if (envelope.sigKind !== 1) {
+    throw new Error(`unexpected signature kind ${envelope.sigKind}; CLI requests are ECDSA-signed`);
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    cliSigPubSec1,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"],
+  );
+  const ok = await crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    ecdsaDerToRaw(envelope.sig),
+    envelope.transcript,
+  );
+  if (!ok) {
+    throw new Error("the request is not signed by the CLI key enrolled on this device");
+  }
+}
 
 /** Describe the operation for the approval card. */
 export function describeBody(body) {
@@ -129,9 +159,32 @@ async function main() {
     return;
   }
 
+  // Authenticate the sender before treating the (decrypted) body as
+  // actionable: the signature binds the displayed operation to the CLI
+  // that signed the exact envelope bytes.
+  try {
+    await verifySenderSignature(envelope, record.cliSigPubSec1);
+  } catch (e) {
+    $("status").textContent =
+      `Refused: ${e.message}. Do not approve a request that fails this check.`;
+    return;
+  }
+  // Display identity: the sender key id must match the enrolled CLI.
+  const expectedSkid = await kid("enc", record.cliPublicSec1);
+  if (envelope.header.skid !== expectedSkid) {
+    $("status").textContent =
+      `Refused: the request claims sender '${envelope.header.skid}' but the enrolled ` +
+      `CLI is '${expectedSkid}'.`;
+    return;
+  }
+
   const body = JSON.parse(fromUtf8(plaintext));
   const view = describeBody(body);
   const fresh = nowSeconds() < envelope.header.exp;
+  if (!fresh) {
+    $("approve").disabled = true;
+    $("deny").disabled = true;
+  }
   const ttlLeft = Math.max(0, envelope.header.exp - nowSeconds());
 
   $("request").hidden = false;
@@ -151,8 +204,14 @@ async function main() {
   }
 
   const decide = async (decision, reason) => {
-    if (!fresh) {
-      $("status").textContent = "The request expired; nothing was answered.";
+    // Recheck the clock at decision time: a request opened before expiry
+    // must not stay approvable past its deadline (the CLI would refuse
+    // the answer anyway).
+    if (nowSeconds() >= envelope.header.exp) {
+      $("approve").disabled = true;
+      $("deny").disabled = true;
+      $("status").textContent =
+        "The request expired while this page was open; nothing was answered. Re-run the command to emit a fresh request.";
       return;
     }
     try {

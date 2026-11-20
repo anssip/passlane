@@ -22,7 +22,10 @@
     <pre id="out">running…</pre>
   </main>
   <script type="module">
-    // Trimmed vector: approval_request_unlock (see vectors/v1.json).
+    // Trimmed vectors (see vectors/v1.json — that file is the source of
+    // truth; these copies are pinned so this page works from file://).
+    // Both cases are needed: the request case exercises opening what the
+    // CLI sealed, the response case provides the approver's own key ids.
     const vector = {
       name: "approval_request_unlock",
       envelope_base64url: "UExBUAEDAbIAeyJ2IjoxLCJ0IjozLCJuIjoiYTIyNDI3MjI2Mzc3Y2M4NjdkNTFhZDNmMTMwYWYwOGEiLCJ0cyI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwMzAwLCJza2lkIjoiOGFlZDgyNmRiNmM4NmEyYSIsInJraWQiOiJjY2M0NWJkNTQwMTk2ZWMzIiwicmlkIjoiZDEzNDUxZGU3MTYwZWZhMmIyMzA3NmZkNzgyZGU5NjcifUEABBnL_ekTOtjCFXzH7BZUL7fIUgrcm8PWKHcaBDAyExCWhkKnTEagjunzBciZt5uX3f4uNviCoump5W7ko2eIJPv5AAAAGx4mriqGRToAPugXfmyGmUN9CCqQYMn1TR0dELlOZApemQ9N_DBTLrXIOG2Mf5QHpXLHVKqXVKAYp_l8UGnffG8LO-pAC1Ho7fin4ctDy0J1XikZL0mgDTpntFEXuvDh7UB8w5mIaHg4H9QBFwTFhU_vKTarJf0bl2vO8UEHEp0MmVI_jWxA7DJmxO_6_uWVpWSO9ntN2I0J9CbX7nTw2Y2STjp0UBy6ZZ4T5O1W1JKgKiTDkQYuPteDUuRj9jTmHUC7wvm3qT4V1XkLFzs4C2_52fGVhKdT-Y7EPNAeUfliFUBnmCZojd9jPLTQu7ciYKHrK7VrIaXJRwAwRQIhAOBbWxKMWs01MldaURR73TMXsBWt9QBf-VdrBO6ETA54AiAm6T6yDVOOiWCMZmgzST4aAR_OA_rnP9FDml9NxYpN_w",
@@ -49,9 +52,27 @@
       recipient_pub: "043cf509826fd9bcb398c0f3278c4d5d930c3b1c11624693c9b27748f7967052da7d86f1bca861c839fede8a22980da8bfa45fde7376190a1b57da72d76cdceaf4",
       now: 1760000000,
     };
+    const sibling = {
+      name: "approval_response_with_secret",
+      envelope_base64url: "UExBUAEEAbIAeyJ2IjoxLCJ0Ijo0LCJuIjoiZWE5ZjExZjhkZmIwY2EwOGE4ODEwZjllYTM5YzNhNmEiLCJ0cyI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwMzAwLCJza2lkIjoiY2NjNDViZDU0MDE5NmVjMyIsInJraWQiOiI4YWVkODI2ZGI2Yzg2YTJhIiwicmlkIjoiZmI3ODA4NTllOGQ4YzdiYzM3Yjc4ZTJmOWI4ZDY4ZDkifUEABCBelgvbB3V3CDc518NCOuHhMphsV7nKPwSuyBz3P7ttdFBq8dC4aSbF5LA8sx1YkpYhErx_bQJeLojGZtJKH5qcAAAALiFT_e4tiaEdBqURYByUoNaAuBBl_Y2cG5vQrQZGqnPOw0jV3EzOdq1mH1eYFe_8_d3apJ4dZG9GUS3E-nJu_kk8yz4g6KkDRDojjTHrWImmRldJPtToI9ELe7xUPUXGFiPelG16izYLJTuChfDZIw_TJVNtldbDkXIR9qmp2X77EyI5CPHOs_vBF3Unx7vzhUvXPDjPRIrrFnNFRwAwRQIgftagUGSb_d3-bDlrrz-u1LV5ZE-xQuldlJB0zV_3zU8CIQCOx2O4XVe1I6Ls5Mg9-SRCOVM8IP6ZkdFwUejqSzRvOg",
+      body: {
+        decision: "Allow", response: "7777777777777777777777777777777777777777",
+        scope: { kind: "timed", seconds: 300 }, type: "approval_response",
+      },
+      recipient: {
+        enc_secret: "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+        sig_secret: "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5",
+      },
+      sender_pin: {
+        enc_pub: "043cf509826fd9bcb398c0f3278c4d5d930c3b1c11624693c9b27748f7967052da7d86f1bca861c839fede8a22980da8bfa45fde7376190a1b57da72d76cdceaf4",
+        label: "anssi-iphone", paired_at: 1760000000,
+        sig_pub: "0435af7147f6aa29b0a55eaa8f36e643e879ee25dc5d85b71075336594f805d15e036bea6376800727f945d278a9c0c51725b25b3fc0ec047be9991c306b24622e",
+      },
+      now: 1760000000,
+    };
 
     const { runTests, setVectors } = await import("./js/tests.js");
-    setVectors({ cases: [vector] });
+    setVectors({ cases: [vector, sibling] });
     const { passed, failed, results } = await runTests();
     const out = document.getElementById("out");
     out.textContent = results

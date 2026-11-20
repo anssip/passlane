@@ -108,21 +108,34 @@ pub fn page_url(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_PAGE.to_string())
 }
 
-/// `https://…/approve#<envelope>` — the envelope rides the fragment, which
-/// browsers never send to the domain.
-pub fn approve_link(page: &str, envelope_b64url: &str) -> String {
-    format!("{}/approve#{envelope_b64url}", page.trim_end_matches('/'))
+/// `https://…/approve.html#<envelope>` — the envelope rides the fragment,
+/// which browsers never send to the domain. The `.html` suffix works on
+/// any plain static file server; a real deployment may add a clean-URL
+/// rewrite later (the page is the same bytes).
+pub fn approve_link(base: &str, envelope_b64url: &str) -> String {
+    format!("{base}/approve.html#{envelope_b64url}")
 }
 
-/// `https://…/enroll#n=<nonce hex>&c=<CLI encryption public key hex>` —
-/// the enrollment link (SPEC §6). The nonce drives the binding ceremony;
-/// the CLI's public key is what the page later seals its approval
-/// responses to. Everything stays in the fragment.
-pub fn enroll_link(page: &str, nonce_hex: &str, cli_enc_pub_hex: &str) -> String {
+/// `https://…/enroll.html#n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying key hex>`
+/// — the enrollment link (SPEC §6). The nonce drives the binding ceremony;
+/// the CLI's public keys are what the page later seals its approval
+/// responses to (`c`) and verifies request signatures against (`s`).
+/// Everything stays in the fragment.
+pub fn enroll_link(page: &str, nonce_hex: &str, cli_enc_pub_hex: &str, cli_sig_pub_hex: &str) -> String {
     format!(
-        "{}/enroll#n={nonce_hex}&c={cli_enc_pub_hex}",
-        page.trim_end_matches('/')
+        "{page}/enroll.html#n={nonce_hex}&c={cli_enc_pub_hex}&s={cli_sig_pub_hex}",
     )
+}
+
+/// The link base requests to `peer` should use: the origin pinned at its
+/// enrollment (so a `--page https://custom.example` enrollment keeps
+/// emitting links there), falling back to the configured default for
+/// pins without WebAuthn metadata.
+fn link_base_for(peer: &PeerPin) -> String {
+    peer.webauthn
+        .as_ref()
+        .map(|w| w.origin.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| page_url(None))
 }
 
 /// Render a QR as terminal text: two module rows per line via half-block
@@ -172,7 +185,7 @@ pub fn render_qr(data: &str) -> Result<String, String> {
 pub struct EmittedRequest {
     /// The request id the response must echo.
     pub rid: String,
-    /// The full `https://…/approve#…` link.
+    /// The full `https://…/approve.html#…` link.
     pub link: String,
     /// The envelope, unpadded base64url (the link's fragment).
     #[cfg_attr(not(test), allow(dead_code))]
@@ -180,11 +193,13 @@ pub struct EmittedRequest {
 }
 
 /// Seal an approval request to the pinned approver and record it as
-/// pending. Fails when no approver is pinned yet.
+/// pending. `entry_id` is the entry's stable UUID — grants match on it,
+/// never on the display title. Fails when no approver is pinned yet.
 pub fn emit_approval_request(
     dir: &std::path::Path,
     vault: &str,
     entry: &str,
+    entry_id: &str,
     field: &str,
     requester: &str,
 ) -> Result<EmittedRequest, String> {
@@ -199,7 +214,7 @@ pub fn emit_approval_request(
         scope: Scope::Once,
         challenge: None,
     };
-    emit_request(dir, vault, entry, field, body)
+    emit_request(dir, vault, entry, entry_id, field, body)
 }
 
 /// The unlock variant (SPEC §7): the vault's challenge travels encrypted
@@ -222,13 +237,14 @@ pub fn emit_unlock_request(
         scope: Scope::Once,
         challenge: Some(passlane_approval::message::SecretHex::from_bytes(challenge)),
     };
-    emit_request(dir, vault, "", "", body)
+    emit_request(dir, vault, "", "", "", body)
 }
 
 fn emit_request(
     dir: &std::path::Path,
     vault: &str,
     entry: &str,
+    entry_id: &str,
     field: &str,
     body: Body,
 ) -> Result<EmittedRequest, String> {
@@ -249,22 +265,24 @@ fn emit_request(
     let rid = envelope.header().rid.clone();
     let exp = envelope.header().exp;
     let encoded = envelope.to_base64url();
-    let link = approve_link(&page_url(None), &encoded);
+    let link = approve_link(&link_base_for(peer), &encoded);
 
-    let mut pending = PendingStore::load(dir)
-        .map_err(|e| format!("could not load the pending-request store: {e}"))?;
-    pending.upsert(PendingRequest {
-        rid: rid.clone(),
-        vault: vault.to_string(),
-        entry: entry.to_string(),
-        field: field.to_string(),
-        created: now,
-        exp,
-        state: RequestState::Pending,
-    });
-    pending
-        .save()
-        .map_err(|e| format!("could not record the pending request: {e}"))?;
+    // Recording runs under the store's exclusive lock (and persists the
+    // pruning of dead records) — a concurrent consume/approve can never
+    // be overwritten by this stale view.
+    PendingStore::transaction(dir, |pending| {
+        pending.upsert(PendingRequest {
+            rid: rid.clone(),
+            vault: vault.to_string(),
+            entry_id: entry_id.to_string(),
+            entry: entry.to_string(),
+            field: field.to_string(),
+            created: now,
+            exp,
+            state: RequestState::Pending,
+        });
+    })
+    .map_err(|e| format!("could not record the pending request: {e}"))?;
     Ok(EmittedRequest {
         rid,
         link,
@@ -277,18 +295,19 @@ fn emit_request(
 // ---------------------------------------------------------------------------
 
 /// Consume a live grant for this exact reveal, best-effort: returns the
-/// approving request's rid, or None when nothing grants it.
+/// approving request's rid, or None when nothing grants it. The whole
+/// load-consume-save span runs under the store's exclusive lock, so two
+/// concurrent reveals can never both consume a once-grant.
 pub fn consume_grant(
     dir: &std::path::Path,
     vault: &str,
-    entry: &str,
+    entry_id: &str,
     field: &str,
 ) -> Option<String> {
     let now = now_secs();
-    let mut pending = PendingStore::load(dir).ok()?;
-    let rid = pending.take_grant(vault, entry, field, now)?;
-    pending.save().ok()?;
-    Some(rid)
+    PendingStore::transaction(dir, |pending| pending.take_grant(vault, entry_id, field, now))
+        .ok()
+        .flatten()
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +349,9 @@ pub enum ApproveOutcome {
 /// open() (freshness, sender pinning, WebAuthn assertion, AEAD, replay
 /// recording) → grant or deny. The replay store is persisted only after
 /// full verification, and the pending record only changes state for a
-/// verified decision.
+/// verified decision. Everything that reads or writes the pending store
+/// runs inside one exclusive-locked transaction (load through atomic
+/// save), so concurrent approvals and reveals serialize on the same view.
 pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutcome, String> {
     let now = now_secs();
     let cleaned: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
@@ -344,105 +365,105 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
     }
     let rid = header.rid.clone();
 
-    let mut pending = PendingStore::load(dir)
-        .map_err(|e| format!("could not load the pending-request store: {e}"))?;
-    let record = pending
-        .find(&rid)
-        .ok_or_else(|| {
-            "no pending approval request matches this response (it may have expired)".to_string()
-        })?
-        .clone();
-    match record.state {
-        RequestState::Pending => {}
-        RequestState::Granted { .. } => {
-            return Err(format!("request {rid} was already approved; it cannot be approved twice"))
-        }
-        RequestState::Consumed => {
-            return Err(format!(
-                "request {rid} was already approved and used; emit a new one by re-running the command"
-            ))
-        }
-        RequestState::Denied => {
-            return Err(format!("request {rid} was already denied"))
-        }
-    }
-    if now >= record.exp {
-        pending.prune(now);
-        let _ = pending.save();
-        return Err(format!(
-            "the request expired at {}; emit a new one by re-running the command",
-            record.exp
-        ));
-    }
-
     let identity = load_identity(dir)?;
     let peers = load_peers_pinned(dir)?;
     let mut nonces = FileNonceStore::load(&nonce_store_path(dir))
         .map_err(|e| format!("replay store: {e}"))?;
-    let body = passlane_approval::envelope::open(
-        &identity,
-        &peers,
-        &envelope,
-        now,
-        &Policy::default(),
-        &mut nonces,
-    )
-    .map_err(|e| format!("the approval response failed verification: {e}"))?;
-    nonces
-        .save()
-        .map_err(|e| format!("could not persist the replay store: {e}"))?;
 
-    let Body::ApprovalResponse {
-        decision,
-        scope,
-        response,
-    } = &*body
-    else {
-        return Err("the envelope does not carry an approval response body".to_string());
-    };
-
-    let (vault, entry, field) =
-        (record.vault.clone(), record.entry.clone(), record.field.clone());
-    match decision {
-        Decision::Allow => {
-            let once = matches!(scope, Scope::Once);
-            // A once-grant is bounded by the request envelope's own expiry
-            // (it lives only to be consumed); a timed grant by its window.
-            let until = if once {
-                record.exp
-            } else {
-                now + scope.seconds()
-            };
-            if !pending.grant(&rid, once, until) {
-                return Err(format!("request {rid} disappeared from the pending store"));
+    let outcome = PendingStore::transaction(dir, |pending| -> Result<ApproveOutcome, String> {
+        let record = pending
+            .find(&rid)
+            .ok_or_else(|| {
+                "no pending approval request matches this response (it may have expired)"
+                    .to_string()
+            })?
+            .clone();
+        match record.state {
+            RequestState::Pending => {}
+            RequestState::Granted { .. } => {
+                return Err(format!(
+                    "request {rid} was already approved; it cannot be approved twice"
+                ))
             }
-            pending
-                .save()
-                .map_err(|e| format!("could not persist the grant: {e}"))?;
-            Ok(ApproveOutcome::Allowed {
-                rid,
-                vault,
-                entry,
-                field,
-                once,
-                until,
-                has_unlock_response: response.is_some(),
-            })
+            RequestState::Consumed => {
+                return Err(format!(
+                    "request {rid} was already approved and used; emit a new one by re-running the command"
+                ))
+            }
+            RequestState::Denied => {
+                return Err(format!("request {rid} was already denied"))
+            }
         }
-        Decision::Deny { reason } => {
-            pending.deny(&rid);
-            pending
-                .save()
-                .map_err(|e| format!("could not persist the denial: {e}"))?;
-            Ok(ApproveOutcome::Denied {
-                rid,
-                vault,
-                entry,
-                field,
-                reason: reason.clone(),
-            })
+        if now >= record.exp {
+            return Err(format!(
+                "the request expired at {}; emit a new one by re-running the command",
+                record.exp
+            ));
         }
-    }
+
+        // Full verification (the replay nonce is recorded in memory by
+        // open() only once everything above it passed).
+        let body = passlane_approval::envelope::open(
+            &identity,
+            &peers,
+            &envelope,
+            now,
+            &Policy::default(),
+            &mut nonces,
+        )
+        .map_err(|e| format!("the approval response failed verification: {e}"))?;
+        nonces
+            .save()
+            .map_err(|e| format!("could not persist the replay store: {e}"))?;
+
+        let Body::ApprovalResponse {
+            decision,
+            scope,
+            response,
+        } = &*body
+        else {
+            return Err("the envelope does not carry an approval response body".to_string());
+        };
+
+        let (vault, entry, field) =
+            (record.vault.clone(), record.entry.clone(), record.field.clone());
+        match decision {
+            Decision::Allow => {
+                let once = matches!(scope, Scope::Once);
+                // A once-grant is bounded by the request envelope's own expiry
+                // (it lives only to be consumed); a timed grant by its window.
+                let until = if once {
+                    record.exp
+                } else {
+                    now + scope.seconds()
+                };
+                if !pending.grant(&rid, once, until) {
+                    return Err(format!("request {rid} disappeared from the pending store"));
+                }
+                Ok(ApproveOutcome::Allowed {
+                    rid,
+                    vault,
+                    entry,
+                    field,
+                    once,
+                    until,
+                    has_unlock_response: response.is_some(),
+                })
+            }
+            Decision::Deny { reason } => {
+                pending.deny(&rid);
+                Ok(ApproveOutcome::Denied {
+                    rid,
+                    vault,
+                    entry,
+                    field,
+                    reason: reason.clone(),
+                })
+            }
+        }
+    })
+    .map_err(|e| format!("could not update the pending-request store: {e}"))?;
+    outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -687,23 +708,18 @@ mod tests {
     #[test]
     fn approve_link_carries_the_envelope_in_the_fragment_only() {
         let link = approve_link("https://page.example", "UExBUA");
-        assert_eq!(link, "https://page.example/approve#UExBUA");
+        assert_eq!(link, "https://page.example/approve.html#UExBUA");
         // Fragment-only transport: nothing before the '#'.
         let (before, fragment) = link.split_once('#').unwrap();
         assert_eq!(fragment, "UExBUA");
         assert!(!before.contains("UExBUA"));
-        // Trailing slashes on the configured page do not duplicate.
-        assert_eq!(
-            approve_link("https://page.example/", "X"),
-            "https://page.example/approve#X"
-        );
     }
 
     #[test]
-    fn enroll_link_carries_the_nonce_and_cli_key() {
+    fn enroll_link_carries_the_nonce_and_cli_keys() {
         assert_eq!(
-            enroll_link("https://page.example", "aabb", "04cd"),
-            "https://page.example/enroll#n=aabb&c=04cd"
+            enroll_link("https://page.example", "aabb", "04cd", "05ef"),
+            "https://page.example/enroll.html#n=aabb&c=04cd&s=05ef"
         );
     }
 
@@ -726,7 +742,7 @@ mod tests {
 
     #[test]
     fn qr_renders_quiet_zoned_square_text() {
-        let qr = render_qr("https://approve.passlane.app/approve#UExBUA").unwrap();
+        let qr = render_qr("https://approve.passlane.app/approve.html#UExBUA").unwrap();
         let lines: Vec<&str> = qr.lines().collect();
         // Quiet zone of 4 modules = 2 leading/trailing space-only lines.
         assert!(lines.len() > 8, "a QR with quiet zone has padding rows");
@@ -762,10 +778,10 @@ mod tests {
             pin_approver(dir, pin).unwrap();
 
             // -- emit: the ask flow seals a request to the pinned page --
-            let emitted = emit_approval_request(dir, "default", "GitHub", "password", "test-user")
+            let emitted = emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user")
                 .expect("emission succeeds with a pinned approver");
             assert_eq!(emitted.rid.len(), 32);
-            assert!(emitted.link.contains("/approve#"));
+            assert!(emitted.link.contains("/approve.html#"));
             assert!(emitted.link.ends_with(&emitted.envelope));
 
             // The link's fragment IS the envelope, and the page can parse
@@ -827,10 +843,10 @@ mod tests {
 
             // -- the ask flow consumes the grant, exactly once --
             assert_eq!(
-                consume_grant(dir, "default", "GitHub", "password"),
+                consume_grant(dir, "default", "uuid-github", "password"),
                 Some(rid.clone())
             );
-            assert_eq!(consume_grant(dir, "default", "GitHub", "password"), None);
+            assert_eq!(consume_grant(dir, "default", "uuid-github", "password"), None);
 
             // -- presenting the same blob again is refused: the request
             //    was granted and used --
@@ -848,7 +864,7 @@ mod tests {
             pin_approver(dir, pin).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
-                emit_approval_request(dir, "default", "GitHub", "password", "test-user").unwrap();
+                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
             let answer =
                 mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
 
@@ -895,7 +911,7 @@ mod tests {
             pin_approver(dir, pin).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
-                emit_approval_request(dir, "default", "GitHub", "password", "test-user").unwrap();
+                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
             let answer =
                 mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
 
@@ -915,7 +931,7 @@ mod tests {
             pin_approver(dir, pin).unwrap();
             let cli = load_identity(dir).unwrap();
             let emitted =
-                emit_approval_request(dir, "default", "prod-db", "password", "test-user").unwrap();
+                emit_approval_request(dir, "default", "prod-db", "uuid-prod", "password", "test-user").unwrap();
             let answer = mock_page_response(
                 &cli,
                 &page,
@@ -928,7 +944,7 @@ mod tests {
 
             let outcome = approve_response(dir, &answer.to_base64url()).unwrap();
             assert!(matches!(outcome, ApproveOutcome::Denied { .. }));
-            assert_eq!(consume_grant(dir, "default", "prod-db", "password"), None);
+            assert_eq!(consume_grant(dir, "default", "uuid-prod", "password"), None);
 
             // A later Allow for the same rid cannot resurrect it.
             let allow = mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
@@ -976,7 +992,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let dir = state.path();
         {
-            let err = emit_approval_request(dir, "default", "GitHub", "password", "t").unwrap_err();
+            let err = emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "t").unwrap_err();
             assert!(err.contains("approvals enroll"), "{err}");
         }
     }

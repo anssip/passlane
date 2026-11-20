@@ -52,13 +52,16 @@ impl ApprovalsAction {
 
         // 1. Fresh nonce + link + QR. The nonce is single-use and lives
         //    only in this process (SPEC §6); the link also carries this
-        //    CLI's encryption public key so the page knows who to seal
-        //    its approvals to (fragment-only, like every link).
+        //    CLI's public keys — its encryption key (`c`) so the page
+        //    knows who to seal approvals to, and its verifying key (`s`)
+        //    so the page can check request signatures (fragment-only,
+        //    like every link).
         let nonce = approvals::generate_enrollment_nonce();
         let identity = approvals::load_identity(&approvals::state_dir())
             .map_err(|e| Error::new(&e))?;
         let cli_pub = passlane_approval::encoding::hex_encode(&identity.encryption_public());
-        let link = approvals::enroll_link(&page, &nonce, &cli_pub);
+        let cli_sig = passlane_approval::encoding::hex_encode(&identity.verifying_key().to_sec1_bytes());
+        let link = approvals::enroll_link(&page, &nonce, &cli_pub, &cli_sig);
         println!("Open this link on the approval page (scan or paste it):");
         println!("{link}");
         print_qr(&link);
@@ -128,16 +131,18 @@ impl ApprovalsAction {
     }
 
     fn run_pending() -> Result<String, Error> {
-        let mut store =
-            approvals::pending::PendingStore::load(&approvals::state_dir()).map_err(|e| {
-                Error::new(&format!("could not load the pending-request store: {e}"))
-            })?;
-        store.prune(approvals::now_secs());
-        if store.records().is_empty() {
+        // The transaction holds the lock and persists the pruning of dead
+        // records while it displays them.
+        let store = crate::approvals::pending::PendingStore::transaction(
+            &approvals::state_dir(),
+            |store| store.records().to_vec(),
+        )
+        .map_err(|e| Error::new(&format!("could not load the pending-request store: {e}")))?;
+        if store.is_empty() {
             return Ok("No pending approval requests.".to_string());
         }
         let mut out = String::from("Pending approval requests:\n");
-        for record in store.records() {
+        for record in &store {
             let state = match &record.state {
                 approvals::pending::RequestState::Pending => "awaiting the approver".to_string(),
                 approvals::pending::RequestState::Granted { once, until } => {

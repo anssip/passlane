@@ -26,23 +26,32 @@ import { concat, fromHex, sha256, toBase64Url, toHex } from "./lib.js";
 
 const $ = (id) => document.getElementById(id);
 
-/** Parse the enrollment fragment into { nonce, cliPublicSec1 }. */
+/** Parse the enrollment fragment into { nonce, cliPublicSec1, cliSigPubSec1 }. */
 export function parseEnrollFragment(hash) {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
   const n = params.get("n");
   const c = params.get("c");
-  if (!n || !c) throw new Error("the link is incomplete: it needs both the nonce (n=…) and the CLI key (c=…)");
+  const s = params.get("s");
+  if (!n || !c || !s) {
+    throw new Error(
+      "the link is incomplete: it needs the nonce (n=…), the CLI encryption key (c=…) and the CLI verifying key (s=…)",
+    );
+  }
   const nonce = fromHex(n);
   if (nonce.length !== 16) throw new Error("the enrollment nonce must be 16 bytes of hex");
   const cliPublic = fromHex(c);
   if (cliPublic.length !== 65 || cliPublic[0] !== 0x04) {
     throw new Error("the CLI public key must be a 65-byte uncompressed P-256 point (hex)");
   }
-  return { nonce, cliPublicSec1: cliPublic };
+  const cliSig = fromHex(s);
+  if (cliSig.length !== 65 || cliSig[0] !== 0x04) {
+    throw new Error("the CLI verifying key must be a 65-byte uncompressed P-256 point (hex)");
+  }
+  return { nonce, cliPublicSec1: cliPublic, cliSigPubSec1: cliSig };
 }
 
 /** Run the whole ceremony; returns the enrollment blob object. */
-export async function runEnrollment({ nonce, cliPublicSec1 }, options = {}) {
+export async function runEnrollment({ nonce, cliPublicSec1, cliSigPubSec1 }, options = {}) {
   // 1. The page's encryption identity.
   const { privateNonExportable, publicSec1 } =
     options.generateKey?.() ?? (await generateEnrollmentKey());
@@ -64,6 +73,9 @@ export async function runEnrollment({ nonce, cliPublicSec1 }, options = {}) {
     encPrivate: privateNonExportable,
     encPub: publicSec1,
     cliPublicSec1,
+    // The CLI's verifying key: what request signatures are checked against
+    // (HPKE base mode does not authenticate the sender).
+    cliSigPubSec1,
     credentialId: parsed.credentialId,
     createdAt: Date.now(),
   };

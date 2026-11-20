@@ -169,7 +169,17 @@ fn cbor_item(bytes: &[u8]) -> Result<(CborValue, usize)> {
     let (arg, rest) = read_argument(info, rest)?;
     let head_len = bytes.len() - rest.len();
     match mt {
-        0 => Ok((CborValue::Int(arg as i64), head_len)),
+        0 => {
+            // Reject unsigned integers beyond i64: casting would wrap them
+            // into the negative range, letting an oversized value alias a
+            // negative label (e.g. an encoded 18446744073709551609 posing
+            // as alg -7). No COSE label or value this profile accepts is
+            // anywhere near the boundary.
+            if arg > i64::MAX as u64 {
+                return Err(malformed("unsigned integer exceeds i64 range"));
+            }
+            Ok((CborValue::Int(arg as i64), head_len))
+        }
         1 => {
             // Negative integers encode -1 - n.
             if arg > i64::MAX as u64 {
@@ -406,6 +416,23 @@ mod tests {
         k.push(0xbf); // map, indefinite length
         k.extend_from_slice(&[0x01, 0x02]);
         k.push(0xff); // break
+        assert!(parse_cose_ec2_p256(&k).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_unsigned_integers_that_wrap_negative() {
+        // 18446744073709551609 == u64::MAX - 6 wraps to -7 as i64; it must
+        // be rejected outright, not accepted as alg -7 (ES256).
+        let mut k = canonical_cose_key();
+        k[4] = 0x1b; // alg as u64
+        k.splice(5..6, [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9]].concat());
+        assert!(parse_cose_ec2_p256(&k).is_err());
+
+        // Same trick on a label: u64::MAX - 1 would wrap to -2 (the x
+        // coordinate's label).
+        let mut k = canonical_cose_key();
+        k[6] = 0x1b;
+        k.splice(7..8, [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe]].concat());
         assert!(parse_cose_ec2_p256(&k).is_err());
     }
 }

@@ -129,17 +129,50 @@ export function nowSeconds() {
  */
 export function ecdsaRawToDer(raw) {
   if (raw.length !== 64) throw new Error("ecdsa: expected a 64-byte raw signature");
-  const half = raw.subarray(0, 32);
-  const rest = raw.subarray(32, 64);
-  const derInt = (bytes) => {
-    let i = 0;
-    while (i < bytes.length - 1 && bytes[i] === 0) i++;
-    let v = bytes.subarray(i);
-    if (v[0] & 0x80) v = concat(new Uint8Array([0]), v); // keep INTEGER positive
-    return concat(new Uint8Array([0x02, v.length]), v);
-  };
-  const r = derInt(half);
-  const s = derInt(rest);
-  const body = concat(r, s);
+  const body = concat(derInt(raw.subarray(0, 32)), derInt(raw.subarray(32, 64)));
   return concat(new Uint8Array([0x30, body.length]), body);
+}
+
+function derInt(bytes) {
+  let i = 0;
+  while (i < bytes.length - 1 && bytes[i] === 0) i++;
+  let v = bytes.subarray(i);
+  if (v[0] & 0x80) v = concat(new Uint8Array([0]), v); // keep INTEGER positive
+  return concat(new Uint8Array([0x02, v.length]), v);
+}
+
+/**
+ * The inverse: DER SEQUENCE(INTEGER, INTEGER) → raw r||s (64 bytes), the
+ * form WebCrypto's verify expects. Rejects anything that is not the exact
+ * two-INTEGER shape with canonical lengths.
+ */
+export function ecdsaDerToRaw(der) {
+  const err = new Error("ecdsa: not a DER ECDSA signature");
+  if (der[0] !== 0x30) throw err;
+  let at = 1;
+  if (der[1] < 0x80) {
+    if (der.length !== 2 + der[1]) throw err;
+    at = 2;
+  } else if (der[1] === 0x81) {
+    if (der.length !== 3 + der[2]) throw err;
+    at = 3;
+  } else {
+    throw err; // our signatures never exceed 255 bytes
+  }
+  const readInt = () => {
+    if (der[at] !== 0x02) throw err;
+    const len = der[at + 1];
+    if (len > 33 || (len === 33 && der[at + 2] !== 0)) throw err;
+    const start = at + 2 + (len === 33 ? 1 : 0);
+    const int = der.subarray(start, at + 2 + len);
+    at += 2 + len;
+    // Left-pad to 32 (missing bytes are leading zeros).
+    const out = new Uint8Array(32);
+    out.set(int.subarray(Math.max(0, int.length - 32)), 32 - Math.min(32, int.length));
+    return out;
+  };
+  const r = readInt();
+  const s = readInt();
+  if (at !== der.length) throw err;
+  return concat(r, s);
 }

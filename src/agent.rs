@@ -410,9 +410,10 @@ pub fn enforce_reveal(
     policy: AgentPolicy,
     context: RevealContext,
     entry: &str,
+    entry_id: &str,
     field: &str,
 ) -> Result<(), Error> {
-    enforce_with(&ApprovalLog::default_path(), policy, context, entry, field)
+    enforce_with(&ApprovalLog::default_path(), policy, context, entry, entry_id, field)
 }
 
 /// [`enforce_with_prompt`] with the real interactive prompt.
@@ -421,9 +422,10 @@ pub fn enforce_with(
     policy: AgentPolicy,
     context: RevealContext,
     entry: &str,
+    entry_id: &str,
     field: &str,
 ) -> Result<(), Error> {
-    enforce_with_prompt(log, policy, context, entry, field, || {
+    enforce_with_prompt(log, policy, context, entry, entry_id, field, || {
         ask_approval(entry, field)
     })
 }
@@ -436,6 +438,7 @@ pub fn enforce_with_prompt<F>(
     policy: AgentPolicy,
     context: RevealContext,
     entry: &str,
+    entry_id: &str,
     field: &str,
     prompt: F,
 ) -> Result<(), Error>
@@ -448,6 +451,7 @@ where
         policy,
         context,
         entry,
+        entry_id,
         field,
         prompt,
     )
@@ -462,6 +466,7 @@ fn enforce_inner<F>(
     policy: AgentPolicy,
     context: RevealContext,
     entry: &str,
+    entry_id: &str,
     field: &str,
     prompt: F,
 ) -> Result<(), Error>
@@ -476,7 +481,7 @@ where
                 // A grant released by 'passlane approve --response' stands
                 // in for the owner's answer: consume it and reveal.
                 if let Some(rid) =
-                    crate::approvals::consume_grant(approvals_dir, &vault, entry, field)
+                    crate::approvals::consume_grant(approvals_dir, &vault, entry_id, field)
                 {
                     log.log_decision(&rid, &vault, entry, field, policy, true);
                     return Ok(());
@@ -489,6 +494,7 @@ where
                     approvals_dir,
                     &vault,
                     entry,
+                    entry_id,
                     field,
                     &requester(),
                 ) {
@@ -626,7 +632,16 @@ mod tests {
         F: FnOnce() -> bool,
     {
         let state = tempfile::tempdir().unwrap();
-        enforce_inner(log, state.path(), policy, context, entry, field, prompt)
+        enforce_inner(
+            log,
+            state.path(),
+            policy,
+            context,
+            entry,
+            &format!("uuid-{entry}"),
+            field,
+            prompt,
+        )
     }
 
     fn lines(log: &ApprovalLog) -> Vec<serde_json::Value> {
@@ -842,6 +857,7 @@ mod tests {
             AgentPolicy::Ask,
             RevealContext::Agent,
             "Stripe test key",
+            "uuid-stripe",
             "password",
             || panic!("no prompt in an agent context"),
         );
@@ -876,6 +892,7 @@ mod tests {
             AgentPolicy::Ask,
             RevealContext::Agent,
             "Stripe test key",
+            "uuid-stripe",
             "password",
             || panic!("no prompt in an agent context"),
         )
@@ -899,6 +916,7 @@ mod tests {
             AgentPolicy::Ask,
             RevealContext::Agent,
             "Stripe test key",
+            "uuid-stripe",
             "password",
             || panic!("a grant must not prompt"),
         )
@@ -915,6 +933,7 @@ mod tests {
             AgentPolicy::Ask,
             RevealContext::Agent,
             "Stripe test key",
+            "uuid-stripe",
             "password",
             || panic!("no prompt in an agent context"),
         );

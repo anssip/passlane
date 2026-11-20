@@ -6,8 +6,8 @@
           "TEAMID.anssip.passlane.app"
         ],
         "components": [
-          { "/": "/approve" },
-          { "/": "/enroll" }
+          { "/": "/approve*" },
+          { "/": "/enroll*" }
         ]
       }
     ]

@@ -10,6 +10,7 @@ import * as hpke from "./hpke.js";
 import * as envelope from "./envelope.js";
 import {
   concat,
+  ecdsaDerToRaw,
   ecdsaRawToDer,
   fromBase64Url,
   fromHex,
@@ -125,6 +126,34 @@ test("ecdsaRawToDer: canonical DER with sign padding", () => {
     raw.subarray(32),
   );
   eq(der, expected, "DER structure");
+});
+
+test("ecdsaDerToRaw inverts ecdsaRawToDer", () => {
+  // Round-trip both padded and short-integer shapes; WebCrypto verify
+  // needs the raw form the inverse produces.
+  const cases = [
+    [0xff, 0x7f], // padded r, plain s
+    [0x01, 0xff], // plain r, padded s
+    [0x80, 0x80], // both padded
+  ];
+  for (const [rHead, sHead] of cases) {
+    const raw = new Uint8Array(64);
+    raw[0] = rHead;
+    raw.fill(rHead, 1, 32);
+    raw[32] = sHead;
+    raw.fill(sHead, 33, 64);
+    eq(ecdsaDerToRaw(ecdsaRawToDer(raw)), raw, `roundtrip r=${rHead} s=${sHead}`);
+  }
+  // Garbage is rejected, not coerced.
+  let threw = 0;
+  for (const bad of [new Uint8Array(0), new Uint8Array([0x30, 0x02, 0x02, 0x01])]) {
+    try {
+      ecdsaDerToRaw(bad);
+    } catch {
+      threw++;
+    }
+  }
+  if (threw !== 2) throw new Error("malformed DER must be rejected");
 });
 
 // -- CBOR --------------------------------------------------------------------
@@ -255,6 +284,34 @@ test("vectors: page opens the CLI's approval request (DHKEM over WebCrypto)", as
   );
   const body = JSON.parse(new TextDecoder().decode(plaintext));
   eq(body, c.body, "decrypted body equals the vector body");
+});
+
+test("vectors: the page verifies the CLI's request signature", async () => {
+  // HPKE base mode does not authenticate the sender; the page checks the
+  // ECDSA signature over the transcript against the CLI verifying key
+  // pinned at enrollment (sender_pin.sig_pub) before showing anything
+  // actionable.
+  const c = caseByName("approval_request_unlock");
+  const e = envelope.parseEnvelopeB64Url(c.envelope_base64url);
+  const verify = async (pubHex) => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      fromHex(pubHex),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      ecdsaDerToRaw(e.sig),
+      e.transcript,
+    );
+  };
+  if (!(await verify(c.sender_pin.sig_pub))) throw new Error("genuine CLI signature must verify");
+  // The approver's own key (or any other) must not verify it.
+  const other = caseByName("approval_response_with_secret").sender_pin.sig_pub;
+  if (await verify(other)) throw new Error("a foreign key must not verify the request");
 });
 
 test("vectors: CLI opens the approver's response the same way", async () => {

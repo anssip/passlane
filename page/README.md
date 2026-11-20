@@ -27,12 +27,17 @@ runs the exact same files.
 
 ## Pages
 
-| Path          | Purpose                                                            |
-| ------------- | ------------------------------------------------------------------ |
-| `/enroll#…`   | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>`. |
-| `/approve#…`  | An approval request envelope (base64url in the fragment). Show, decide, paste the reply back into the terminal. |
-| `/test.html`  | In-browser self-test of the protocol layer against pinned vectors. |
-| `/`           | Landing page for people who paste the domain.                      |
+| Path                | Purpose                                                            |
+| ------------------- | ------------------------------------------------------------------ |
+| `/enroll.html#…`    | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying public key hex>`. |
+| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. |
+| `/test.html`        | In-browser self-test of the protocol layer against pinned vectors. |
+| `/`                 | Landing page for people who paste the domain.                      |
+
+The links the CLI emits point at the `.html` endpoints, so the site works
+on **any** plain static file server with zero routing configuration. A
+real deployment can add a `/approve` → `/approve.html` rewrite later; the
+bytes are the same.
 
 The envelope always rides the URL **fragment**, which browsers never send
 to the host. The domain later serves the app's

@@ -164,6 +164,7 @@ impl Scratch {
         let pending = serde_json::json!([{
             "rid": rid,
             "vault": "default",
+            "entry_id": format!("uuid-{entry}"),
             "entry": entry,
             "field": field,
             "created": now,
