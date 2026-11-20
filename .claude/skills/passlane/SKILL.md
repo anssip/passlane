@@ -36,6 +36,12 @@ passlane will **block on an interactive prompt** — which hangs unattended auto
 
 ## Reading secrets (the core of automation)
 
+Every entry carries an **agent access policy** as a KeePass custom attribute:
+`agent = never | ask | allow` (default `never`). All the stdout reading commands
+below are *agent-facing reveals* and honor it. See
+[Agent access policy](#agent-access-policy-never--ask--allow) below for the
+semantics and the "needs approval" state.
+
 Two commands are built for scripts and print to **stdout**:
 
 ### `passlane list [REGEXP] [--json] [-v]`
@@ -68,15 +74,16 @@ Every `--json` response is an envelope:
 { "type": "credentials", "count": 2, "entries": [ ... ] }
 ```
 
-Entry fields by `type`:
+Entry fields by `type` (secret fields are `null` when the entry's agent policy withheld them; the
+`agent` field states the policy that applied):
 
 | `type`          | entry fields |
 | --------------- | ------------ |
-| `credentials`   | `uuid`, `service`, `username`, `password`, `note` (optional), `last_modified` |
-| `payment_cards` | `id`, `name`, `name_on_card`, `number`, `cvv`, `expiry` (`{month, year}`), `color?`, `billing_address?`, `last_modified` |
-| `notes`         | `id`, `title`, `content`, `last_modified` |
-| `totp`          | `id`, `label`, `issuer`, `secret`, `algorithm`, `period`, `digits`, `last_modified` |
-| `totp_codes`    | `label`, `issuer`, `code`, `valid_for_seconds` — **never includes the stored secret** |
+| `credentials`   | `uuid`, `title`, `url?`, `username`, `password` (null when withheld), `note?`, `tags`, `expires`, `expiry_time?`, `custom_attributes`, `agent`, `last_modified` |
+| `payment_cards` | `id`, `name`, `name_on_card`, `number` (null when withheld), `cvv` (null when withheld), `expiry` (`{month, year}`), `color?`, `billing_address?`, `agent`, `last_modified` |
+| `notes`         | `id`, `title`, `content` (null when withheld), `agent`, `last_modified` |
+| `totp`          | `id`, `label`, `issuer`, `secret` (null when withheld), `algorithm`, `period`, `digits`, `agent`, `last_modified` |
+| `totp_codes`    | `label`, `issuer`, `code` (null when withheld), `valid_for_seconds`, `agent` — **never includes the stored secret** |
 
 ## TOTP / 2FA codes
 
@@ -106,6 +113,43 @@ passlane list -o --code --json
 > TOTP codes are valid only for a few seconds. **Fetch them just before use and never cache them.**
 > Re-fetch on each retry.
 
+## Agent access policy: `never` | `ask` | `allow`
+
+Each entry carries `agent = never | ask | allow` (default `never`) as a standard KeePass custom
+attribute. **All stdout reading commands honor it** (`show --out`, `show -o --once`, `list --json`,
+`list -v`, `list -o --code`, `list -p`, `list -n`):
+
+| Policy | Result on a stdout read |
+| ------ | ----------------------- |
+| `allow` | Secret returned normally. |
+| `ask`   | Exit code 1 / redacted; **needs owner approval**. The CLI records an approval request in `~/.passlane/approvals.log`. |
+| `never` (default) | Exit code 1 / redacted; the entry is not available to agents. |
+
+"Needs approval" is a first-class state — treat it like a locked vault:
+
+- **`never`:** do not retry and do not try to work around it. Tell the user which entry you need
+  and that its `agent` attribute must be changed to `ask` or `allow` (they can edit it in any
+  KeePass client, or via `passlane edit` → advanced fields → custom attributes).
+- **`ask`:** tell the user an approval is needed for `<entry>`. Until the approval link ships,
+  there is **no approval handoff**: the owner runs the read themselves (`passlane show
+  '<entry>'`, answers the prompt) and relays the secret to you if they choose. Their approval
+  covers only their own invocation — do **not** retry the read afterwards; it will just record
+  another pending request and fail again. If you should have durable access, ask the owner to
+  set the entry's `agent` attribute to `allow`.
+- Checking which entries you may read: `passlane list` (plain, no `-v`/`--json`) shows each
+  allowed entry's custom attributes, including `agent`; restricted entries show only the
+  policy attribute. This is not fully side-effect free — when such a listing redacts a
+  restricted entry's note or custom attributes, `agent=ask` entries record an approval
+  request (one per run).
+
+For `list` commands, restricted entries are **redacted, not omitted**: the secret fields
+(`password`, `secret`, `content`, `number`/`cvv`/cardholder/billing address, `code`) come
+back as `null`, notes and custom attributes are dropped except the `agent` attribute, and
+each entry gains an `"agent"` field with the policy that applied. A stderr summary counts
+what was withheld, and every withheld `agent=ask` entry records an approval request in the
+log (one per run — expect log growth if a script polls an `ask` entry). Handle `null`
+secrets explicitly instead of feeding empty strings into automations.
+
 ## Other commands
 
 | Command | Notes |
@@ -127,14 +171,19 @@ unattended automation** — only the reading commands above are.
 ## Safety rules
 
 - **Never** echo retrieved passwords or TOTP codes into chat, logs, or files you commit.
+- **Honor the agent policy** on every read: `never` means stop and ask the user; `ask` means tell
+  the user an approval is needed (see
+  [Agent access policy](#agent-access-policy-never--ask--allow)). Never retry in a loop or attempt
+  to bypass it (e.g. reading the kdbx file, the keychain, or `export` without the user).
 - Pipe secrets directly into the consuming command, or capture into a shell variable with
   `VAR=$(passlane ...)` — avoid inlining a secret into a command line where it lands in shell
   history or process listings.
 - Fetch TOTP codes **just-in-time**, immediately before the request that uses them.
 - Match patterns precisely (anchored regex) so `show -o --once` and `show --out` resolve to exactly
   one entry.
-- Treat exit code `1` as actionable: a **locked vault**, **no match**, or **ambiguous match**. Check
-  it and react rather than proceeding with empty output.
+- Treat exit code `1` as actionable: a **locked vault**, **no match**, **ambiguous match**, or an
+  **agent policy refusal** (`never`/`ask`). Check it and react rather than proceeding with empty
+  output; for `list`, also check for `null` secret fields.
 
 ## Worked examples
 

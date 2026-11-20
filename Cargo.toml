@@ -57,6 +57,13 @@ rustyline = "14.0.0"
 inquire = "0.7.5"
 ctrlc = "3.4"
 zeroize = "1.8"
+# Exclusive file locking for the append-only approval log (same version as
+# passlane-approval's file-backed nonce store).
+fs4 = "1.1"
+# Approval-protocol message types for the agent ask flow (issue #50). The
+# path+version form lets `cargo publish` rewrite it to the registry
+# dependency once passlane-approval is published.
+passlane-approval = { path = "crates/passlane-approval", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3.24.0"

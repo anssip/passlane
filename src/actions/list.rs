@@ -1,8 +1,251 @@
 use crate::actions::{ItemType, UnlockingAction};
-use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
+use crate::agent::{self, decide, RevealContext, RevealDecision};
+use chrono::{DateTime, Utc};
+use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
 use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use serde::Serialize;
+
+/// Why a secret was withheld from `list` output (agent policy applied to a
+/// stdout reveal).
+fn withheld_reason(policy: AgentPolicy) -> Option<&'static str> {
+    match decide(policy, RevealContext::Agent) {
+        RevealDecision::Reveal => None,
+        RevealDecision::NeedApproval => Some("agent=ask, needs owner approval"),
+        RevealDecision::Block => Some("agent=never"),
+    }
+}
+
+/// `list` prints to stdout, which is an agent-facing reveal: the agent
+/// policy applies to every secret field. Collects how many entries had
+/// secrets withheld and reports it on stderr, so stdout stays parseable.
+struct WithheldSummary {
+    never: usize,
+    ask: usize,
+}
+
+impl WithheldSummary {
+    fn new() -> Self {
+        Self { never: 0, ask: 0 }
+    }
+
+    fn tally(policies: impl Iterator<Item = AgentPolicy>) -> Self {
+        let mut summary = Self::new();
+        for policy in policies {
+            summary.record(policy);
+        }
+        summary
+    }
+
+    fn record(&mut self, policy: AgentPolicy) {
+        match withheld_reason(policy) {
+            Some(reason) if reason.starts_with("agent=never") => self.never += 1,
+            Some(_) => self.ask += 1,
+            None => {}
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.never + self.ask
+    }
+
+    fn report(&self) {
+        if self.total() > 0 {
+            let mut parts = Vec::new();
+            if self.never > 0 {
+                parts.push(format!("{} agent=never", self.never));
+            }
+            if self.ask > 0 {
+                parts.push(format!("{} agent=ask", self.ask));
+            }
+            eprintln!(
+                "Withheld secrets of {} entries per their agent policy ({}). Set an entry's \
+                 'agent' attribute to 'allow' to include it, or reveal it interactively \
+                 ('passlane show').",
+                self.total(),
+                parts.join(", ")
+            );
+        }
+    }
+}
+
+/// A credential as listed. Same shape as the entity's serialization, except
+/// `password` is `null` when the agent policy withheld it, and `agent`
+/// states the policy that applied.
+#[derive(Serialize)]
+struct ListedCredential {
+    uuid: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    tags: Vec<String>,
+    expires: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiry_time: Option<DateTime<Utc>>,
+    custom_attributes: Vec<(String, String)>,
+    agent: String,
+    password: Option<String>,
+    last_modified: DateTime<Utc>,
+}
+
+impl ListedCredential {
+    fn from_entry(entry: &Credential) -> Self {
+        let restricted = withheld_reason(entry.agent_policy()).is_some();
+        Self {
+            uuid: entry.uuid().to_string(),
+            title: entry.title().to_string(),
+            url: entry.url().map(str::to_string),
+            username: entry.username().to_string(),
+            // Notes and custom attributes can carry secrets (recovery
+            // codes, tokens); restricted entries keep only the policy
+            // attribute itself as metadata.
+            note: if restricted {
+                None
+            } else {
+                entry.note().map(str::to_string)
+            },
+            tags: entry.tags().to_vec(),
+            expires: entry.expires(),
+            expiry_time: entry.expiry_time(),
+            custom_attributes: if restricted {
+                vec![(
+                    passlane_core::vault::entities::AGENT_ATTRIBUTE.to_string(),
+                    entry.agent_policy().as_str().to_string(),
+                )]
+            } else {
+                entry.custom_attributes().to_vec()
+            },
+            agent: entry.agent_policy().as_str().to_string(),
+            password: withheld_reason(entry.agent_policy())
+                .is_none()
+                .then(|| entry.password().to_string()),
+            last_modified: *entry.last_modified(),
+        }
+    }
+}
+
+/// A payment card as listed; `number`, `cvv`, cardholder name and billing
+/// address are `null` when withheld.
+#[derive(Serialize)]
+struct ListedPayment {
+    id: String,
+    name: String,
+    name_on_card: Option<String>,
+    number: Option<String>,
+    cvv: Option<String>,
+    expiry: passlane_core::vault::entities::Expiry,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    billing_address: Option<passlane_core::vault::entities::Address>,
+    agent: String,
+    last_modified: DateTime<Utc>,
+}
+
+impl ListedPayment {
+    fn from_entry(entry: &PaymentCard, withheld: bool) -> Self {
+        Self {
+            id: entry.id().to_string(),
+            name: entry.name().to_string(),
+            // Cardholder name and billing address identify the owner as
+            // much as the number does; restricted entries keep only
+            // explicitly safe card metadata.
+            name_on_card: (!withheld).then(|| entry.name_on_card().to_string()),
+            number: (!withheld).then(|| entry.number().to_string()),
+            cvv: (!withheld).then(|| entry.cvv().to_string()),
+            expiry: entry.expiry().clone(),
+            color: entry.color().cloned(),
+            billing_address: if withheld {
+                None
+            } else {
+                entry.billing_address().cloned()
+            },
+            agent: entry.agent_policy().as_str().to_string(),
+            last_modified: *entry.last_modified(),
+        }
+    }
+}
+
+/// A note as listed; `content` is `null` when withheld.
+#[derive(Serialize)]
+struct ListedNote {
+    id: String,
+    title: String,
+    content: Option<String>,
+    agent: String,
+    last_modified: DateTime<Utc>,
+}
+
+impl ListedNote {
+    fn from_entry(entry: &Note, withheld: bool) -> Self {
+        Self {
+            id: entry.id().to_string(),
+            title: entry.title().to_string(),
+            content: (!withheld).then(|| entry.content().to_string()),
+            agent: entry.agent_policy().as_str().to_string(),
+            last_modified: entry.last_modified(),
+        }
+    }
+}
+
+/// A TOTP entry as listed; `secret` is `null` when withheld.
+#[derive(Serialize)]
+struct ListedTotp {
+    id: String,
+    label: String,
+    issuer: String,
+    secret: Option<String>,
+    algorithm: String,
+    period: u64,
+    digits: u32,
+    agent: String,
+    last_modified: DateTime<Utc>,
+}
+
+impl ListedTotp {
+    fn from_entry(entry: &Totp, withheld: bool) -> Self {
+        Self {
+            id: entry.id().to_string(),
+            label: entry.label().to_string(),
+            issuer: entry.issuer().to_string(),
+            secret: (!withheld).then(|| entry.secret().to_string()),
+            algorithm: entry.algorithm().to_string(),
+            period: entry.period(),
+            digits: entry.digits(),
+            agent: entry.agent_policy().as_str().to_string(),
+            last_modified: *entry.last_modified(),
+        }
+    }
+}
+
+/// The entries a non-verbose (metadata) listing redacts secret-bearing
+/// fields from: restricted entries that carry a note or any custom
+/// attribute besides the policy itself. Titles, usernames, tags and the
+/// policy attribute stay visible, so entries without notes or extra
+/// attributes are fully shown and nothing is withheld from them. The
+/// withholding is reported (and `ask` entries enter the ask flow) exactly
+/// like the secret-bearing listings.
+fn metadata_withheld_entries<'a>(entries: &'a [Credential]) -> Vec<(&'a Credential, &'static str)> {
+    entries
+        .iter()
+        .filter(|e| withheld_reason(e.agent_policy()).is_some())
+        .filter_map(|e| {
+            if e.note().is_some() {
+                Some((e, "note"))
+            } else if e.custom_attributes()
+                .iter()
+                .any(|(key, _)| key != passlane_core::vault::entities::AGENT_ATTRIBUTE)
+            {
+                Some((e, "attributes"))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 #[derive(Serialize)]
 pub struct ListOutput<T: Serialize> {
@@ -29,12 +272,14 @@ impl<T: Serialize> ListOutput<T> {
 }
 
 /// A generated TOTP code entry. Deliberately excludes the stored secret.
+/// `code` is `null` when the agent policy withheld it.
 #[derive(Serialize)]
 pub struct TotpCodeEntry {
     pub label: String,
     pub issuer: String,
-    pub code: String,
+    pub code: Option<String>,
     pub valid_for_seconds: u64,
+    pub agent: String,
 }
 
 pub struct ListAction {
@@ -58,18 +303,83 @@ impl ListAction {
 
     fn list_credentials(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.grep(self.search_pattern.as_deref());
+        // Only verbose plain output (and JSON, which always serializes the
+        // password) reveals passwords; the metadata listing never did.
+        if self.json_output || self.verbose {
+            agent::log_bulk_ask_requests(
+                entries
+                    .iter()
+                    .map(|e| (e.title().to_string(), e.agent_policy())),
+                "password",
+                false,
+            );
+        }
         if self.json_output {
-            let output = ListOutput::new("credentials", entries);
+            let mut withheld = WithheldSummary::new();
+            let listed: Vec<ListedCredential> = entries
+                .iter()
+                .map(|entry| {
+                    withheld.record(entry.agent_policy());
+                    ListedCredential::from_entry(entry)
+                })
+                .collect();
+            withheld.report();
+            let output = ListOutput::new("credentials", listed);
             Ok(Some(output.to_json()?))
         } else {
+            if self.verbose {
+                // Verbose plain withholds passwords and notes per entry.
+                WithheldSummary::tally(entries.iter().map(|e| e.agent_policy())).report();
+            } else {
+                // The metadata listing prints notes and custom attributes;
+                // when fields are redacted, the withheld read is reported
+                // and ask entries enter the ask flow, exactly like the
+                // secret-bearing listings — one request per withheld entry,
+                // named for the field family that was redacted.
+                let withheld_fields = metadata_withheld_entries(&entries);
+                if !withheld_fields.is_empty() {
+                    WithheldSummary::tally(
+                        withheld_fields.iter().map(|(e, _)| e.agent_policy()),
+                    )
+                    .report();
+                    for field in ["note", "attributes"] {
+                        let group: Vec<(String, AgentPolicy)> = withheld_fields
+                            .iter()
+                            .filter(|(_, f)| *f == field)
+                            .map(|(e, _)| (e.title().to_string(), e.agent_policy()))
+                            .collect();
+                        if !group.is_empty() {
+                            agent::log_bulk_ask_requests(group.into_iter(), field, false);
+                        }
+                    }
+                }
+            }
             Ok(Some(Self::format_credentials_plain(&entries, self.verbose)))
         }
     }
 
     fn list_payments(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.find_payments();
+        // Card numbers and CVVs are always part of payment listings.
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.name().to_string(), e.agent_policy())),
+            "number",
+            false,
+        );
+        let mut withheld = WithheldSummary::new();
+        let listed: Vec<ListedPayment> = entries
+            .iter()
+            .map(|entry| {
+                let reason = withheld_reason(entry.agent_policy());
+                withheld.record(entry.agent_policy());
+                ListedPayment::from_entry(entry, reason.is_some())
+            })
+            .collect();
+        withheld.report();
         if self.json_output {
-            let output = ListOutput::new("payment_cards", entries);
+            let output = ListOutput::new("payment_cards", listed);
             Ok(Some(output.to_json()?))
         } else {
             Ok(Some(Self::format_payments_plain(&entries)))
@@ -78,8 +388,26 @@ impl ListAction {
 
     fn list_notes(&self, vault: &mut Box<dyn Vault>) -> Result<Option<String>, Error> {
         let entries = vault.find_notes();
+        // Note content is always part of note listings.
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.title().to_string(), e.agent_policy())),
+            "content",
+            false,
+        );
+        let mut withheld = WithheldSummary::new();
+        let listed: Vec<ListedNote> = entries
+            .iter()
+            .map(|entry| {
+                let reason = withheld_reason(entry.agent_policy());
+                withheld.record(entry.agent_policy());
+                ListedNote::from_entry(entry, reason.is_some())
+            })
+            .collect();
+        withheld.report();
         if self.json_output {
-            let output = ListOutput::new("notes", entries);
+            let output = ListOutput::new("notes", listed);
             Ok(Some(output.to_json()?))
         } else {
             Ok(Some(Self::format_notes_plain(&entries)))
@@ -91,25 +419,74 @@ impl ListAction {
         if self.code {
             return self.list_totp_codes(&entries);
         }
+        if self.json_output || self.verbose {
+            // Only verbose output (and JSON, which always serializes the
+            // secret) reveals the stored secrets.
+            agent::log_bulk_ask_requests(
+                entries
+                    .iter()
+                    .map(|e| (e.label().to_string(), e.agent_policy())),
+                "secret",
+                false,
+            );
+        }
         if self.json_output {
-            let output = ListOutput::new("totp", entries);
+            // JSON always serializes the stored secret.
+            let mut withheld = WithheldSummary::new();
+            let listed: Vec<ListedTotp> = entries
+                .iter()
+                .map(|entry| {
+                    let reason = withheld_reason(entry.agent_policy());
+                    withheld.record(entry.agent_policy());
+                    ListedTotp::from_entry(entry, reason.is_some())
+                })
+                .collect();
+            withheld.report();
+            let output = ListOutput::new("totp", listed);
             Ok(Some(output.to_json()?))
         } else {
+            if self.verbose {
+                WithheldSummary::tally(entries.iter().map(|e| e.agent_policy())).report();
+            }
             Ok(Some(Self::format_totp_plain(&entries, self.verbose)))
         }
     }
 
     fn list_totp_codes(&self, entries: &[Totp]) -> Result<Option<String>, Error> {
+        agent::log_bulk_ask_requests(
+            entries
+                .iter()
+                .map(|e| (e.label().to_string(), e.agent_policy())),
+            "code",
+            false,
+        );
+        let mut withheld = WithheldSummary::new();
         let mut codes = Vec::with_capacity(entries.len());
         for entry in entries {
-            let code = entry.get_code()?;
-            codes.push(TotpCodeEntry {
-                label: entry.label().to_string(),
-                issuer: entry.issuer().to_string(),
-                code: code.value,
-                valid_for_seconds: code.valid_for_seconds,
-            });
+            let reason = withheld_reason(entry.agent_policy());
+            withheld.record(entry.agent_policy());
+            // Do not even compute a code the policy withholds.
+            match reason {
+                None => {
+                    let code = entry.get_code()?;
+                    codes.push(TotpCodeEntry {
+                        label: entry.label().to_string(),
+                        issuer: entry.issuer().to_string(),
+                        code: Some(code.value),
+                        valid_for_seconds: code.valid_for_seconds,
+                        agent: entry.agent_policy().as_str().to_string(),
+                    });
+                }
+                Some(_) => codes.push(TotpCodeEntry {
+                    label: entry.label().to_string(),
+                    issuer: entry.issuer().to_string(),
+                    code: None,
+                    valid_for_seconds: 0,
+                    agent: entry.agent_policy().as_str().to_string(),
+                }),
+            }
         }
+        withheld.report();
         if self.json_output {
             let output = ListOutput::new("totp_codes", codes);
             Ok(Some(output.to_json()?))
@@ -128,8 +505,13 @@ impl ListAction {
             lines.push(String::new());
             lines.push(format!("Label: {}", entry.label));
             lines.push(format!("Issuer: {}", entry.issuer));
-            lines.push(format!("Code: {}", entry.code));
-            lines.push(format!("Valid for: {} seconds", entry.valid_for_seconds));
+            match &entry.code {
+                Some(code) => {
+                    lines.push(format!("Code: {}", code));
+                    lines.push(format!("Valid for: {} seconds", entry.valid_for_seconds));
+                }
+                None => lines.push(format!("Code: [withheld: agent={}]", entry.agent)),
+            }
         }
         lines.join("\n")
     }
@@ -141,13 +523,14 @@ impl ListAction {
         }
         let mut lines = vec![format!("Found {} credentials:", count)];
         for entry in entries {
+            let restricted = withheld_reason(entry.agent_policy()).is_some();
             lines.push(String::new());
             lines.push(format!("Title: {}", entry.title()));
             if let Some(url) = entry.url() {
                 lines.push(format!("URL: {}", url));
             }
             lines.push(format!("Username: {}", entry.username()));
-            if let Some(note) = entry.note() {
+            if let Some(note) = entry.note().filter(|_| !restricted) {
                 lines.push(format!("Note: {}", note));
             }
             if !entry.tags().is_empty() {
@@ -156,11 +539,27 @@ impl ListAction {
             if let Some(expiry) = entry.expiry_time().filter(|_| entry.expires()) {
                 lines.push(format!("Expires: {}", expiry.format("%d.%m.%Y")));
             }
-            for (key, value) in entry.custom_attributes() {
-                lines.push(format!("{}: {}", key, value));
+            if restricted {
+                // Notes and custom attributes can carry secrets; keep only
+                // the policy attribute itself visible.
+                lines.push(format!(
+                    "agent: {}",
+                    entry.agent_policy().as_str()
+                ));
+            } else {
+                for (key, value) in entry.custom_attributes() {
+                    lines.push(format!("{}: {}", key, value));
+                }
             }
             if verbose {
-                lines.push(format!("Password: {}", entry.password()));
+                match withheld_reason(entry.agent_policy()) {
+                    None => {
+                        lines.push(format!("Password: {}", entry.password()));
+                    }
+                    Some(reason) => {
+                        lines.push(format!("Password: [withheld: {}]", reason));
+                    }
+                }
                 lines.push(format!("Last Modified: {}", entry.last_modified()));
             }
         }
@@ -174,17 +573,28 @@ impl ListAction {
         }
         let mut lines = vec![format!("Found {} payment cards:", count)];
         for entry in entries {
+            let withheld = withheld_reason(entry.agent_policy());
             lines.push(String::new());
             lines.push(format!("Name: {}", entry.name()));
-            lines.push(format!("Name on Card: {}", entry.name_on_card()));
-            lines.push(format!("Number: {}", entry.number()));
-            lines.push(format!("CVV: {}", entry.cvv()));
+            match withheld {
+                None => {
+                    lines.push(format!("Number: {}", entry.number()));
+                    lines.push(format!("CVV: {}", entry.cvv()));
+                    lines.push(format!("Name on Card: {}", entry.name_on_card()));
+                    if let Some(address) = entry.billing_address() {
+                        lines.push(format!("Billing Address: {}", address));
+                    }
+                }
+                Some(reason) => {
+                    lines.push(format!("Number: [withheld: {}]", reason));
+                    lines.push("CVV: [withheld]".to_string());
+                    lines.push("Name on Card: [withheld]".to_string());
+                    lines.push("Billing Address: [withheld]".to_string());
+                }
+            }
             lines.push(format!("Expiry: {}", entry.expiry()));
             if let Some(color) = entry.color() {
                 lines.push(format!("Color: {}", color));
-            }
-            if let Some(address) = entry.billing_address() {
-                lines.push(format!("Billing Address: {}", address));
             }
             lines.push(format!("Last Modified: {}", entry.last_modified()));
         }
@@ -200,7 +610,10 @@ impl ListAction {
         for entry in entries {
             lines.push(String::new());
             lines.push(format!("Title: {}", entry.title()));
-            lines.push(format!("Content: {}", entry.content()));
+            match withheld_reason(entry.agent_policy()) {
+                None => lines.push(format!("Content: {}", entry.content())),
+                Some(reason) => lines.push(format!("Content: [withheld: {}]", reason)),
+            }
             lines.push(format!("Last Modified: {}", entry.last_modified()));
         }
         lines.join("\n")
@@ -217,7 +630,10 @@ impl ListAction {
             lines.push(format!("Label: {}", entry.label()));
             lines.push(format!("Issuer: {}", entry.issuer()));
             if verbose {
-                lines.push(format!("Secret: {}", entry.secret()));
+                match withheld_reason(entry.agent_policy()) {
+                    None => lines.push(format!("Secret: {}", entry.secret())),
+                    Some(reason) => lines.push(format!("Secret: [withheld: {}]", reason)),
+                }
             }
             lines.push(format!("Last Modified: {}", entry.last_modified()));
         }
@@ -386,7 +802,8 @@ mod tests {
     #[test]
     fn test_format_credentials_plain_verbose() {
         let cred = Credential::new(None, "secret", "google.com", "user@test.com", None, None)
-            .with_tags(&["work".to_string()]);
+            .with_tags(&["work".to_string()])
+            .with_custom_attributes(&[("agent".to_string(), "allow".to_string())]);
         let result = ListAction::format_credentials_plain(&[cred], true);
         assert!(result.contains("Found 1 credentials:"));
         assert!(result.contains("Title: google.com"));
@@ -397,11 +814,50 @@ mod tests {
     }
 
     #[test]
+    fn test_format_credentials_plain_verbose_withholds_restricted() {
+        // Default (no attribute) is `never`: the password is withheld.
+        let never = Credential::new(None, "secret", "root", "admin", Some("root note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "never".to_string()),
+                ("Recovery code".to_string(), "12345".to_string()),
+            ]);
+        let ask = Credential::new(None, "secret", "stripe", "api", None, None)
+            .with_custom_attributes(&[("agent".to_string(), "ask".to_string())]);
+        let result = ListAction::format_credentials_plain(&[never.clone(), ask], true);
+        assert!(!result.contains("Password: secret"), "passwords must be withheld");
+        assert!(result.contains("Password: [withheld: agent=never]"));
+        assert!(result.contains("Password: [withheld: agent=ask, needs owner approval]"));
+        // Notes and custom attribute values can carry secrets: restricted
+        // entries keep only the policy attribute itself.
+        assert!(!result.contains("root note"), "notes must be withheld");
+        assert!(!result.contains("12345"), "custom attribute values must be withheld");
+        assert!(result.contains("agent: never"));
+        // Metadata stays so the entry is identifiable.
+        assert!(result.contains("Title: root"));
+        assert!(result.contains("Username: admin"));
+        // Allowed entries keep their notes and attributes.
+        let allow = Credential::new(None, "secret", "github.com", "ci", Some("ci note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "allow".to_string()),
+                ("Recovery code".to_string(), "99999".to_string()),
+            ]);
+        let result = ListAction::format_credentials_plain(&[allow], true);
+        assert!(result.contains("Note: ci note"));
+        assert!(result.contains("Recovery code: 99999"));
+    }
+
+    fn allow_cred(title: &str) -> Credential {
+        Credential::new(None, "secret", title, "user@test.com", None, None)
+            .with_custom_attributes(&[("agent".to_string(), "allow".to_string())])
+    }
+
+    #[test]
     fn test_format_payments_plain() {
         let card = PaymentCard::new(
             None, "Visa", "John Doe", "4532123456789012", "123",
             Expiry { month: 6, year: 2025 }, Some("Gold"), None, None,
-        );
+        )
+        .with_agent_policy(AgentPolicy::Allow);
         let result = ListAction::format_payments_plain(&[card]);
         assert!(result.contains("Found 1 payment cards:"));
         assert!(result.contains("Name: Visa"));
@@ -413,12 +869,44 @@ mod tests {
     }
 
     #[test]
+    fn test_format_payments_plain_withholds_restricted() {
+        let card = PaymentCard::new(
+            None, "Visa", "John Doe", "4532123456789012", "123",
+            Expiry { month: 6, year: 2025 }, None,
+            Some(&Address::new(None, "Main St 1", "Helsinki", "FI", None, "00100")),
+            None,
+        );
+        let result = ListAction::format_payments_plain(&[card]);
+        assert!(!result.contains("4532123456789012"), "card number must be withheld");
+        assert!(!result.contains("CVV: 123"));
+        assert!(!result.contains("John Doe"), "cardholder name must be withheld");
+        assert!(!result.contains("Main St 1"), "billing address must be withheld");
+        assert!(result.contains("Number: [withheld: agent=never]"));
+        assert!(result.contains("CVV: [withheld]"));
+        assert!(result.contains("Name on Card: [withheld]"));
+        assert!(result.contains("Billing Address: [withheld]"));
+        // Metadata survives so the entry is still identifiable.
+        assert!(result.contains("Name: Visa"));
+    }
+
+    #[test]
     fn test_format_notes_plain() {
-        let note = Note::new(None, "My Note", "Some content", None);
+        let note = Note::new(None, "My Note", "Some content", None)
+            .with_agent_policy(AgentPolicy::Allow);
         let result = ListAction::format_notes_plain(&[note]);
         assert!(result.contains("Found 1 notes:"));
         assert!(result.contains("Title: My Note"));
         assert!(result.contains("Content: Some content"));
+    }
+
+    #[test]
+    fn test_format_notes_plain_withholds_restricted() {
+        let note = Note::new(None, "My Note", "Some content", None)
+            .with_agent_policy(AgentPolicy::Ask);
+        let result = ListAction::format_notes_plain(&[note]);
+        assert!(!result.contains("Some content"), "note content must be withheld");
+        assert!(result.contains("Content: [withheld: agent=ask, needs owner approval]"));
+        assert!(result.contains("Title: My Note"));
     }
 
     #[test]
@@ -440,9 +928,21 @@ mod tests {
         let totp = Totp::new(
             None, "otpauth://totp/test", "user@test.com", "GitHub",
             "JBSWY3DPEHPK3PXP", "SHA1", 30, 6, None,
-        );
+        )
+        .with_agent_policy(AgentPolicy::Allow);
         let result = ListAction::format_totp_plain(&[totp], true);
         assert!(result.contains("Secret: JBSWY3DPEHPK3PXP"));
+    }
+
+    #[test]
+    fn test_format_totp_plain_verbose_withholds_restricted() {
+        let totp = Totp::new(
+            None, "otpauth://totp/test", "user@test.com", "GitHub",
+            "JBSWY3DPEHPK3PXP", "SHA1", 30, 6, None,
+        );
+        let result = ListAction::format_totp_plain(&[totp], true);
+        assert!(!result.contains("JBSWY3DPEHPK3PXP"), "secret must be withheld");
+        assert!(result.contains("Secret: [withheld: agent=never]"));
     }
 
     #[test]
@@ -465,20 +965,32 @@ mod tests {
 
     #[test]
     fn test_format_totp_codes_plain() {
-        let entries = vec![TotpCodeEntry {
-            label: "user@test.com".to_string(),
-            issuer: "GitHub".to_string(),
-            code: "123456".to_string(),
-            valid_for_seconds: 17,
-        }];
+        let entries = vec![
+            TotpCodeEntry {
+                label: "user@test.com".to_string(),
+                issuer: "GitHub".to_string(),
+                code: Some("123456".to_string()),
+                valid_for_seconds: 17,
+                agent: "allow".to_string(),
+            },
+            TotpCodeEntry {
+                label: "admin@root".to_string(),
+                issuer: "Root".to_string(),
+                code: None,
+                valid_for_seconds: 0,
+                agent: "never".to_string(),
+            },
+        ];
         let result = ListAction::format_totp_codes_plain(&entries);
-        assert!(result.contains("Found 1 TOTP entries:"));
+        assert!(result.contains("Found 2 TOTP entries:"));
         assert!(result.contains("Label: user@test.com"));
         assert!(result.contains("Issuer: GitHub"));
         assert!(result.contains("Code: 123456"));
         assert!(result.contains("Valid for: 17 seconds"));
         // The stored secret must never appear in code output.
         assert!(!result.contains("Secret"));
+        // Withheld codes are explicit, not silently missing.
+        assert!(result.contains("Code: [withheld: agent=never]"));
     }
 
     #[test]
@@ -493,14 +1005,16 @@ mod tests {
             TotpCodeEntry {
                 label: "a@test.com".to_string(),
                 issuer: "GitHub".to_string(),
-                code: "111111".to_string(),
+                code: Some("111111".to_string()),
                 valid_for_seconds: 30,
+                agent: "allow".to_string(),
             },
             TotpCodeEntry {
                 label: "b@test.com".to_string(),
                 issuer: "GitLab".to_string(),
-                code: "222222".to_string(),
+                code: Some("222222".to_string()),
                 valid_for_seconds: 12,
+                agent: "allow".to_string(),
             },
         ];
         let output = ListOutput::new("totp_codes", entries);
@@ -520,5 +1034,112 @@ mod tests {
         }
         assert_eq!(arr[0]["code"], "111111");
         assert_eq!(arr[1]["valid_for_seconds"], 12);
+    }
+
+    #[test]
+    fn test_listed_credential_json_withholds_restricted_passwords() {
+        let allowed = allow_cred("github.com");
+        let never = Credential::new(None, "root-secret", "root", "admin", Some("root note"), None)
+            .with_custom_attributes(&[
+                ("agent".to_string(), "never".to_string()),
+                ("Recovery code".to_string(), "12345".to_string()),
+            ]);
+        let ask = Credential::new(None, "stripe-secret", "stripe", "api", None, None)
+            .with_custom_attributes(&[("agent".to_string(), "ask".to_string())]);
+
+        let json = ListOutput::new(
+            "credentials",
+            vec![
+                ListedCredential::from_entry(&allowed),
+                ListedCredential::from_entry(&never),
+                ListedCredential::from_entry(&ask),
+            ],
+        )
+        .to_json()
+        .unwrap();
+
+        assert!(!json.contains("root-secret"), "never entries must be redacted");
+        assert!(!json.contains("stripe-secret"), "ask entries must be redacted");
+        assert!(!json.contains("root note"), "notes must be redacted");
+        assert!(!json.contains("12345"), "custom attribute values must be redacted");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["password"], "secret");
+        assert_eq!(entries[0]["agent"], "allow");
+        assert!(entries[1]["password"].is_null());
+        assert_eq!(entries[1]["agent"], "never");
+        // Only the policy attribute survives on restricted entries.
+        assert_eq!(
+            entries[1]["custom_attributes"],
+            serde_json::json!([["agent", "never"]])
+        );
+        assert!(entries[2]["password"].is_null());
+        assert_eq!(entries[2]["agent"], "ask");
+        // Metadata stays so the entry is still identifiable.
+        assert_eq!(entries[1]["title"], "root");
+    }
+
+    #[test]
+    fn test_listed_payment_note_totp_json_withhold_secrets() {
+        let card = PaymentCard::new(
+            None, "Visa", "Jane", "4532123456789012", "123",
+            Expiry { month: 6, year: 2025 }, None,
+            Some(&Address::new(None, "Main St 1", "Helsinki", "FI", None, "00100")),
+            None,
+        );
+        let card_json = serde_json::to_string(&ListedPayment::from_entry(&card, true)).unwrap();
+        assert!(!card_json.contains("4532123456789012"));
+        assert!(!card_json.contains("\"cvv\":\"123\""));
+        assert!(!card_json.contains("Jane"), "cardholder name must be withheld");
+        assert!(!card_json.contains("Main St 1"), "billing address must be withheld");
+        assert!(card_json.contains("\"agent\":\"never\""));
+
+        let note = Note::new(None, "wifi", "wpa-key", None);
+        let note_json = serde_json::to_string(&ListedNote::from_entry(&note, true)).unwrap();
+        assert!(!note_json.contains("wpa-key"));
+        assert!(note_json.contains("\"title\":\"wifi\""));
+
+        let totp = Totp::new(
+            None, "otpauth://totp/t?secret=JBSWY3DPEHPK3PXP", "l", "i",
+            "JBSWY3DPEHPK3PXP", "SHA1", 30, 6, None,
+        );
+        let totp_json = serde_json::to_string(&ListedTotp::from_entry(&totp, true)).unwrap();
+        assert!(!totp_json.contains("JBSWY3DPEHPK3PXP"));
+        assert!(totp_json.contains("\"label\":\"l\""));
+    }
+
+    #[test]
+    fn test_withheld_reason_matches_policy() {
+        assert_eq!(withheld_reason(AgentPolicy::Allow), None);
+        assert_eq!(withheld_reason(AgentPolicy::Never), Some("agent=never"));
+        let ask_reason = withheld_reason(AgentPolicy::Ask).unwrap();
+        assert!(ask_reason.starts_with("agent=ask"));
+    }
+
+    #[test]
+    fn metadata_withheld_entries_cover_notes_and_custom_attributes() {
+        let entry = |note: Option<&str>, agent: Option<&str>, attrs: &[(&str, &str)]| {
+            let mut cred =
+                Credential::new(None, "pw", "t", "u", note, None);
+            let mut all: Vec<(String, String)> = attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            if let Some(agent) = agent {
+                all.push(("agent".to_string(), agent.to_string()));
+            }
+            cred.with_custom_attributes(&all)
+        };
+        let entries = vec![
+            entry(Some("n"), Some("allow"), &[]), // allowed: nothing withheld
+            entry(Some("n"), Some("ask"), &[]),   // note withheld
+            entry(None, None, &[("Recovery code", "1")]), // never: attributes withheld
+            entry(None, Some("never"), &[("agent", "never")]), // only the policy attr
+            Credential::new(None, "pw", "t2", "u2", None, None), // bare never
+        ];
+        let withheld = metadata_withheld_entries(&entries);
+        assert_eq!(withheld.len(), 2, "note and attribute carriers only");
+        assert_eq!((withheld[0].0.title(), withheld[0].1), ("t", "note"));
+        assert_eq!((withheld[1].0.title(), withheld[1].1), ("t", "attributes"));
     }
 }

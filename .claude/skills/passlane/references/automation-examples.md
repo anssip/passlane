@@ -2,7 +2,9 @@
 
 Ready-to-adapt patterns for using passlane in automations. All examples assume the vault is
 unlocked (`passlane unlock`, plus `passlane unlock --vault totp` when 2FA secrets live in a
-separate vault). Replace placeholder service names
+separate vault). Every entry also carries an agent policy (`agent = never | ask | allow`, default
+`never`) that governs these stdout reads — see the SKILL.md section on the agent access policy and
+handle `null` secrets / exit-1 refusals for restricted entries. Replace placeholder service names
 and selectors with the real ones.
 
 ## 1. API login: basic auth + TOTP header
@@ -16,7 +18,14 @@ set -euo pipefail
 
 CREDS=$(passlane list '^github\.com$' --json)
 USER=$(echo "$CREDS" | jq -r '.entries[0].username')
-PASS=$(echo "$CREDS" | jq -r '.entries[0].password')
+PASS=$(echo "$CREDS" | jq -r '.entries[0].password // empty')
+
+# A withheld password is null in the JSON and empty here: stop instead of
+# submitting literal "null" credentials (agent policy refusal).
+if [ -z "$PASS" ]; then
+  echo "password withheld by the agent policy (agent=never/ask)" >&2
+  exit 1
+fi
 
 # Fetch the TOTP code just before the request. Exits non-zero if 0 or >1 authorizers match.
 OTP=$(passlane show -o --once '^GitHub$')
@@ -25,9 +34,11 @@ curl -fsSL -u "$USER:$PASS" -H "X-GitHub-OTP: $OTP" https://api.github.com/user
 ```
 
 Notes:
-- `set -euo pipefail` makes the script abort if any `passlane` call fails (e.g. locked vault → exit
-  1), instead of sending empty credentials.
+- `set -euo pipefail` makes the script abort if any `passlane` call fails (e.g. locked vault or an
+  agent-policy refusal → exit 1), instead of sending empty credentials.
 - Capture secrets into variables; never inline them onto a command line that hits shell history.
+- Check the `agent` field / `null` `password` when reading via `list --json`: a `null` means the
+  entry's policy withheld it and the script must not proceed with an empty secret.
 
 ## 2. Single-secret extraction with `show --out`
 
@@ -50,11 +61,12 @@ passlane show '^vault\.internal$' --out | some-tool --password-stdin
 This is a reference pattern, not a literal script — form selectors are site-specific. The agent
 should drive the browser via the `playwright-cli` skill and use passlane only to source the secrets:
 
-1. Read the credential:
+1. Read the credential, failing fast on a withheld (null) password:
    ```bash
    CREDS=$(passlane list '^example\.com$' --json)
    USER=$(echo "$CREDS" | jq -r '.entries[0].username')
-   PASS=$(echo "$CREDS" | jq -r '.entries[0].password')
+   PASS=$(echo "$CREDS" | jq -r '.entries[0].password // empty')
+   [ -n "$PASS" ] || { echo "password withheld by the agent policy" >&2; exit 1; }
    ```
 2. Navigate to the login page; fill the username field with `$USER` and the password field with
    `$PASS`; submit.
@@ -69,20 +81,24 @@ Keep the secrets in the automation layer; do not print them into the page log or
 
 ## 4. Read-only credential audit
 
-`list --json` + `jq` enables safe, local analysis. Find credentials with short passwords:
+`list --json` + `jq` enables safe, local analysis. Restricted entries have `null`
+passwords — filter them out first or every audit silently miscounts them (`null | length`
+is 0, so they would all look "short").
+
+Find credentials with short passwords:
 
 ```bash
 passlane list --json \
-  | jq -r '.entries[] | select(.password | length < 12) | .service'
+  | jq -r '.entries[] | select(.password != null) | select(.password | length < 12) | .title'
 ```
 
-Find reused passwords across services (groups of size > 1):
+Find reused passwords across services (groups of size > 1, withheld passwords excluded):
 
 ```bash
 passlane list --json | jq -r '
-  [.entries[] | {service, password}]
+  [.entries[] | select(.password != null) | {title, password}]
   | group_by(.password)
-  | map(select(length > 1) | map(.service))
+  | map(select(length > 1) | map(.title))
 '
 ```
 
@@ -91,11 +107,19 @@ a file or log.
 
 ## Robustness checklist
 
-- **Exit code 1 means something actionable:** a locked vault, no match, or an ambiguous match for
-  `--once`/`--out`. Check `$?` (or use `set -e`) and react — don't proceed on empty output.
+- **Exit code 1 means something actionable:** a locked vault, no match, an ambiguous match for
+  `--once`/`--out`, or an agent-policy refusal (`agent=never` blocked, `agent=ask` needs owner
+  approval). Check `$?` (or use `set -e`) and react — don't proceed on empty output.
 - **Anchor regexes** (`'^github\.com$'`, `'^GitHub$'`) so single-secret commands resolve to exactly
   one entry. `show -o --once` and `show --out` error on multiple matches.
+- **Never submit `null` as a secret.** In `--json` output a withheld secret is `null`; with
+  `jq -r` it becomes the literal string `"null"`. Extract with `.password // empty` and
+  abort on empty — or `select(.password != null)` in pipelines.
 - **Re-fetch TOTP codes per attempt.** They expire within seconds; never cache or reuse a code.
 - **If the vault is locked,** the right fix is for the user to run `passlane unlock` (and
   `passlane unlock --vault totp` when needed). The agent cannot supply the master password
   non-interactively.
+- **If a read is refused by the agent policy,** stop: `never` needs the owner to change the
+  attribute; `ask` needs the owner to run the read themselves (there is no approval handoff
+  until the link transport ships — their approval does not transfer to you, so do not retry).
+  Do not look for side channels around the refusal.

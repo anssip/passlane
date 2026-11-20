@@ -1,8 +1,36 @@
 use comfy_table::*;
 
-use passlane_core::vault::entities::{Credential, Note, PaymentCard, Totp};
+use passlane_core::vault::entities::{AgentPolicy, Credential, Note, PaymentCard, Totp};
 
-pub fn show_credentials_table(credentials: &[Credential], show_password: bool, plain: bool) {
+/// Secret cell text for a cleartext table. `ask` entries stay redacted
+/// until their row is selected — the selection path runs the approval
+/// prompt (the ask flow) and only then reveals the entry in full.
+fn table_secret(value: &str, policy: AgentPolicy) -> String {
+    if policy == AgentPolicy::Ask {
+        "[agent=ask]".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Whether an entry's note may appear in a table cell. Notes can carry
+/// secrets: `ask` entries stay redacted until the approval prompt (in any
+/// context), and `never` entries only show for the owner — in agent
+/// contexts nothing but `allow` notes are displayed.
+fn table_note_visible(policy: AgentPolicy, agent_context: bool) -> bool {
+    match policy {
+        AgentPolicy::Allow => true,
+        AgentPolicy::Ask => false,
+        AgentPolicy::Never => !agent_context,
+    }
+}
+
+pub fn show_credentials_table(
+    credentials: &[Credential],
+    show_password: bool,
+    plain: bool,
+    agent_context: bool,
+) {
     let mut table = Table::new();
     apply_plain(&mut table, plain);
     let header_cell = |label: String| -> Cell { Cell::new(label).fg(Color::Green) };
@@ -31,7 +59,25 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
             lines.push(format!("🏷 {}", creds.tags().join(", ")));
         }
         if let Some(note) = creds.note() {
-            lines.push(format!("📝 {}", note));
+            if table_note_visible(creds.agent_policy(), agent_context) {
+                lines.push(format!("📝 {}", note));
+            } else {
+                lines.push(format!(
+                    "📝 [withheld: agent={}]",
+                    creds.agent_policy().as_str()
+                ));
+                // A withheld read is an audit event: in an agent-facing
+                // context an `ask` entry's redacted note enters the ask
+                // flow like every other withheld field (never entries have
+                // no ask flow). Covers the show, edit and delete tables.
+                if agent_context && creds.agent_policy() == AgentPolicy::Ask {
+                    crate::agent::log_bulk_ask_requests(
+                        std::iter::once((creds.title().to_string(), creds.agent_policy())),
+                        "note",
+                        false,
+                    );
+                }
+            }
         }
         lines.push(format!("🕐 {}", modified));
         let title_cell = lines.join("\n");
@@ -40,7 +86,7 @@ pub fn show_credentials_table(credentials: &[Credential], show_password: bool, p
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(title_cell),
                 Cell::new(String::from(creds.username())),
-                Cell::new(String::from(creds.password())),
+                Cell::new(table_secret(creds.password(), creds.agent_policy())),
             ]
         } else {
             vec![
@@ -144,10 +190,10 @@ pub fn show_payment_cards_table(cards: &Vec<PaymentCard>, show_cleartext: bool, 
                 } else {
                     ""
                 })),
-                Cell::new(String::from(card.number())),
+                Cell::new(table_secret(card.number(), card.agent_policy())),
                 Cell::new(String::from(format!("{}", card.expiry()))),
-                Cell::new(String::from(card.cvv())),
-                Cell::new(String::from(card.name_on_card())),
+                Cell::new(table_secret(card.cvv(), card.agent_policy())),
+                Cell::new(table_secret(card.name_on_card(), card.agent_policy())),
                 Cell::new(card.last_modified().format("%d.%m.%Y %H:%M").to_string()),
             ]
         } else {
@@ -215,7 +261,7 @@ pub(crate) fn show_notes_table(notes: &[Note], show_cleartext: bool, plain: bool
             vec![
                 Cell::new(index.to_string()).fg(Color::Yellow),
                 Cell::new(note.title()),
-                Cell::new(note.content()),
+                Cell::new(table_secret(note.content(), note.agent_policy())),
                 Cell::new(&note.last_modified().format("%Y-%m-%d %H:%M:%S").to_string()),
             ]
         } else {
@@ -266,6 +312,28 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
 
+    #[test]
+    fn table_secret_redacts_ask_until_approved_selection() {
+        assert_eq!(table_secret("hunter2", AgentPolicy::Ask), "[agent=ask]");
+        assert_eq!(table_secret("hunter2", AgentPolicy::Allow), "hunter2");
+        // `never` entries never reach a cleartext table in agent contexts
+        // (the table is refused), and at the owner's terminal the owner's
+        // own view is unrestricted.
+        assert_eq!(table_secret("hunter2", AgentPolicy::Never), "hunter2");
+    }
+
+    #[test]
+    fn table_notes_follow_the_policy_and_context() {
+        // Notes can carry secrets: ask stays redacted everywhere until the
+        // approval prompt; never shows only for the owner.
+        assert!(!table_note_visible(AgentPolicy::Ask, false));
+        assert!(!table_note_visible(AgentPolicy::Ask, true));
+        assert!(table_note_visible(AgentPolicy::Allow, true));
+        assert!(table_note_visible(AgentPolicy::Allow, false));
+        assert!(table_note_visible(AgentPolicy::Never, false));
+        assert!(!table_note_visible(AgentPolicy::Never, true));
+    }
+
     // Renders without panicking; run with --nocapture to eyeball the layout.
     #[test]
     fn show_credential_renders_all_fields() {
@@ -293,6 +361,6 @@ mod tests {
             None,
         )
         .with_url(Some("https://example.com/パスワード/とても長いURLを切り詰めるテスト"));
-        show_credentials_table(&[credential], false, true);
+        show_credentials_table(&[credential], false, true, false);
     }
 }

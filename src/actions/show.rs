@@ -3,12 +3,13 @@ use crate::actions::{
     UnlockingAction,
 };
 
+use crate::agent::{self, decide, RevealContext, RevealDecision};
 use crate::ui::input::{ask_index, ask_with_options};
 use crate::ui::output::{
     show_card, show_credential, show_credentials_table, show_note, show_notes_table,
     show_payment_cards_table, show_totp_table,
 };
-use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
 use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use log::debug;
@@ -16,6 +17,59 @@ use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+/// Enforce the entry's agent policy for one reveal in this command's
+/// context (see docs/features/agent-approvals.md). `stdout_reveal` marks
+/// the scripting paths that print the secret to stdout; those, and any
+/// reveal without an interactive terminal, are agent-facing.
+fn gate_reveal(
+    policy: AgentPolicy,
+    stdout_reveal: bool,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    agent::enforce_reveal(policy, RevealContext::for_reveal(stdout_reveal), entry, field)
+}
+
+/// A verbose (cleartext) table would reveal every matched entry at once,
+/// so in an agent-facing context it is only allowed when every entry's
+/// policy allows it. Returns the number of restricted entries.
+fn restricted_count(policies: impl Iterator<Item = AgentPolicy>) -> usize {
+    policies
+        .filter(|p| decide(*p, RevealContext::Agent) != RevealDecision::Reveal)
+        .count()
+}
+
+/// Refuse a cleartext table that would include policy-restricted entries.
+fn require_cleartext_allowed(gated: usize) -> Result<(), Error> {
+    if gated > 0 {
+        Err(Error::new(&format!(
+            "{} of the matched entries are restricted by their agent policy, so their secrets \
+             stay withheld. Narrow the pattern to agent-allowed entries, or reveal a specific \
+             entry with 'passlane show <pattern> --out' (agent=allow) or interactively \
+             (agent=ask)",
+            gated
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Verbose (cleartext) multi-match tables reveal every matched entry at
+/// once. At the owner's terminal that is the owner's own view and stays
+/// untouched; in an agent-facing context the table must not include
+/// restricted entries, so it is refused instead of partially redacted.
+fn guard_cleartext_table(
+    show_cleartext: bool,
+    context: RevealContext,
+    policies: impl Iterator<Item = AgentPolicy>,
+) -> Result<(), Error> {
+    if show_cleartext && context == RevealContext::Agent {
+        require_cleartext_allowed(restricted_count(policies))
+    } else {
+        Ok(())
+    }
+}
 
 struct ShowCredentialsTemplate {
     verbose: bool,
@@ -31,6 +85,12 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
+        gate_reveal(
+            the_match.agent_policy(),
+            self.stdout_only,
+            the_match.title(),
+            "password",
+        )?;
         if self.stdout_only {
             println!("{}", the_match.password());
             return Ok(None);
@@ -45,7 +105,26 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, self.verbose, self.plain);
+        // A verbose table reveals every matched password up front. That is
+        // the owner's own view at a terminal; in an agent-facing context it
+        // must not include restricted entries.
+        let agent_ctx = agent::in_agent_context(self.stdout_only);
+        if let Err(e) = guard_cleartext_table(
+            self.verbose,
+            RevealContext::for_reveal(self.stdout_only),
+            matches.iter().map(|c| c.agent_policy()),
+        ) {
+            // The refused table's ask entries still enter the ask flow.
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|c| (c.title().to_string(), c.agent_policy())),
+                "password",
+                false,
+            );
+            return Err(e);
+        }
+        show_credentials_table(&matches, self.verbose, self.plain, agent_ctx);
 
         let prompt = if self.stdout_only {
             "To print one of these passwords, please enter a row number from the table above"
@@ -59,6 +138,12 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
             Some("Press q to exit without showing the credential"),
         ) {
             Ok(index) => {
+                gate_reveal(
+                    matches[index].agent_policy(),
+                    self.stdout_only,
+                    matches[index].title(),
+                    "password",
+                )?;
                 if self.stdout_only {
                     println!("{}", matches[index].password());
                     Ok(None)
@@ -89,7 +174,13 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_payment_cards_table(&vec![the_match.clone()], self.show_cleartext, self.plain);
+        gate_reveal(the_match.agent_policy(), false, the_match.name(), "number")?;
+        // The gate above passed (allow, owner's own reveal, or an approved
+        // ask), so the table renders a display copy with the policy
+        // cleared — otherwise ask cells would stay redacted after the
+        // owner just approved them.
+        let display = the_match.clone().with_agent_policy(AgentPolicy::Allow);
+        show_payment_cards_table(&vec![display], self.show_cleartext, self.plain);
         if ask_with_options(
             "Do you want to see the full card details? (yes/no)",
             vec!["yes", "no"],
@@ -106,6 +197,22 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
+        // A cleartext table reveals every matched card number up front —
+        // the owner's own view at a terminal, gated in agent contexts.
+        if let Err(e) = guard_cleartext_table(
+            self.show_cleartext,
+            RevealContext::for_reveal(false),
+            matches.iter().map(|c| c.agent_policy()),
+        ) {
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|c| (c.name().to_string(), c.agent_policy())),
+                "number",
+                false,
+            );
+            return Err(e);
+        }
         show_payment_cards_table(&matches, self.show_cleartext, self.plain);
 
         match ask_index(
@@ -114,6 +221,12 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
             Some("Press q to exit without showing"),
         ) {
             Ok(index) => {
+                gate_reveal(
+                    matches[index].agent_policy(),
+                    false,
+                    matches[index].name(),
+                    "number",
+                )?;
                 show_card(&matches[index]);
                 println!("Card number copied to clipboard! Clipboard will be cleared in 20 seconds.");
                 copy_to_clipboard_timed(matches[index].number(), 20);
@@ -137,7 +250,11 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
     }
 
     fn handle_one_match(&mut self, the_match: Self::ItemType) -> Result<Option<String>, Error> {
-        show_notes_table(&vec![the_match.clone()], self.verbose, self.plain);
+        gate_reveal(the_match.agent_policy(), false, the_match.title(), "content")?;
+        // As with payment cards: the reveal is approved, so the verbose
+        // table renders a display copy instead of redacted ask cells.
+        let display = the_match.clone().with_agent_policy(AgentPolicy::Allow);
+        show_notes_table(&vec![display], self.verbose, self.plain);
         let response = ask_with_options(
             "Do you want to see the full note? (yes/no)",
             vec!["yes", "no"],
@@ -152,6 +269,22 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
+        // A cleartext table reveals every matched note up front — the
+        // owner's own view at a terminal, gated in agent contexts.
+        if let Err(e) = guard_cleartext_table(
+            self.verbose,
+            RevealContext::for_reveal(false),
+            matches.iter().map(|n| n.agent_policy()),
+        ) {
+            agent::log_bulk_ask_requests(
+                matches
+                    .iter()
+                    .map(|n| (n.title().to_string(), n.agent_policy())),
+                "content",
+                false,
+            );
+            return Err(e);
+        }
         show_notes_table(&matches, self.verbose, self.plain);
 
         match ask_index(
@@ -160,6 +293,12 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
             Some("Press q to exit without showing the note"),
         ) {
             Ok(index) => {
+                gate_reveal(
+                    matches[index].agent_policy(),
+                    false,
+                    matches[index].title(),
+                    "content",
+                )?;
                 show_note(&matches[index]);
                 Ok(None)
             }
@@ -206,6 +345,9 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
+        // The interactive code view is an owner reveal; an `ask` entry
+        // prompts for its approval before the first code appears.
+        gate_reveal(the_match.agent_policy(), false, the_match.label(), "code")?;
         let (tx, rx) = mpsc::channel();
         let (tx_counter, rx_counter) = mpsc::channel();
 
@@ -296,11 +438,14 @@ impl ShowAction {
 
     /// One-shot TOTP code retrieval: print the single matching code to stdout
     /// and return. Errors (non-zero exit) on zero or multiple matches. No
-    /// clipboard, no countdown, no keyboard wait.
+    /// clipboard, no countdown, no keyboard wait. The stdout reveal is
+    /// agent-facing, so the entry's agent policy applies.
     fn show_totp_once(&self, matches: Vec<Totp>) -> Result<Option<String>, Error> {
         match matches.len() {
             1 => {
-                let code = matches[0].get_code()?;
+                let totp = &matches[0];
+                gate_reveal(totp.agent_policy(), true, totp.label(), "code")?;
+                let code = totp.get_code()?;
                 Ok(Some(code.value))
             }
             0 => Err(Error {
@@ -387,6 +532,7 @@ mod tests {
             6,
             None,
         )
+        .with_agent_policy(AgentPolicy::Allow)
     }
 
     fn once_action() -> ShowAction {
@@ -422,5 +568,57 @@ mod tests {
         let err = result.expect_err("expected an error on multiple matches");
         assert!(err.message.contains("a@test.com"));
         assert!(err.message.contains("b@test.com"));
+    }
+
+    #[test]
+    fn restricted_count_counts_never_and_ask() {
+        let policies = [
+            AgentPolicy::Allow,
+            AgentPolicy::Never,
+            AgentPolicy::Ask,
+            AgentPolicy::Allow,
+        ];
+        assert_eq!(restricted_count(policies.into_iter()), 2);
+        assert_eq!(restricted_count([AgentPolicy::Allow].into_iter()), 0);
+    }
+
+    #[test]
+    fn require_cleartext_allowed_passes_without_restricted_entries() {
+        assert!(require_cleartext_allowed(0).is_ok());
+    }
+
+    #[test]
+    fn require_cleartext_allowed_refuses_restricted_entries() {
+        let err = require_cleartext_allowed(2).expect_err("restricted entries must block");
+        assert!(
+            err.message.contains("2 of the matched entries are restricted"),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(err.message.contains("agent=allow"));
+    }
+
+    #[test]
+    fn cleartext_table_guard_uses_the_reveal_context() {
+        let policies = [AgentPolicy::Never, AgentPolicy::Allow];
+        // At the owner's terminal the verbose table is the owner's own view.
+        assert!(guard_cleartext_table(true, RevealContext::Owner, policies.into_iter()).is_ok());
+        // In agent-facing contexts a table containing restricted entries is refused...
+        assert!(
+            guard_cleartext_table(true, RevealContext::Agent, policies.into_iter()).is_err()
+        );
+        // ...but non-cleartext tables never carry secrets, and all-allowed
+        // sets pass anywhere.
+        assert!(
+            guard_cleartext_table(false, RevealContext::Agent, policies.into_iter()).is_ok()
+        );
+        assert!(
+            guard_cleartext_table(
+                true,
+                RevealContext::Agent,
+                [AgentPolicy::Allow].into_iter()
+            )
+            .is_ok()
+        );
     }
 }
