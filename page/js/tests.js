@@ -241,6 +241,17 @@ test("cbor: rejects truncated input instead of clamping", () => {
   } catch {
     /* expected */
   }
+
+  // Deeply nested containers hit the depth limit instead of recursing
+  // toward stack exhaustion.
+  threw = null;
+  try {
+    const deep = new Uint8Array(100).fill(0x81); // array(1) x100
+    cbor.decode(deep);
+  } catch (e) {
+    threw = e.message;
+  }
+  if (!threw?.includes("depth")) throw new Error(`deep nesting: ${threw}`);
 });
 
 test("cbor: attested credential data and the COSE key slice", () => {

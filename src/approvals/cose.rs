@@ -162,7 +162,20 @@ enum CborValue {
 }
 
 /// Decode one CBOR item, returning it and the number of bytes consumed.
+/// Recursion is depth-limited: a hostile blob of deeply nested containers
+/// must be rejected, not allowed to exhaust the stack.
 fn cbor_item(bytes: &[u8]) -> Result<(CborValue, usize)> {
+    cbor_item_at_depth(bytes, 0)
+}
+
+/// Maximum container nesting. A COSE key is a flat map of scalars
+/// (depth 2 including the top-level map); anything deeper is hostile.
+const MAX_CBOR_DEPTH: usize = 8;
+
+fn cbor_item_at_depth(bytes: &[u8], depth: usize) -> Result<(CborValue, usize)> {
+    if depth > MAX_CBOR_DEPTH {
+        return Err(malformed("CBOR nesting exceeds the depth limit"));
+    }
     let (&major, rest) = bytes.split_first().ok_or_else(|| malformed("empty CBOR input"))?;
     let mt = major >> 5;
     let info = major & 0x1f;
@@ -201,7 +214,7 @@ fn cbor_item(bytes: &[u8]) -> Result<(CborValue, usize)> {
             let mut items = Vec::new();
             let mut consumed = head_len;
             for _ in 0..arg {
-                let (item, n) = cbor_item(&bytes[consumed..])?;
+                let (item, n) = cbor_item_at_depth(&bytes[consumed..], depth + 1)?;
                 items.push(item);
                 consumed += n;
             }
@@ -211,9 +224,9 @@ fn cbor_item(bytes: &[u8]) -> Result<(CborValue, usize)> {
             let mut entries = Vec::new();
             let mut consumed = head_len;
             for _ in 0..arg {
-                let (k, n) = cbor_item(&bytes[consumed..])?;
+                let (k, n) = cbor_item_at_depth(&bytes[consumed..], depth + 1)?;
                 consumed += n;
-                let (v, n) = cbor_item(&bytes[consumed..])?;
+                let (v, n) = cbor_item_at_depth(&bytes[consumed..], depth + 1)?;
                 consumed += n;
                 entries.push((k, v));
             }
@@ -408,6 +421,17 @@ mod tests {
 
         // Non-map input.
         assert!(parse_cose_ec2_p256(&[0x01]).is_err());
+    }
+
+    #[test]
+    fn rejects_deeply_nested_containers() {
+        // Deeply nested arrays must be rejected by the depth limit, not
+        // allowed to recurse toward stack exhaustion.
+        let mut deep = vec![0x01u8]; // innermost integer
+        for _ in 0..100 {
+            deep.insert(0, 0x81); // array(1) wrapping
+        }
+        assert!(parse_cose_ec2_p256(&deep).is_err());
     }
 
     #[test]

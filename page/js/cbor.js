@@ -13,12 +13,20 @@ import { fromUtf8 } from "./lib.js";
 
 /** A decoded CBOR value: number | bigint | Uint8Array | string | Array | Map. */
 export function decode(bytes, offset = 0) {
-  const [value, consumed] = decodeItem(bytes, offset);
+  const [value, consumed] = decodeItem(bytes, offset, 0);
   return [value, consumed];
 }
 
+/** Maximum container nesting — a COSE key needs depth 2; more is hostile. */
+const MAX_CBOR_DEPTH = 8;
+
 /** Decode one item; returns [value, bytesConsumedFromOffset]. */
-function decodeItem(bytes, offset) {
+function decodeItem(bytes, offset, depth) {
+  // Depth limit: deeply nested containers are rejected instead of
+  // recursing toward stack exhaustion.
+  if (depth > MAX_CBOR_DEPTH) {
+    throw new Error("cbor: nesting exceeds the depth limit");
+  }
   // Strict bounds: every read validates against the input length, so
   // truncated data is rejected instead of clamped into short strings or
   // fabricated values (JS slice() silently clamps — never rely on it).
@@ -52,7 +60,7 @@ function decodeItem(bytes, offset) {
       let at = offset + headLen;
       const items = [];
       for (let i = 0; i < Number(arg); i++) {
-        const [item, n] = decodeItem(bytes, at);
+        const [item, n] = decodeItem(bytes, at, depth + 1);
         items.push(item);
         at += n;
       }
@@ -62,9 +70,9 @@ function decodeItem(bytes, offset) {
       let at = offset + headLen;
       const map = new Map();
       for (let i = 0; i < Number(arg); i++) {
-        const [key, n1] = decodeItem(bytes, at);
+        const [key, n1] = decodeItem(bytes, at, depth + 1);
         at += n1;
-        const [value, n2] = decodeItem(bytes, at);
+        const [value, n2] = decodeItem(bytes, at, depth + 1);
         at += n2;
         map.set(key, value);
       }
