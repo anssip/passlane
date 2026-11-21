@@ -1,5 +1,5 @@
-use clap::Command;
 use crate::actions::Action;
+use clap::Command;
 use passlane_core::vault::entities::Error;
 
 pub struct PrintHelpAction {
@@ -8,9 +8,7 @@ pub struct PrintHelpAction {
 
 impl PrintHelpAction {
     pub fn new(cli: Command) -> PrintHelpAction {
-        PrintHelpAction {
-            cli
-        }
+        PrintHelpAction { cli }
     }
 }
 
@@ -20,6 +18,8 @@ impl Action for PrintHelpAction {
         let mut help_text = Vec::new();
         self.cli.clone().write_help(&mut help_text)?;
 
-        String::from_utf8(help_text).map(|s| s.to_string()).map_err(|_| Error::new("Failed to convert help text to string"))
+        String::from_utf8(help_text)
+            .map(|s| s.to_string())
+            .map_err(|_| Error::new("Failed to convert help text to string"))
     }
 }

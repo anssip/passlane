@@ -1,12 +1,12 @@
-use crate::actions::{handle_matches, ItemType, MatchHandlerTemplate, UnlockingAction};
+use crate::actions::{ItemType, MatchHandlerTemplate, UnlockingAction, handle_matches};
 use crate::completion_cache;
 use crate::ui;
 use crate::ui::output::{
     show_credentials_table, show_notes_table, show_payment_cards_table, show_totp_table,
 };
+use clap::ArgMatches;
 use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, Totp};
 use passlane_core::vault::vault_trait::Vault;
-use clap::ArgMatches;
 
 struct DeleteCredentialsTemplate<'a> {
     vault: &'a mut Box<dyn Vault>,
@@ -29,7 +29,12 @@ impl<'a> MatchHandlerTemplate for DeleteCredentialsTemplate<'a> {
         &mut self,
         matches: Vec<Self::ItemType>,
     ) -> Result<Option<String>, Error> {
-        show_credentials_table(&matches, false, false, crate::agent::in_agent_context(false));
+        show_credentials_table(
+            &matches,
+            false,
+            false,
+            crate::agent::in_agent_context(false),
+        );
         match ui::input::ask_index(
             "To delete, please enter a row number from the table above",
             matches.len() as i16 - 1,
@@ -215,7 +220,7 @@ impl UnlockingAction for DeleteAction {
                     None => {
                         return Err(Error {
                             message: "No search term provided".to_string(),
-                        })
+                        });
                     }
                 };
                 handle_matches(

@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Command;
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 
 use crate::actions::Action;
 use crate::completion_cache;
@@ -98,7 +98,10 @@ fn generate_cache() -> Result<usize, Error> {
         .map(passlane_core::hwkey::configured_challenge_response_key)
         .transpose()?;
 
-    println!("Opening vault '{}' to build completion cache...", config.name);
+    println!(
+        "Opening vault '{}' to build completion cache...",
+        config.name
+    );
     let vault = KeepassVault::open(
         &master_pwd,
         &config.path,
@@ -317,8 +320,7 @@ impl Action for CompletionsAction {
         let dir = completions_dir();
         std::fs::create_dir_all(&dir).map_err(|e| Error::new(&e.to_string()))?;
         let file_path = dir.join(completions_filename(shell));
-        let mut file =
-            std::fs::File::create(&file_path).map_err(|e| Error::new(&e.to_string()))?;
+        let mut file = std::fs::File::create(&file_path).map_err(|e| Error::new(&e.to_string()))?;
         file.write_all(script.as_bytes())
             .map_err(|e| Error::new(&e.to_string()))?;
 
@@ -427,7 +429,8 @@ mod tests {
         assert!(result.contains("completion_cache"));
         // add section should still have original COMPREPLY
         // (not a target subcommand, so not patched)
-        let add_section: String = result.lines()
+        let add_section: String = result
+            .lines()
             .skip_while(|l| !l.contains("passlane__add)"))
             .take_while(|l| !l.trim().starts_with(";;"))
             .collect::<Vec<_>>()

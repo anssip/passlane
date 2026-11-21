@@ -64,6 +64,8 @@ fs4 = "1.1"
 # path+version form lets `cargo publish` rewrite it to the registry
 # dependency once passlane-approval is published.
 passlane-approval = { path = "crates/passlane-approval", version = "0.1.0" }
+# Session-agent client for unlock/approval sessions (issue #54).
+passlane-agent = { path = "crates/passlane-agent", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3.24.0"
