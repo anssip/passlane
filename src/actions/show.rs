@@ -369,43 +369,17 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
         // The continuous code view is interactive-only for agent-facing
-        // `ask` entries unless a live reveal session covers it (the
-        // session-backed view below is monitored and ends with the
-        // session). This check runs BEFORE the reveal gate: the gate
-        // consumes a single-use link-transport grant on success, and a
-        // one-shot approval must stay available for the `--once` retry
-        // this refusal points at — not be burned by a view that never
-        // starts.
-        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
-            && crate::agent::decide(
-                the_match.agent_policy(),
-                crate::agent::RevealContext::Agent,
-            ) == crate::agent::RevealDecision::NeedApproval
-        {
-            let covered = crate::session_agent::check_reveal(
-                &crate::agent::current_vault_name(),
-                &the_match.id().to_string(),
-                "code",
-            )
-            .is_some();
-            if !covered {
-                return Err(Error::new(&format!(
-                    "Entry '{}' needs an interactive owner or a single approved code; the \
-                     continuous code view is interactive-only. Use '{}' for the single \
-                     approved code",
-                    the_match.label(),
-                    crate::agent::once_code_command(
-                        the_match.label(),
-                        &crate::agent::current_vault_name()
-                    )
-                )));
-            }
-        }
-        // The interactive code view is an owner reveal; an `ask` entry
-        // prompts for its approval before the first code appears.
-        gate_reveal(
+        // `ask` entries: it streams fresh secrets, which a one-shot
+        // approval must never fund. The session-only gate passes on a
+        // live reveal session (the view below watches that session and
+        // stops when it ends) and refuses otherwise — pointing at the
+        // one-shot `--once` form — WITHOUT consuming or emitting
+        // anything, so a single-use link-transport grant stays available
+        // for that retry, even if a session died moments before this
+        // gate.
+        crate::agent::enforce_reveal_session_only(
             the_match.agent_policy(),
-            false,
+            crate::agent::RevealContext::for_reveal(false),
             &the_match.id().to_string(),
             the_match.label(),
             "code",

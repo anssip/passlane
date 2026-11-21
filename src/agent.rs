@@ -610,8 +610,51 @@ where
         &|vault, id, entry, field| {
             crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
         },
+        GateMode::Full,
         prompt,
     )
+}
+
+/// Reveal gate for surfaces that stream secrets continuously (the TOTP
+/// code view): identical to [`enforce_reveal`] except that in an
+/// agent-facing context a **live reveal session is the only approval**
+/// that may pass it. A single-use link-transport grant must never fund an
+/// endless code stream — and a session that dies between the caller's
+/// own precheck and this gate must not silently fall through to grant
+/// consumption, so the gate has no grant fallback at all.
+pub fn enforce_reveal_session_only(
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    enforce_with_seams(
+        &ApprovalLog::default_path(),
+        &crate::approvals::state_dir(),
+        policy,
+        context,
+        entry_id,
+        entry,
+        field,
+        &|vault, id, _entry, field| crate::session_agent::check_reveal(vault, id, field),
+        &|vault, id, entry, field| {
+            crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
+        },
+        GateMode::SessionOnly,
+        // Owner contexts still get the interactive prompt; the mode only
+        // tightens the agent-facing path.
+        || ApprovalChoice::Once,
+    )
+}
+
+/// Which approvals may pass an agent-facing ask gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateMode {
+    /// Sessions, single-use link grants, and link emission (the default).
+    Full,
+    /// Live reveal sessions only — for continuous secret views.
+    SessionOnly,
 }
 
 /// The ask flow, with the approval-log and approvals-state locations
@@ -643,6 +686,7 @@ fn enforce_with_seams<F>(
     field: &str,
     check_session: &dyn Fn(&str, &str, &str, &str) -> Option<u64>,
     open_session: &dyn Fn(&str, &str, &str, &str) -> bool,
+    mode: GateMode,
     prompt: F,
 ) -> Result<(), Error>
 where
@@ -664,6 +708,21 @@ where
                     log.log_session_reveal(&vault, entry_id, entry, field, policy, until);
                     LAST_GATE_USED_SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
                     return Ok(());
+                }
+                if mode == GateMode::SessionOnly {
+                    // Continuous secret views refuse here — before any
+                    // single-use grant could be consumed — and point at
+                    // the one-shot form instead.
+                    let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
+                    return Err(Error::new(&format!(
+                        "Entry '{}' needs an interactive owner or a single approved code; this \
+                         view streams secrets continuously, so a one-shot approval cannot \
+                         cover it (approval request {} was recorded in the approval log). Use \
+                         '{}' for the single approved code",
+                        entry,
+                        id,
+                        once_code_command(entry, &vault)
+                    )));
                 }
 
                 // A single-use grant released by 'passlane approve
@@ -932,6 +991,7 @@ mod tests {
             field,
             &|_, _, _, _| None,
             &|_, _, _, _| false,
+            GateMode::Full,
             prompt,
         )
     }
@@ -1154,6 +1214,99 @@ mod tests {
         assert_eq!(events[0]["event"], "request");
         // No decision: the request stays pending until the owner resolves it.
         assert_eq!(events[0].get("decision").and_then(|d| d.as_str()), None);
+    }
+
+    #[test]
+    fn session_only_gate_never_consumes_a_link_grant() {
+        // The interleaving regression (review round 6): a reveal session
+        // covered the entry moments ago but dies before the continuous
+        // view's gate runs — while a single-use link-transport grant
+        // happens to be available. The session-only gate must refuse and
+        // leave the grant intact for the one-shot retry, not consume it
+        // and start streaming codes.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, _page, _passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
+
+        // Seed a live single-use grant through the real emission +
+        // approval helpers.
+        let emitted = crate::approvals::emit_approval_request(
+            state.path(),
+            "default",
+            "Stripe test key",
+            "uuid-stripe",
+            "password",
+            "test",
+        )
+        .unwrap();
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let rid = pending.records()[0].rid.clone();
+        let mut store = pending;
+        store.grant(&rid, true, u64::MAX - 10);
+        store.save().unwrap();
+
+        // The gate: session check says "not covered" (the session died),
+        // mode SessionOnly.
+        let result = enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None, // session dead
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || panic!("no prompt in an agent context"),
+        );
+        let err = result.expect_err("the session-only gate must refuse");
+        assert!(
+            err.message.contains("--once") || err.message.contains("one-shot"),
+            "{}",
+            err.message
+        );
+
+        // The grant is untouched: still live, still single-use.
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let record = pending.find(&rid).unwrap();
+        assert!(matches!(
+            record.state,
+            crate::approvals::pending::RequestState::Granted { once: true, .. }
+        ));
+        assert_eq!(
+            crate::approvals::consume_grant(state.path(), "default", "uuid-stripe", "password"),
+            Some(rid),
+            "the grant must remain consumable by the one-shot retry"
+        );
+    }
+
+    #[test]
+    fn session_only_gate_passes_on_a_live_session() {
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, id, e, _f| {
+                assert_eq!(id, ENTRY_ID);
+                assert_eq!(e, "Stripe test key");
+                Some(u64::MAX - 10)
+            },
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || panic!("a live session must not prompt"),
+        )
+        .expect("a covering session passes the session-only gate");
+        assert!(last_gate_used_session());
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["event"], "session");
     }
 
     #[test]
@@ -1406,6 +1559,7 @@ mod tests {
                 assert_eq!(e, entry);
                 opened
             },
+            GateMode::Full,
             || ApprovalChoice::Session,
         )
     }
