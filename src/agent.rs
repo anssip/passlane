@@ -1229,9 +1229,8 @@ mod tests {
         let (pin, _page, _passkey) = crate::approvals::mock_page();
         crate::approvals::pin_approver(state.path(), pin, None).unwrap();
 
-        // Seed a live single-use grant through the real emission +
-        // approval helpers.
-        let emitted = crate::approvals::emit_approval_request(
+        // Seed a live single-use grant through the real emission helper.
+        crate::approvals::emit_approval_request(
             state.path(),
             "default",
             "Stripe test key",
