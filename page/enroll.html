@@ -21,6 +21,15 @@
       </p>
       <button id="start">Create the passkey and enroll</button>
       <p id="status" aria-live="polite"></p>
+      <div id="code-wrap" hidden>
+        <p>Confirmation code — the terminal must show the same code:</p>
+        <p><strong id="code" class="code"></strong></p>
+        <p class="note">
+          If the codes differ, stop: a substituted link or blob is trying to
+          become your approver. Nothing is pinned unless you confirm the
+          match on the terminal.
+        </p>
+      </div>
       <div id="blob-wrap" hidden>
         <p>Paste this into the waiting terminal:</p>
         <textarea id="blob" rows="6" readonly></textarea>

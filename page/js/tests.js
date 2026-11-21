@@ -195,6 +195,54 @@ test("cbor: authenticator data parsing (fixed offsets)", () => {
   if (!threw?.includes("attested credential data")) throw new Error(`expected clear error, got ${threw}`);
 });
 
+test("cbor: rejects truncated input instead of clamping", () => {
+  // [0x42, 0x11]: a byte string claiming 17 bytes with one present — JS
+  // slice() would clamp to a short string; decoding must refuse.
+  let threw = null;
+  try {
+    cbor.decode(new Uint8Array([0x42, 0x11]));
+  } catch (e) {
+    threw = e.message;
+  }
+  if (!threw?.includes("truncated")) throw new Error(`byte string: ${threw}`);
+
+  // [0xa1, 0x01]: map(1) with a key but no value — the value read is out
+  // of bounds and must error, not fabricate.
+  threw = null;
+  try {
+    cbor.decode(new Uint8Array([0xa1, 0x01]));
+  } catch (e) {
+    threw = e.message;
+  }
+  if (threw === null) throw new Error("map without value must fail");
+
+  // A truncated item header (8-byte length prefix cut short).
+  threw = null;
+  try {
+    cbor.decode(new Uint8Array([0x1b, 0xff]));
+  } catch (e) {
+    threw = e.message;
+  }
+  if (!threw?.includes("truncated")) throw new Error(`header: ${threw}`);
+
+  // An oversized declared container with no elements present
+  // (array(5), nothing follows).
+  threw = null;
+  try {
+    cbor.decode(new Uint8Array([0x99, 0x00, 0x05]));
+  } catch (e) {
+    threw = e.message;
+  }
+  if (threw === null) throw new Error("oversized array must fail");
+
+  // Empty input.
+  try {
+    cbor.decode(new Uint8Array(0));
+  } catch {
+    /* expected */
+  }
+});
+
 test("cbor: attested credential data and the COSE key slice", () => {
   const rpIdHash = new Uint8Array(32).fill(0xaa);
   const aaguid = new Uint8Array(16).fill(0xbb);
@@ -525,6 +573,22 @@ test("mocked approval: JS produces a response the same JS framing accepts", asyn
 
 // -- the enrollment ceremony (SPEC §6, with both CLI keys bound) --------------
 
+test("enrollment confirmation code mirrors the Rust derivation", async () => {
+  const { enrollmentConfirmationCode } = await import("./enroll.js");
+  const k = (b) => new Uint8Array(65).fill(b);
+  // The exact value the Rust implementation (passlane-approval) produces
+  // for these keys — regenerable via its unit tests; both sides must
+  // show identical digits for the human comparison to work.
+  const code = await enrollmentConfirmationCode(k(0x01), k(0x02), k(0x03), k(0x04));
+  if (code !== "082044-650996") {
+    throw new Error(`mirror mismatch: got ${code}, want 082044-650996`);
+  }
+  // Bound to every key; the format is two six-digit groups.
+  const swapped = await enrollmentConfirmationCode(k(0x09), k(0x02), k(0x03), k(0x04));
+  if (swapped === code) throw new Error("substituted CLI key must change the code");
+  if (!/^\d{6}-\d{6}$/.test(code)) throw new Error(`bad format: ${code}`);
+});
+
 test("enrollment ceremony: the binding challenge covers both CLI keys, in order", async () => {
   const { runEnrollment } = await import("./enroll.js");
   const cli = caseByName("approval_request_unlock").sender_pin; // the "CLI"
@@ -575,7 +639,7 @@ test("enrollment ceremony: the binding challenge covers both CLI keys, in order"
   );
 
   let seenChallenge = null;
-  const { blob } = await runEnrollment(
+  const { blob, confirmationCode } = await runEnrollment(
     { nonce, cliPublicSec1: cliEnc, cliSigPubSec1: cliSig },
     {
       noStore: true,
@@ -625,10 +689,17 @@ test("enrollment ceremony: the binding challenge covers both CLI keys, in order"
     toBase64Url(await sha256(concat(nonce, pagePub))),
     "omitted CLI keys",
   );
-  // And the blob is shaped for the CLI verifier.
+  // And the blob is shaped for the CLI verifier, with the mutual
+  // confirmation code the terminal will display alongside.
   eq(blob.v, 1, "blob version");
   eq(blob.enc_pub, toHex(pagePub), "page ECDH pub");
   if (!blob.cose_key || !blob.assertion.signature) throw new Error("blob incomplete");
+  const { enrollmentConfirmationCode } = await import("./enroll.js");
+  eq(
+    confirmationCode,
+    await enrollmentConfirmationCode(cliEnc, cliSig, pagePub, passkeyPub),
+    "ceremony returns the confirmation code",
+  );
 });
 
 function assertNotEqual(a, b, what) {

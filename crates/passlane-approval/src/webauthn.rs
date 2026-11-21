@@ -152,6 +152,40 @@ pub fn enrollment_challenge(
     base64url_encode(&crate::crypto::sha256(&input))
 }
 
+/// The Phase 0 **enrollment** confirmation code (SPEC §5's human check,
+/// adapted where no pairing secret exists): twelve digits in two
+/// six-digit groups, derived from **both parties' public keys** — the
+/// CLI's encryption and verifying keys and the enrolled page's two keys.
+///
+/// The terminal derives it from its own identity plus the keys in the
+/// pasted enrollment blob; the page derives it from the link's CLI keys
+/// plus its own keys. The human compares the two displays before the CLI
+/// persists anything: a substituted responder (someone who read the
+/// enrollment link and raced their own blob into the terminal) produces
+/// a *different* code on the terminal than the genuine page shows, so
+/// the pin is refused. There is no secret in the derivation — the
+/// out-of-band channel is the human comparing the two devices' displays,
+/// exactly as in SPEC §5's mutual code.
+pub fn enrollment_confirmation_code(
+    cli_enc: &[u8],
+    cli_sig: &[u8],
+    page_enc: &[u8],
+    page_sig: &[u8],
+) -> String {
+    let mut input = Vec::with_capacity(
+        b"passlane-enrollment-code/v1".len() + cli_enc.len() + cli_sig.len() + page_enc.len()
+            + page_sig.len(),
+    );
+    input.extend_from_slice(b"passlane-enrollment-code/v1");
+    input.extend_from_slice(cli_enc);
+    input.extend_from_slice(cli_sig);
+    input.extend_from_slice(page_enc);
+    input.extend_from_slice(page_sig);
+    let digest = crate::crypto::sha256(&input);
+    let n = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % 1_000_000_000_000;
+    format!("{:06}-{:06}", n / 1_000_000, n % 1_000_000)
+}
+
 /// Constant-time byte-string comparison (lengths are public here).
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -365,5 +399,25 @@ mod tests {
             32
         );
         assert!(!challenge.contains('='));
+    }
+
+    #[test]
+    fn enrollment_confirmation_code_is_stable_and_binds_all_four_keys() {
+        let (a, b, c, d) = ([0x01u8; 65], [0x02u8; 65], [0x03u8; 65], [0x04u8; 65]);
+        let code = enrollment_confirmation_code(&a, &b, &c, &d);
+        // Twelve digits in two six-digit groups.
+        assert_eq!(code.len(), 13);
+        assert_eq!(code.as_bytes()[6], b'-');
+        assert!(code.bytes().all(|b| b.is_ascii_digit() || b == b'-'));
+        // Deterministic.
+        assert_eq!(code, enrollment_confirmation_code(&a, &b, &c, &d));
+        // Bound to every key: substituting either party's key material
+        // changes the code (the human comparison catches substitution).
+        assert_ne!(code, enrollment_confirmation_code(&[0x09; 65], &b, &c, &d));
+        assert_ne!(code, enrollment_confirmation_code(&a, &[0x09; 65], &c, &d));
+        assert_ne!(code, enrollment_confirmation_code(&a, &b, &[0x09; 65], &d));
+        assert_ne!(code, enrollment_confirmation_code(&a, &b, &c, &[0x09; 65]));
+        // Order matters — swapping the parties' keys is a different pin.
+        assert_ne!(code, enrollment_confirmation_code(&c, &d, &a, &b));
     }
 }

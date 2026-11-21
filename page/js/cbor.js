@@ -19,10 +19,19 @@ export function decode(bytes, offset = 0) {
 
 /** Decode one item; returns [value, bytesConsumedFromOffset]. */
 function decodeItem(bytes, offset) {
+  // Strict bounds: every read validates against the input length, so
+  // truncated data is rejected instead of clamped into short strings or
+  // fabricated values (JS slice() silently clamps — never rely on it).
+  if (offset >= bytes.length) {
+    throw new Error("cbor: truncated input");
+  }
   const major = bytes[offset];
   const mt = major >> 5;
   const info = major & 0x1f;
   const [arg, argLen] = readArgument(bytes, offset, info);
+  if (offset + 1 + argLen > bytes.length) {
+    throw new Error("cbor: truncated item header");
+  }
   const headLen = 1 + argLen;
   switch (mt) {
     case 0: // unsigned int
@@ -30,13 +39,14 @@ function decodeItem(bytes, offset) {
     case 1: // negative int: -1 - n
       return [-1 - Number(arg), headLen];
     case 2: { // byte string
-      const start = offset + headLen;
-      return [bytes.slice(start, start + Number(arg)), headLen + Number(arg)];
+      const end = offset + headLen + Number(arg);
+      if (end > bytes.length) throw new Error("cbor: truncated byte string");
+      return [bytes.slice(offset + headLen, end), headLen + Number(arg)];
     }
     case 3: { // text string
-      const start = offset + headLen;
-      const slice = bytes.slice(start, start + Number(arg));
-      return [fromUtf8(slice), headLen + Number(arg)];
+      const end = offset + headLen + Number(arg);
+      if (end > bytes.length) throw new Error("cbor: truncated text string");
+      return [fromUtf8(bytes.slice(offset + headLen, end)), headLen + Number(arg)];
     }
     case 4: { // array
       let at = offset + headLen;
@@ -68,6 +78,13 @@ function decodeItem(bytes, offset) {
 function readArgument(bytes, offset, info) {
   let arg;
   let argLen = 0;
+  // Every extension byte must exist before it is read (a past-the-end
+  // read yields undefined, which must surface as a decode error, not a
+  // fabricated value).
+  const need = info <= 23 ? 0 : info === 24 ? 1 : info === 25 ? 2 : info === 26 ? 4 : info === 27 ? 8 : 0;
+  if (offset + 1 + need > bytes.length) {
+    throw new Error("cbor: truncated item header");
+  }
   switch (true) {
     case info <= 23:
       arg = BigInt(info);

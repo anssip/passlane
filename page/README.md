@@ -12,10 +12,14 @@ do the ECDH that HPKE needs:
 - a **signing identity** — a WebAuthn passkey on this page's domain (the
   hardware-backed, human-present factor).
 
-Enrollment binds the two: the passkey signs `SHA-256(enrollment_nonce ‖
-ECDH_public_key)` via a follow-up `credentials.get()` assertion, and the
-CLI verifies that signature (origin, RP-id hash, user-present flag,
-credential-key signature) before pinning both keys. From then on approval
+Enrollment binds the two, and binds them to *your* terminal: the passkey
+signs `SHA-256(enrollment_nonce ‖ ECDH_public_key ‖ both CLI keys)` via a
+follow-up `credentials.get()` assertion (the CLI recomputes the challenge
+from its own identity — a swapped enrollment link fails there), and both
+devices then display a twelve-digit **confirmation code** derived from
+both parties' keys (SPEC §5's human check); the CLI pins the keys only
+after you confirm the codes match, so a substituted link or a raced-in
+blob cannot become your approver. From then on approval
 requests arrive HPKE-sealed to the ECDH key, and every answer leaves
 signed by the passkey (signature kind 2: the assertion covers the exact
 envelope bytes, SPEC §3).

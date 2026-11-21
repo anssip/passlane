@@ -16,7 +16,7 @@
 // RP data; the page stores the ECDH key + credential id keyed by its own
 // key id (the `rkid` of future requests).
 
-import { parseAttestationObject } from "./cbor.js";
+import { decode as cborDecode, parseAttestationObject } from "./cbor.js";
 import { kid } from "./hpke.js";
 import {
   generateEnrollmentKey,
@@ -25,6 +25,34 @@ import {
 import { concat, fromHex, sha256, toBase64Url, toHex } from "./lib.js";
 
 const $ = (id) => document.getElementById(id);
+
+/**
+ * The enrollment confirmation code (SPEC §5's human check, mirrored from
+ * the CLI's passlane-approval derivation): twelve digits over BOTH
+ * parties' public keys. The terminal derives it from its own keys plus
+ * the pasted blob's; this page derives it from the link's CLI keys plus
+ * its own. The human compares the two displays before the CLI persists
+ * the pin — a substituted enrollment link produces a mismatch.
+ */
+export async function enrollmentConfirmationCode(
+  cliEncPub,
+  cliSigPub,
+  pageEncPub,
+  pageSigPub,
+) {
+  const digest = await sha256(
+    concat(
+      new TextEncoder().encode("passlane-enrollment-code/v1"),
+      cliEncPub,
+      cliSigPub,
+      pageEncPub,
+      pageSigPub,
+    ),
+  );
+  const n = digest.subarray(0, 8).reduce((acc, b) => acc * 256n + BigInt(b), 0n) % 1000000000000n;
+  const s = n.toString().padStart(12, "0");
+  return `${s.slice(0, 6)}-${s.slice(6)}`;
+}
 
 /** Parse the enrollment fragment into { nonce, cliPublicSec1, cliSigPubSec1 }. */
 export function parseEnrollFragment(hash) {
@@ -69,6 +97,15 @@ export async function runEnrollment({ nonce, cliPublicSec1, cliSigPubSec1 }, opt
 
   // 4. Store and produce the paste-back blob. The record is keyed by the
   //    page's own encryption key id — the rkid requests to this key carry.
+  // The mutual confirmation code, shown beside the paste-back blob: the
+  // terminal displays the same value derived from ITS keys plus this
+  // blob's; the human compares before the CLI pins anything.
+  const confirmationCode = await enrollmentConfirmationCode(
+    cliPublicSec1,
+    cliSigPubSec1,
+    publicSec1,
+    passkeyPubBytes(parsed),
+  );
   const ownKid = await kid("enc", publicSec1);
   const record = {
     rkid: ownKid,
@@ -94,8 +131,20 @@ export async function runEnrollment({ nonce, cliPublicSec1, cliSigPubSec1 }, opt
         signature: toBase64Url(new Uint8Array(assertion.signature)),
       },
     },
+    confirmationCode,
     record,
   };
+}
+
+/** The passkey's SEC1 public key from the parsed attestation's COSE
+ * key ({1:2, 3:-7, -1:1, -2:x, -3:y}). */
+function passkeyPubBytes(parsed) {
+  const [map] = cborDecode(parsed.credentialPublicKey);
+  const out = new Uint8Array(65);
+  out[0] = 0x04;
+  out.set(map.get(-2), 1);
+  out.set(map.get(-3), 33);
+  return out;
 }
 
 export async function createPasskey() {
@@ -150,11 +199,13 @@ async function main() {
       try {
         $("start").disabled = true;
         $("status").textContent = "Creating keys — confirm the passkey prompt…";
-        const { blob } = await runEnrollment(parsed);
+        const { blob, confirmationCode } = await runEnrollment(parsed);
         $("blob").value = JSON.stringify(blob);
         $("blob-wrap").hidden = false;
+        $("code").textContent = confirmationCode;
+        $("code-wrap").hidden = false;
         $("status").textContent =
-          "Done on this side. Paste the blob into the terminal waiting for it.";
+          "Done on this side. Compare the confirmation code with the one the terminal shows; if they match, confirm there and paste the blob.";
       } catch (e) {
         $("status").textContent = `Enrollment failed: ${e.message}`;
         $("start").disabled = false;

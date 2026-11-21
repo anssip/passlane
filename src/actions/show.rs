@@ -368,6 +368,39 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
+        // The continuous code view is interactive-only for agent-facing
+        // `ask` entries unless a live reveal session covers it (the
+        // session-backed view below is monitored and ends with the
+        // session). This check runs BEFORE the reveal gate: the gate
+        // consumes a single-use link-transport grant on success, and a
+        // one-shot approval must stay available for the `--once` retry
+        // this refusal points at — not be burned by a view that never
+        // starts.
+        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
+            && crate::agent::decide(
+                the_match.agent_policy(),
+                crate::agent::RevealContext::Agent,
+            ) == crate::agent::RevealDecision::NeedApproval
+        {
+            let covered = crate::session_agent::check_reveal(
+                &crate::agent::current_vault_name(),
+                &the_match.id().to_string(),
+                "code",
+            )
+            .is_some();
+            if !covered {
+                return Err(Error::new(&format!(
+                    "Entry '{}' needs an interactive owner or a single approved code; the \
+                     continuous code view is interactive-only. Use '{}' for the single \
+                     approved code",
+                    the_match.label(),
+                    crate::agent::once_code_command(
+                        the_match.label(),
+                        &crate::agent::current_vault_name()
+                    )
+                )));
+            }
+        }
         // The interactive code view is an owner reveal; an `ask` entry
         // prompts for its approval before the first code appears.
         gate_reveal(
@@ -377,25 +410,6 @@ impl ShowTotpTemplate {
             the_match.label(),
             "code",
         )?;
-        // A reveal session passing the gate above is fine — the loop
-        // below watches that session and stops when it ends. A
-        // single-use link-transport grant is not: this view streams
-        // fresh codes indefinitely, so a one-shot approval must not fund
-        // it. Direct the agent at `--once` (one code, one grant).
-        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
-            && crate::agent::decide(
-                the_match.agent_policy(),
-                crate::agent::RevealContext::Agent,
-            ) == crate::agent::RevealDecision::NeedApproval
-            && !crate::agent::last_gate_used_session()
-        {
-            return Err(Error::new(&format!(
-                "Entry '{}' was approved for a single reveal; the continuous code view is \
-                 interactive-only. Use '{}' for the single approved code",
-                the_match.label(),
-                crate::agent::once_code_command(&the_match.label(), &crate::agent::current_vault_name())
-            )));
-        }
         let (tx, rx) = mpsc::channel();
         let (tx_counter, rx_counter) = mpsc::channel();
         let session_ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

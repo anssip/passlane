@@ -85,6 +85,36 @@ impl ApprovalsAction {
         let (enc_pub, sig_pub) =
             approvals::verify_enrollment(&blob, &nonce, &origin, &identity)
                 .map_err(|e| Error::new(&e))?;
+
+        // 4. The human check (SPEC §5 adapted): both sides display a code
+        //    over BOTH parties' keys; the pin is persisted only when the
+        //    human confirms they match. A substituted responder (someone
+        //    who read the link and raced their own blob in) shows a
+        //    different code on the terminal than the genuine page does.
+        let page_enc = passlane_approval::encoding::hex_decode(&enc_pub)
+            .map_err(|e| Error::new(&format!("the ECDH public key is not valid hex: {e}")))?;
+        let page_sig = passlane_approval::encoding::hex_decode(&sig_pub)
+            .map_err(|e| Error::new(&format!("the passkey public key is not valid hex: {e}")))?;
+        let code = passlane_approval::webauthn::enrollment_confirmation_code(
+            &identity.encryption_public(),
+            &identity.verifying_key().to_sec1_bytes(),
+            &page_enc,
+            &page_sig,
+        );
+        let confirmed = inquire::Confirm::new(&format!(
+            "Confirmation code: {code} — does the approval page show the same code?"
+        ))
+        .with_default(false)
+        .prompt()
+        .unwrap_or(false);
+        if !confirmed {
+            return Err(Error::new(
+                "Enrollment aborted: the codes did not match, so nothing was pinned. If you \
+                 suspect a substituted link or blob, compare full key fingerprints instead \
+                 (see crates/passlane-approval/SPEC.md §5).",
+            ));
+        }
+
         let pin = PeerPin {
             label: label.clone(),
             enc_pub,

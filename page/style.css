@@ -64,3 +64,9 @@ textarea {
 .note { opacity: 0.8; font-size: 0.9rem; }
 
 #status { min-height: 1.5rem; }
+
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.4rem;
+  letter-spacing: 0.15em;
+}

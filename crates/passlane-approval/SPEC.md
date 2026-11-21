@@ -210,9 +210,13 @@ genuine CLI never issued, so the assertion it elicits fails on the CLI,
 which recomputes the challenge from **its own** identity keys — never
 from the link. The credential-key
 signature over that challenge is what proves the passkey (and the human
-behind it) vouches for this exact ECDH key. The CLI verifies the assertion
-(`webauthn::verify_assertion` semantics: origin, RP-id hash, UP flag,
-credential-key signature) and pins
+behind it) vouches for this exact ECDH key. Both sides then display a
+twelve-digit confirmation code over both parties' keys (SPEC §5's human
+check, `webauthn::enrollment_confirmation_code`); the CLI persists the
+pin only after the human confirms the two displays match — a substituted
+link or raced-in blob produces mismatched codes. The CLI verifies the
+assertion (`webauthn::verify_assertion` semantics: origin, RP-id hash,
+UP flag, credential-key signature) and pins
 `enc_pub = ECDH public key`, `sig_pub = passkey public key`,
 `webauthn = { rp_id, origin }`. (COSE parsing and this ceremony land with
 the CLI command — passlane#51.)
