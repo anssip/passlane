@@ -252,6 +252,27 @@ test("cbor: rejects truncated input instead of clamping", () => {
     threw = e.message;
   }
   if (!threw?.includes("depth")) throw new Error(`deep nesting: ${threw}`);
+
+  // The same limit must hold for the COSE key slot INSIDE authenticator
+  // data (where credential public keys are parsed): a nested-bomb COSE
+  // key must be rejected, not recursed into.
+  threw = null;
+  try {
+    const rpIdHash = new Uint8Array(32).fill(0xaa);
+    const bomb = new Uint8Array(100).fill(0x81); // array(1) x100
+    const authData = concat(
+      rpIdHash,
+      new Uint8Array([0x41, 0, 0, 0, 0]), // UP | AT
+      new Uint8Array(16), // aaguid
+      new Uint8Array([0, 4]), // credential id length
+      new Uint8Array(4), // credential id
+      bomb,
+    );
+    cbor.parseAuthenticatorData(authData);
+  } catch (e) {
+    threw = e.message;
+  }
+  if (!threw?.includes("depth")) throw new Error(`nested COSE in authData: ${threw}`);
 });
 
 test("cbor: attested credential data and the COSE key slice", () => {

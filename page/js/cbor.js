@@ -155,7 +155,10 @@ export function parseAuthenticatorData(authData) {
   at += credIdLen;
   if (authData.length < at) throw new Error("attested credential data: truncated credential id");
   // The COSE key's own CBOR head declares its length; slice it verbatim.
-  const [, coseLen] = decodeItem(authData, at);
+  // (Through the depth-initialized entry point: a direct decodeItem call
+  // would leave `depth` undefined and silently disable the nesting
+  // limit for credential keys inside authenticator data.)
+  const [, coseLen] = decode(authData, at);
   const credentialPublicKey = authData.slice(at, at + coseLen);
   out.attestedCredentialData = { aaguid, credentialId, credentialPublicKey };
   return out;
