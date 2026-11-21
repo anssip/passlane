@@ -642,9 +642,10 @@ pub fn enforce_reveal_session_only(
             crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
         },
         GateMode::SessionOnly,
-        // Owner contexts still get the interactive prompt; the mode only
-        // tightens the agent-facing path.
-        || ApprovalChoice::Once,
+        // Owner contexts keep the real three-way prompt (Once / for this
+        // session / Deny) — the mode only tightens the agent-facing
+        // branch, which never reaches the prompt.
+        || ask_approval(entry, field),
     )
 }
 
@@ -1306,6 +1307,47 @@ mod tests {
         assert!(last_gate_used_session());
         let events = lines(&log);
         assert_eq!(events.last().unwrap()["event"], "session");
+    }
+
+    #[test]
+    fn session_only_gate_still_prompts_the_owner() {
+        // The mode tightens only the agent-facing branch: an owner at the
+        // terminal still gets the interactive choice — a `Deny` is
+        // honored, and nothing is auto-approved or auto-denied.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None,
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || ApprovalChoice::Deny,
+        )
+        .expect_err("the owner's Deny must be honored");
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["decision"], "denied");
+
+        let (log, _dir) = log_in_tempdir();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None,
+            &|_, _, _, _| true,
+            GateMode::SessionOnly,
+            || ApprovalChoice::Session,
+        )
+        .expect("the owner's session choice is honored too");
     }
 
     #[test]
