@@ -1,18 +1,18 @@
 use crate::actions::{
-    copy_to_clipboard, copy_to_clipboard_timed, handle_matches, ItemType, MatchHandlerTemplate,
-    UnlockingAction,
+    ItemType, MatchHandlerTemplate, UnlockingAction, copy_to_clipboard, copy_to_clipboard_timed,
+    handle_matches,
 };
 
-use crate::agent::{self, decide, RevealContext, RevealDecision};
+use crate::agent::{self, RevealContext, RevealDecision, decide};
 use crate::ui::input::{ask_index, ask_with_options};
 use crate::ui::output::{
     show_card, show_credential, show_credentials_table, show_note, show_notes_table,
     show_payment_cards_table, show_totp_table,
 };
-use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
-use passlane_core::vault::vault_trait::Vault;
 use clap::ArgMatches;
 use log::debug;
+use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard, Totp};
+use passlane_core::vault::vault_trait::Vault;
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::thread;
@@ -22,18 +22,20 @@ use std::time::Duration;
 /// context (see docs/features/agent-approvals.md). `stdout_reveal` marks
 /// the scripting paths that print the secret to stdout; those, and any
 /// reveal without an interactive terminal, are agent-facing.
+/// `entry_id` is the entry's stable UUID (what reveal sessions are keyed
+/// by); `entry` is the display title.
 fn gate_reveal(
     policy: AgentPolicy,
     stdout_reveal: bool,
-    entry: &str,
     entry_id: &str,
+    entry: &str,
     field: &str,
 ) -> Result<(), Error> {
     agent::enforce_reveal(
         policy,
         RevealContext::for_reveal(stdout_reveal),
-        entry,
         entry_id,
+        entry,
         field,
     )
 }
@@ -95,8 +97,8 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
         gate_reveal(
             the_match.agent_policy(),
             self.stdout_only,
-            the_match.title(),
             &the_match.uuid().to_string(),
+            the_match.title(),
             "password",
         )?;
         if self.stdout_only {
@@ -149,8 +151,8 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
                 gate_reveal(
                     matches[index].agent_policy(),
                     self.stdout_only,
-                    matches[index].title(),
                     &matches[index].uuid().to_string(),
+                    matches[index].title(),
                     "password",
                 )?;
                 if self.stdout_only {
@@ -158,14 +160,14 @@ impl MatchHandlerTemplate for ShowCredentialsTemplate {
                     Ok(None)
                 } else {
                     show_credential(&matches[index], self.verbose, self.plain);
-                    println!("Password copied to clipboard! Clipboard will be cleared in 20 seconds.");
+                    println!(
+                        "Password copied to clipboard! Clipboard will be cleared in 20 seconds."
+                    );
                     copy_to_clipboard_timed(matches[index].password(), 20);
                     Ok(None)
                 }
             }
-            Err(message) => {
-                Err(Error { message })
-            }
+            Err(message) => Err(Error { message }),
         }
     }
 }
@@ -186,8 +188,8 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
         gate_reveal(
             the_match.agent_policy(),
             false,
-            the_match.name(),
             &the_match.id().to_string(),
+            the_match.name(),
             "number",
         )?;
         // The gate above passed (allow, owner's own reveal, or an approved
@@ -239,12 +241,14 @@ impl MatchHandlerTemplate for ShowPaymentsTemplate {
                 gate_reveal(
                     matches[index].agent_policy(),
                     false,
-                    matches[index].name(),
                     &matches[index].id().to_string(),
+                    matches[index].name(),
                     "number",
                 )?;
                 show_card(&matches[index]);
-                println!("Card number copied to clipboard! Clipboard will be cleared in 20 seconds.");
+                println!(
+                    "Card number copied to clipboard! Clipboard will be cleared in 20 seconds."
+                );
                 copy_to_clipboard_timed(matches[index].number(), 20);
                 Ok(None)
             }
@@ -269,8 +273,8 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
         gate_reveal(
             the_match.agent_policy(),
             false,
-            the_match.title(),
             &the_match.id().to_string(),
+            the_match.title(),
             "content",
         )?;
         // As with payment cards: the reveal is approved, so the verbose
@@ -318,8 +322,8 @@ impl MatchHandlerTemplate for ShowNotesTemplate {
                 gate_reveal(
                     matches[index].agent_policy(),
                     false,
-                    matches[index].title(),
                     &matches[index].id().to_string(),
+                    matches[index].title(),
                     "content",
                 )?;
                 show_note(&matches[index]);
@@ -356,48 +360,112 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
             matches.len() as i16 - 1,
             Some("Press q to exit without showing the code"),
         ) {
-            Ok(index) => {
-                Self::show_code(matches[index].clone())
-            }
-            Err(message) => {
-                Err(Error { message })
-            }
+            Ok(index) => Self::show_code(matches[index].clone()),
+            Err(message) => Err(Error { message }),
         }
     }
 }
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
-        // The continuous code view is an owner's interactive surface: it
-        // streams fresh codes until 'q'. A single-use approval must never
-        // fund that, so in an agent-facing context an `ask` entry is told
-        // to use `--once` (one code, one grant) instead of consuming a
-        // grant here and looping forever on a non-interactive stdin.
-        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
-            && crate::agent::decide(the_match.agent_policy(), crate::agent::RevealContext::Agent)
-                == crate::agent::RevealDecision::NeedApproval
-        {
-            return Err(Error::new(&format!(
-                "Entry '{}' needs owner approval (agent=ask); the continuous code view is \
-                 interactive-only. Use '{}' for a single approved code",
-                the_match.label(),
-                crate::agent::once_code_command(
-                    &the_match.label(),
-                    &crate::agent::current_vault_name()
-                )
-            )));
-        }
         // The interactive code view is an owner reveal; an `ask` entry
         // prompts for its approval before the first code appears.
         gate_reveal(
             the_match.agent_policy(),
             false,
-            the_match.label(),
             &the_match.id().to_string(),
+            the_match.label(),
             "code",
         )?;
+        // A reveal session passing the gate above is fine — the loop
+        // below watches that session and stops when it ends. A
+        // single-use link-transport grant is not: this view streams
+        // fresh codes indefinitely, so a one-shot approval must not fund
+        // it. Direct the agent at `--once` (one code, one grant).
+        if crate::agent::RevealContext::for_reveal(false) == crate::agent::RevealContext::Agent
+            && crate::agent::decide(
+                the_match.agent_policy(),
+                crate::agent::RevealContext::Agent,
+            ) == crate::agent::RevealDecision::NeedApproval
+            && !crate::agent::last_gate_used_session()
+        {
+            return Err(Error::new(&format!(
+                "Entry '{}' was approved for a single reveal; the continuous code view is \
+                 interactive-only. Use '{}' for the single approved code",
+                the_match.label(),
+                crate::agent::once_code_command(&the_match.label(), &crate::agent::current_vault_name())
+            )));
+        }
         let (tx, rx) = mpsc::channel();
         let (tx_counter, rx_counter) = mpsc::channel();
+        let session_ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // The continuous code view is session-backed when the vault was
+        // unlocked through the agent OR the reveal gate itself passed on
+        // a live reveal session (an agent-context view of an `ask`
+        // entry). Such a view must never run unmonitored: subscribe,
+        // revalidate that the backing sessions are still live (a
+        // revocation, lock or expiry during vault decryption would
+        // otherwise be missed), and stop refreshing (and copying) the
+        // moment the agent drops the session.
+        let unlock_backed =
+            crate::actions::last_unlock_source() == crate::actions::PasswordSource::SessionAgent;
+        let reveal_backed = crate::agent::last_gate_used_session();
+        if unlock_backed || reveal_backed {
+            let Some(mut events) = crate::session_agent::subscribe_to_events() else {
+                // The agent was reachable moments ago (it supplied the
+                // unlock or the approval) and now is not: fail closed
+                // instead of generating codes nobody is watching over.
+                return Err(Error::new(
+                    "The session agent became unreachable; refusing to start a \
+                     session-backed view without it (restart passlane-agent and try \
+                     again).",
+                ));
+            };
+            let vault = crate::agent::current_vault_name();
+            if !crate::session_agent::session_access_live(
+                unlock_backed,
+                reveal_backed,
+                &vault,
+                &the_match.id().to_string(),
+                "code",
+            ) {
+                // The session ended during vault decryption. No code may
+                // be revealed on an ended session — return before the
+                // generation loop instead of queueing an exit signal
+                // that the loop would only see after one more code.
+                return Err(Error::new(
+                    "The session backing this view ended (revoked, expired or locked) \
+                     before any code was shown.",
+                ));
+            } else {
+                let quit = tx.clone();
+                let ended = std::sync::Arc::clone(&session_ended);
+                thread::spawn(move || {
+                    loop {
+                        match events.next_event() {
+                            Ok(event) => {
+                                if crate::session_agent::event_ends_access(&event, &vault) {
+                                    ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    let _ = quit.send(());
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                // The stream died: the agent stopped or
+                                // crashed, and its sessions died with
+                                // it. Treat that as the end of
+                                // session-backed access instead of
+                                // continuing unmonitored.
+                                ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let _ = quit.send(());
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
 
         // Spawn a thread to listen for keyboard input
         thread::spawn(move || {
@@ -418,16 +486,18 @@ impl ShowTotpTemplate {
         });
 
         // Spawn a thread to handle the countdown timer
-        thread::spawn(move || loop {
-            let duration = rx_counter.recv().expect("Failed to receive duration");
-            println!("Next code in {} seconds", duration);
-            println!("{}", ".".repeat(duration as usize));
-            io::stdout().flush().unwrap();
-
-            for _ in (1..=duration).rev() {
-                print!(".");
+        thread::spawn(move || {
+            loop {
+                let duration = rx_counter.recv().expect("Failed to receive duration");
+                println!("Next code in {} seconds", duration);
+                println!("{}", ".".repeat(duration as usize));
                 io::stdout().flush().unwrap();
-                thread::sleep(Duration::from_secs(1));
+
+                for _ in (1..=duration).rev() {
+                    print!(".");
+                    io::stdout().flush().unwrap();
+                    thread::sleep(Duration::from_secs(1));
+                }
             }
         });
 
@@ -450,7 +520,11 @@ impl ShowTotpTemplate {
                     // Wait for the specified duration or a keyboard interrupt
                     let duration = Duration::from_secs(code.valid_for_seconds);
                     if rx.recv_timeout(duration).is_ok() {
-                        println!("Exiting as requested.");
+                        if session_ended.load(std::sync::atomic::Ordering::SeqCst) {
+                            println!("Session ended (revoked, expired or locked); exiting.");
+                        } else {
+                            println!("Exiting as requested.");
+                        }
                         break;
                     }
                 }
@@ -495,8 +569,8 @@ impl ShowAction {
                 gate_reveal(
                     totp.agent_policy(),
                     true,
-                    totp.label(),
                     &totp.id().to_string(),
+                    totp.label(),
                     "code",
                 )?;
                 let code = totp.get_code()?;
@@ -531,7 +605,7 @@ impl UnlockingAction for ShowAction {
                     None => {
                         return Err(Error {
                             message: "No search term REGEXP provided".to_string(),
-                        })
+                        });
                     }
                 };
                 handle_matches(
@@ -562,7 +636,10 @@ impl UnlockingAction for ShowAction {
                 if self.once {
                     self.show_totp_once(matches)
                 } else {
-                    handle_matches(matches, &mut Box::new(ShowTotpTemplate { plain: self.plain }))
+                    handle_matches(
+                        matches,
+                        &mut Box::new(ShowTotpTemplate { plain: self.plain }),
+                    )
                 }
             }
         }
@@ -603,7 +680,9 @@ mod tests {
     #[test]
     fn test_show_totp_once_single_match_prints_code() {
         let result = once_action().show_totp_once(vec![totp("a@test.com")]);
-        let code = result.expect("expected a code").expect("expected Some(code)");
+        let code = result
+            .expect("expected a code")
+            .expect("expected Some(code)");
         // A current TOTP code is a non-empty numeric string.
         assert!(!code.is_empty());
         assert!(code.chars().all(|c| c.is_ascii_digit()));
@@ -617,8 +696,7 @@ mod tests {
 
     #[test]
     fn test_show_totp_once_multiple_matches_errors_with_labels() {
-        let result =
-            once_action().show_totp_once(vec![totp("a@test.com"), totp("b@test.com")]);
+        let result = once_action().show_totp_once(vec![totp("a@test.com"), totp("b@test.com")]);
         let err = result.expect_err("expected an error on multiple matches");
         assert!(err.message.contains("a@test.com"));
         assert!(err.message.contains("b@test.com"));
@@ -645,7 +723,8 @@ mod tests {
     fn require_cleartext_allowed_refuses_restricted_entries() {
         let err = require_cleartext_allowed(2).expect_err("restricted entries must block");
         assert!(
-            err.message.contains("2 of the matched entries are restricted"),
+            err.message
+                .contains("2 of the matched entries are restricted"),
             "unexpected message: {}",
             err.message
         );
@@ -658,21 +737,13 @@ mod tests {
         // At the owner's terminal the verbose table is the owner's own view.
         assert!(guard_cleartext_table(true, RevealContext::Owner, policies.into_iter()).is_ok());
         // In agent-facing contexts a table containing restricted entries is refused...
-        assert!(
-            guard_cleartext_table(true, RevealContext::Agent, policies.into_iter()).is_err()
-        );
+        assert!(guard_cleartext_table(true, RevealContext::Agent, policies.into_iter()).is_err());
         // ...but non-cleartext tables never carry secrets, and all-allowed
         // sets pass anywhere.
+        assert!(guard_cleartext_table(false, RevealContext::Agent, policies.into_iter()).is_ok());
         assert!(
-            guard_cleartext_table(false, RevealContext::Agent, policies.into_iter()).is_ok()
-        );
-        assert!(
-            guard_cleartext_table(
-                true,
-                RevealContext::Agent,
-                [AgentPolicy::Allow].into_iter()
-            )
-            .is_ok()
+            guard_cleartext_table(true, RevealContext::Agent, [AgentPolicy::Allow].into_iter())
+                .is_ok()
         );
     }
 }

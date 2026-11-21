@@ -247,11 +247,29 @@ passlane unlock
 ```
 
 You can later remove the master password from the keychain with the lock command. It locks the vault given
-with `--vault`, or the active vault; `passlane lock --all` locks every configured vault.
+with `--vault`, or the active vault; `passlane lock --all` locks every configured vault. Locking also revokes
+any session-agent sessions held for the vault, so the vault is locked everywhere at once.
 
 ```bash
 passlane lock
 ```
+
+#### Session-agent unlocking (memory only, ssh-agent style)
+
+Instead of the keychain, you can hold a vault's unlock factors in the [session agent](docs/features/session-agent.md)
+for a bounded time — in memory only, never written to disk, revocable at any moment:
+
+```bash
+passlane-agent &                     # start the daemon (see the doc for autostart)
+passlane --vault work unlock --session 3600   # hold the factors for one hour
+passlane --vault work show github.com         # no prompt: the agent serves the unlock
+passlane sessions list                        # see what the agent holds
+passlane sessions revoke all                  # or: passlane lock
+```
+
+Timed `agent = ask` approvals work the same way: the ask flow's *Approve for this session* records a
+reusable approval in the agent instead of granting a single use. Sessions expire on their own, die with
+the agent, and are capped at 8 hours no matter what.
 
 To get help on the available commands:
 
@@ -324,10 +342,11 @@ Commands:
   delete     Deletes one or more entries.
   show       Shows one or more entries.
   list       Lists entries from the vault for scripting and automation. WARNING: outputs passwords to stdout.
-  lock       Lock a vault by removing its stored master password. Use --all to lock every vault.
-  unlock     Unlock a vault: open it and store the master password in the keychain.
+  lock       Lock a vault by removing its stored master password and revoking its session-agent sessions. Use --all to lock every vault.
+  unlock     Unlock a vault: open it and store the master password in the keychain. With --session, hold the unlock factors in the session agent instead (memory only).
   passwd     Change the master password of the vault.
   hwkey      Manage the hardware key (e.g. a YubiKey) that protects a vault with challenge-response.
+  sessions   Manage the in-memory sessions held by the passlane session agent: unlock factors and timed approvals that live until expiry, revoke or lock.
   export     Exports the vault contents to a CSV file.
   gen        Generate a random password and copy it to the clipboard.
   repl       Launch the interactive REPL session.

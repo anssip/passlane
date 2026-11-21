@@ -13,6 +13,7 @@ pub mod import;
 pub mod init;
 pub mod list;
 pub mod lock;
+pub mod sessions;
 pub mod show;
 pub mod unlock;
 pub mod vault;
@@ -20,13 +21,13 @@ pub mod vault;
 use crate::keychain;
 
 use crate::ui::input::ask_master_password;
+use arboard::Clipboard;
+use clap::ArgMatches;
+use keepass_ng::ChallengeResponseKey;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::Vault;
-use clap::ArgMatches;
-use arboard::Clipboard;
-use keepass_ng::ChallengeResponseKey;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) trait MatchHandlerTemplate
 where
@@ -69,22 +70,75 @@ pub trait Action {
     }
 }
 
+/// Where a vault's master password came from — used to attribute open
+/// failures (a stale agent session) and to tell the user what happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasswordSource {
+    /// The OS keychain (the vault was previously unlocked).
+    Keychain,
+    /// A live session-agent session (`once` sessions are consumed).
+    SessionAgent,
+    /// An interactive prompt.
+    Prompt,
+}
+
+/// The master-password lookup chain with every source injected so the
+/// ordering itself is hermetically testable: keychain first (persistent,
+/// no session burned), then the session agent, then the prompt.
+fn get_vault_password_with(
+    vault_name: &str,
+    keychain_lookup: &dyn Fn(&str) -> Option<String>,
+    agent_lookup: &dyn Fn(&str) -> Option<Zeroizing<String>>,
+    prompt: &dyn Fn(&str) -> String,
+) -> (String, PasswordSource) {
+    if let Some(password) = keychain_lookup(vault_name) {
+        return (password, PasswordSource::Keychain);
+    }
+    if let Some(password) = agent_lookup(vault_name) {
+        return (password.to_string(), PasswordSource::SessionAgent);
+    }
+    (prompt(vault_name), PasswordSource::Prompt)
+}
+
 /// The current vault's master password: from the keychain when unlocked,
-/// else prompted for.
+/// else a live session-agent session, else prompted for.
 pub(crate) fn get_vault_password(vault_name: &str) -> String {
-    keychain::get_master_password(vault_name).unwrap_or_else(|_| {
-        ask_master_password(Some(&format!(
-            "Please enter master password of vault '{}'",
-            vault_name
-        )))
-    })
+    get_vault_password_with(
+        vault_name,
+        &|name| keychain::get_master_password(name).ok(),
+        &|name| crate::session_agent::try_unlock_factors(name),
+        &|name| {
+            ask_master_password(Some(&format!(
+                "Please enter master password of vault '{}'",
+                name
+            )))
+        },
+    )
+    .0
 }
 
 type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
 
-fn get_vault_properties() -> Result<VaultProperties, Error> {
+fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
+    get_vault_properties_with(&|name| keychain::get_master_password(name).ok(), &|name| {
+        crate::session_agent::try_unlock_factors(name)
+    })
+}
+
+/// [`get_vault_properties`] with the keychain and agent lookups injected
+/// (tests run without touching either).
+fn get_vault_properties_with(
+    keychain_lookup: &dyn Fn(&str) -> Option<String>,
+    agent_lookup: &dyn Fn(&str) -> Option<Zeroizing<String>>,
+) -> Result<(VaultProperties, PasswordSource), Error> {
     let config = crate::vault_registry::current()?;
-    let mut master_pwd = get_vault_password(&config.name);
+    let (mut master_pwd, source) =
+        get_vault_password_with(&config.name, keychain_lookup, agent_lookup, &|name| {
+            ask_master_password(Some(&format!(
+                "Please enter master password of vault '{}'",
+                name
+            )))
+        });
     let challenge_response = match config.hwkey {
         Some(ref hwkey_config) => {
             match passlane_core::hwkey::configured_challenge_response_key(hwkey_config) {
@@ -99,13 +153,70 @@ fn get_vault_properties() -> Result<VaultProperties, Error> {
         }
         None => None,
     };
-    Ok((master_pwd, config.path, config.keyfile, challenge_response))
+    Ok((
+        (master_pwd, config.path, config.keyfile, challenge_response),
+        source,
+    ))
+}
+
+/// How the current process last unlocked a vault (see [`unlock`]), so
+/// long-running actions can tell whether they are session-backed and
+/// should watch for the agent dropping that session.
+pub(crate) fn last_unlock_source() -> PasswordSource {
+    PasswordSource::from_u8(LAST_UNLOCK_SOURCE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn set_last_unlock_source(source: PasswordSource) {
+    LAST_UNLOCK_SOURCE.store(source.as_u8(), std::sync::atomic::Ordering::Relaxed);
+}
+
+static LAST_UNLOCK_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+impl PasswordSource {
+    fn as_u8(self) -> u8 {
+        match self {
+            PasswordSource::Keychain => 0,
+            PasswordSource::SessionAgent => 1,
+            PasswordSource::Prompt => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PasswordSource::SessionAgent,
+            2 => PasswordSource::Prompt,
+            _ => PasswordSource::Keychain,
+        }
+    }
 }
 
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
-    let (mut master_pwd, filepath, keyfile_path, challenge_response) = get_vault_properties()?;
-    println!("Unlocking vault...");
-    let vault = get_vault(&master_pwd, &filepath, keyfile_path, challenge_response.as_ref());
+    let ((mut master_pwd, filepath, keyfile_path, challenge_response), source) =
+        get_vault_properties()?;
+    set_last_unlock_source(source);
+    if source == PasswordSource::SessionAgent {
+        eprintln!("Unlocking vault via the session agent...");
+    } else {
+        println!("Unlocking vault...");
+    }
+    let vault = get_vault(
+        &master_pwd,
+        &filepath,
+        keyfile_path,
+        challenge_response.as_ref(),
+    )
+    .map_err(|e| {
+        if source == PasswordSource::SessionAgent {
+            Error::new(&format!(
+                "{} (the unlock factors came from a session agent; if the vault was \
+                     re-keyed, drop the stale session with 'passlane sessions revoke' and \
+                     try again)",
+                e.message
+            ))
+        } else {
+            e
+        }
+    });
     master_pwd.zeroize();
     vault
 }
@@ -131,8 +242,8 @@ pub fn copy_to_clipboard(value: &str) {
 /// Ctrl+C) and clears the clipboard if its content still matches.
 /// This function **blocks** for the timeout duration.
 pub fn copy_to_clipboard_timed(value: &str, timeout_secs: u64) {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     static INTERRUPTED: AtomicBool = AtomicBool::new(false);
     static HANDLER: Once = Once::new();
@@ -212,5 +323,72 @@ impl ItemType {
         } else {
             ItemType::Credential
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault_registry::{VaultConfig, set_current};
+
+    fn test_vault() {
+        set_current(VaultConfig {
+            name: "agent-test".to_string(),
+            path: "/nonexistent/agent-test.kdbx".to_string(),
+            keyfile: None,
+            hwkey: None,
+        });
+    }
+
+    fn agent_password(pw: &str) -> impl Fn(&str) -> Option<Zeroizing<String>> + '_ {
+        move |vault| {
+            assert_eq!(vault, "agent-test");
+            Some(Zeroizing::new(pw.to_string()))
+        }
+    }
+
+    #[test]
+    fn password_order_keychain_first_then_agent_then_prompt() {
+        test_vault();
+        // Keychain hit: the agent is never consulted (no once-sessions
+        // get burned while the password is already on disk).
+        let (pw, source) = get_vault_password_with(
+            "agent-test",
+            &|_| Some("keychain-pw".to_string()),
+            &|_| panic!("the agent must not be consulted on a keychain hit"),
+            &|_| panic!("no prompt on a keychain hit"),
+        );
+        assert_eq!(pw, "keychain-pw");
+        assert_eq!(source, PasswordSource::Keychain);
+
+        // Keychain miss, agent hit.
+        let (pw, source) = get_vault_password_with(
+            "agent-test",
+            &|_| None,
+            &agent_password("agent-pw"),
+            &|_| panic!("no prompt when the agent holds a session"),
+        );
+        assert_eq!(pw, "agent-pw");
+        assert_eq!(source, PasswordSource::SessionAgent);
+
+        // Everything misses: the prompt is the last resort.
+        let (pw, source) = get_vault_password_with("agent-test", &|_| None, &|_| None, &|name| {
+            format!("prompted-for-{name}")
+        });
+        assert_eq!(pw, "prompted-for-agent-test");
+        assert_eq!(source, PasswordSource::Prompt);
+    }
+
+    #[test]
+    fn vault_properties_flow_through_the_agent_source() {
+        test_vault();
+        let ((pw, path, keyfile, challenge), source) =
+            get_vault_properties_with(&|_| None, &agent_password("agent-pw"))
+                .expect("properties resolve from the agent");
+        assert_eq!(pw, "agent-pw");
+        assert_eq!(path, "/nonexistent/agent-test.kdbx");
+        assert!(keyfile.is_none());
+        assert!(challenge.is_none());
+        assert_eq!(source, PasswordSource::SessionAgent);
     }
 }

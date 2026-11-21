@@ -3,7 +3,7 @@ use log::debug;
 use std::io::IsTerminal;
 
 use crate::actions::{ItemType, UnlockingAction};
-use crate::agent::{decide, RevealContext, RevealDecision};
+use crate::agent::{RevealContext, RevealDecision, decide};
 use crate::store;
 use passlane_core::vault::entities::{AgentPolicy, Credential, Error, Note, PaymentCard};
 use passlane_core::vault::vault_trait::Vault;
@@ -53,7 +53,10 @@ fn skip_notice(restricted_count: usize) {
 impl ExportAction {
     pub fn new(matches: &ArgMatches) -> ExportAction {
         ExportAction {
-            file_path: matches.get_one::<String>("file_path").expect("required").to_string(),
+            file_path: matches
+                .get_one::<String>("file_path")
+                .expect("required")
+                .to_string(),
             item_type: ItemType::new_from_args(matches),
         }
     }
@@ -101,7 +104,9 @@ impl ExportAction {
                 skip_notice(restricted_count);
                 creds
                     .into_iter()
-                    .filter(|c| decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .filter(|c| {
+                        decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal
+                    })
                     .collect()
             };
             if exported.is_empty() {
@@ -122,7 +127,9 @@ impl ExportAction {
             };
             crate::agent::log_bulk_ask_requests_with(
                 approval_log,
-                cards.iter().map(|c| (c.name().to_string(), c.agent_policy())),
+                cards
+                    .iter()
+                    .map(|c| (c.name().to_string(), c.agent_policy())),
                 "number",
                 include,
             );
@@ -132,7 +139,9 @@ impl ExportAction {
                 skip_notice(restricted_count);
                 cards
                     .into_iter()
-                    .filter(|c| decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .filter(|c| {
+                        decide(c.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal
+                    })
                     .collect()
             };
             store::write_payment_cards_to_csv(&self.file_path, &exported)
@@ -147,7 +156,9 @@ impl ExportAction {
             };
             crate::agent::log_bulk_ask_requests_with(
                 approval_log,
-                notes.iter().map(|n| (n.title().to_string(), n.agent_policy())),
+                notes
+                    .iter()
+                    .map(|n| (n.title().to_string(), n.agent_policy())),
                 "content",
                 include,
             );
@@ -157,7 +168,9 @@ impl ExportAction {
                 skip_notice(restricted_count);
                 notes
                     .into_iter()
-                    .filter(|n| decide(n.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal)
+                    .filter(|n| {
+                        decide(n.agent_policy(), RevealContext::Agent) == RevealDecision::Reveal
+                    })
                     .collect()
             };
             store::write_secure_notes_to_csv(&self.file_path, &exported)
@@ -257,19 +270,13 @@ mod tests {
         fn find_totp(&self, _: Option<&str>) -> Vec<passlane_core::vault::entities::Totp> {
             Vec::new()
         }
-        fn save_totp(
-            &mut self,
-            _: &passlane_core::vault::entities::Totp,
-        ) -> Result<(), Error> {
+        fn save_totp(&mut self, _: &passlane_core::vault::entities::Totp) -> Result<(), Error> {
             Ok(())
         }
         fn delete_totp(&mut self, _: &uuid::Uuid) -> Result<(), Error> {
             Ok(())
         }
-        fn update_totp(
-            &mut self,
-            _: passlane_core::vault::entities::Totp,
-        ) -> Result<(), Error> {
+        fn update_totp(&mut self, _: passlane_core::vault::entities::Totp) -> Result<(), Error> {
             Ok(())
         }
     }
@@ -322,7 +329,9 @@ mod tests {
         let mut vault: Box<dyn Vault> = Box::new(StubVault {
             credentials: vec![cred("root", None)],
         });
-        export_with_temp_log(&export_action(path.to_str().unwrap()), &mut vault).0.unwrap();
+        export_with_temp_log(&export_action(path.to_str().unwrap()), &mut vault)
+            .0
+            .unwrap();
         let fresh = std::fs::read_to_string(&path).unwrap();
         assert!(!fresh.contains("github.com"), "stale secrets survived");
         assert!(!fresh.contains("root"), "restricted entry leaked");
@@ -345,10 +354,8 @@ mod tests {
             export_with_temp_log(&export_action(path.to_str().unwrap()), &mut vault);
         assert_eq!(count.unwrap(), 1);
         // The withheld ask entry entered the ask flow in the *injected* log.
-        let logged = std::fs::read_to_string(
-            log_dir.unwrap().path().join("approvals.log"),
-        )
-        .unwrap();
+        let logged =
+            std::fs::read_to_string(log_dir.unwrap().path().join("approvals.log")).unwrap();
         assert!(logged.contains("\"entry\":\"stripe\""));
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("github.com"));

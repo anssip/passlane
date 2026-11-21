@@ -130,23 +130,43 @@ pending requests (`approval_pending.json`). See
 `crates/passlane-approval/SPEC.md` for the protocol itself.
 
 1. An agent requests an `ask` entry through an agent-facing path. The CLI
-   does not reveal. It appends an **approval request** to the approval
-   log and — when an approver is pinned — emits the request envelope over
+   does not reveal. Two earlier approvals can cover it, in this order:
+
+   - a live **reveal session** (see step 2): repeated agent use until it
+     expires — the agent consult also serves `list`/`export` bulk paths,
+     which record requests without emitting links;
+   - a **single-use grant** from the link transport (steps 3–5): exactly
+     one reveal.
+
+   Otherwise the CLI appends an **approval request** to the approval log
+   and — when an approver is pinned — emits the request envelope over
    the link transport: the link goes to **stdout** (an agent can relay it
    in the chat the owner already uses), the QR to **stderr** (for the
    human at the terminal to scan). The envelope rides the URL fragment
    only, so the page's domain never sees it.
-2. The owner approves or denies on the page. The reply is
+2. At the terminal the owner can also answer the request themselves:
+   `passlane show '<entry>'` and the approval prompt offers `Approve
+   once` / `Approve for this session` / `Deny`. *For this session*
+   creates a timed `reveal` session in the [session
+   agent](session-agent.md) (15 minutes by default, memory only), and
+   from then on agent-facing reveals of that entry field pass without
+   re-prompting until the session expires — every one of them audited as
+   a `session` event in the approval log. The session is keyed by the
+   entry's **stable UUID**, so another entry reusing the title never
+   inherits the approval. Without a running agent the choice downgrades
+   to `Approve once` with a warning.
+3. The owner approves or denies on the approval page. The reply is
    end-to-end encrypted to the CLI's key and signed by the passkey
    (assertion over the exact envelope bytes).
-3. `passlane approve --response '<blob>'` (or `--response @file`)
+4. `passlane approve --response '<blob>'` (or `--response @file`)
    verifies the reply — pinned keys, replay store, and the reply's
    request id must match a pending request — and releases it: an `Allow`
    becomes a **single-use grant** for exactly that entry and field.
-4. The agent re-runs the original command and receives the secret. The
+5. The agent re-runs the original command and receives the secret. The
    grant is consumed by that one reveal; a replayed response blob is
    refused (`already approved` / replay), so the CLI proceeds exactly
-   once.
+   once. A single-use grant never funds the continuous TOTP code view —
+   that asks for `show -o --once` (one code) or a session.
 
 Without a pinned approver (or with the transport unavailable) the flow
 falls back to the pre-link behavior: the request is recorded in the log
@@ -172,6 +192,11 @@ and show what is awaiting an answer. Requests expire with their envelope
 - `blocked` — an agent-facing reveal of a `never` entry was attempted and
   refused (logged for single-entry reveals, so the owner can see what an
   agent tried to take).
+- `session` — an agent-facing reveal was served from a live session-agent
+  session (an earlier *Approve for this session*); carries the session's
+  expiry as `session_until`.
+- `session_granted` — the owner chose *Approve for this session* and a
+  covering session was created in the agent.
 
 The log location can be overridden with `PASSLANE_APPROVAL_LOG` (used by
 tests and scripted verification; hiding the log only suppresses audit
@@ -190,7 +215,10 @@ is *not* a cryptographic boundary:
   "stdin is a terminal" to recognize the owner; an agent that allocates a
   pseudo-terminal (`script -q /dev/null passlane show …`) satisfies that
   check, reveals `never` entries, and can even answer an `ask` entry's
-  approval prompt with a keystroke. There is no reliable way to
+  approval prompt with a keystroke — including choosing *Approve for
+  this session*, which would then mint a 15-minute session in the agent
+  (`passlane sessions revoke`/`lock` kills it, and every use is audited,
+  but it is granted). There is no reliable way to
   distinguish such a pty from a real terminal, so the CLI does not pretend
   to. The `ask` prompt is a speed bump against quiet exfiltration, not
   proof of human presence. Real proof of a human arrives with the approval

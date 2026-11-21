@@ -5,6 +5,7 @@ mod completion_cache;
 mod hwkey;
 mod keychain;
 mod repl;
+mod session_agent;
 mod store;
 mod ui;
 mod vault_registry;
@@ -23,6 +24,7 @@ use crate::actions::hwkey::HwKeyAction;
 use crate::actions::import::ImportCsvAction;
 use crate::actions::list::ListAction;
 use crate::actions::lock::LockAction;
+use crate::actions::sessions::{SessionsListAction, SessionsLockAction, SessionsRevokeAction};
 use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
 use crate::actions::vault::VaultAction;
@@ -191,17 +193,42 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("lock")
-                .about("Lock a vault by removing its stored master password. Use --all to lock every vault.")
+                .about("Lock a vault by removing its stored master password and revoking its session-agent sessions. Use --all to lock every vault.")
                 .arg(arg!(
                     --all "Lock all configured vaults."
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
             Command::new("unlock")
-                .about("Unlock a vault: open it and store the master password in the keychain.")
+                .about("Unlock a vault: open it and store the master password in the keychain. With --session, hold the unlock factors in the session agent instead (memory only).")
                 .arg(arg!(
                     -o --otp "Legacy alias for --vault totp, the vault that held the one-time passwords before multi-vault support."
                 ).action(ArgAction::SetTrue))
+                .arg(
+                    arg!(--session [SECS] "Hold the vault's unlock factors in the running passlane-agent (memory only, nothing in the keychain) for SECS seconds (default 900, capped by the agent). Requires the session agent.")
+                        .num_args(0..=1)
+                        .default_missing_value("900")
+                        .value_parser(clap::value_parser!(u64))
+                )
+        )
+        .subcommand(
+            Command::new("sessions")
+                .about("Manage the in-memory sessions held by the passlane session agent: unlock factors and timed approvals that live until expiry, revoke or lock. See docs/features/session-agent.md.")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List the agent's live sessions (id, vault, grant, scope, expiry).")
+                )
+                .subcommand(
+                    Command::new("revoke")
+                        .about("Revoke sessions: one by id (or its short prefix), a vault's with the --vault flag, or all with 'revoke all'.")
+                        .arg(arg!(<TARGET> "Session id (or short prefix from 'sessions list'), or 'all'."))
+                )
+                .subcommand(
+                    Command::new("lock")
+                        .about("Lock the session agent: revoke every session it holds (the agent keeps running).")
+                )
         )
         .subcommand(
             Command::new("passwd")
@@ -344,7 +371,10 @@ fn main() {
     // No subcommand at all means help output (or the bare REPL): never gate
     // that on vault resolution, so 'passlane --vault bogus' still shows help.
     let needs_vault = match subcommand {
-        Some("vault" | "init" | "gen" | "completions" | "repl" | "approvals" | "approve") => false,
+        Some(
+            "vault" | "init" | "gen" | "completions" | "repl" | "approvals" | "approve"
+            | "sessions",
+        ) => false,
         Some(_) => true,
         None => false,
     };
@@ -397,8 +427,28 @@ fn main() {
         Some(("lock", sub_matches)) => RoutedAction::Action(Box::new(LockAction::new(
             sub_matches.get_one::<bool>("all").map_or(false, |v| *v),
         ))),
-        Some(("unlock", _)) => RoutedAction::Action(Box::new(UnlockAction::new())),
+        Some(("unlock", sub_matches)) => RoutedAction::Action(Box::new(UnlockAction::new(
+            sub_matches.get_one::<u64>("session").copied(),
+        ))),
         Some(("passwd", _)) => RoutedAction::Action(Box::new(ChangePasswordAction::new())),
+        Some(("sessions", sub_matches)) => {
+            let action: Box<dyn Action> = match sub_matches.subcommand() {
+                Some(("list", _)) => Box::new(SessionsListAction::new()),
+                Some(("revoke", revoke_matches)) => {
+                    // The global --vault flag scopes 'revoke all' to one
+                    // vault; plain 'revoke all' drops everything.
+                    let vault = revoke_matches.get_one::<String>("vault").cloned();
+                    let target = revoke_matches
+                        .get_one::<String>("TARGET")
+                        .cloned()
+                        .unwrap_or_else(|| "all".to_string());
+                    Box::new(SessionsRevokeAction::new(target, vault))
+                }
+                Some(("lock", _)) => Box::new(SessionsLockAction::new()),
+                _ => Box::new(PrintHelpAction::new(cli())),
+            };
+            RoutedAction::Action(action)
+        }
         Some(("hwkey", sub_matches)) => {
             RoutedAction::Action(Box::new(HwKeyAction::new(sub_matches)))
         }
