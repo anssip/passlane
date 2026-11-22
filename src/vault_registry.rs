@@ -11,8 +11,8 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use passlane_core::hwkey::HwKeyConfig;
 use crate::store;
+use passlane_core::hwkey::HwKeyConfig;
 use passlane_core::vault::entities::Error;
 
 pub const REGISTRY_FILENAME: &str = "vaults.json";
@@ -496,11 +496,9 @@ pub fn set_current(vault: VaultConfig) {
 }
 
 pub fn current() -> Result<VaultConfig, Error> {
-    CURRENT
-        .read()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| Error::new("No vault selected. Run 'passlane init' or 'passlane vault use'."))
+    CURRENT.read().unwrap().clone().ok_or_else(|| {
+        Error::new("No vault selected. Run 'passlane init' or 'passlane vault use'.")
+    })
 }
 
 /// Resolve the target vault and make it the current one. Errors are deferred:
@@ -564,7 +562,9 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 &read_trimmed(dir, ".vault_path")
                     .unwrap_or_else(|| dir.join("store.kdbx").to_string_lossy().to_string()),
             ),
-            keyfile: read_trimmed(dir, ".keyfile_path").as_deref().map(absolutize),
+            keyfile: read_trimmed(dir, ".keyfile_path")
+                .as_deref()
+                .map(absolutize),
             hwkey: read_legacy_hwkey(dir)?,
         });
     }
@@ -575,7 +575,9 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 &read_trimmed(dir, ".totp_vault_path")
                     .unwrap_or_else(|| dir.join("totp.kdbx").to_string_lossy().to_string()),
             ),
-            keyfile: read_trimmed(dir, ".totp_keyfile_path").as_deref().map(absolutize),
+            keyfile: read_trimmed(dir, ".totp_keyfile_path")
+                .as_deref()
+                .map(absolutize),
             hwkey: None,
         });
     }
@@ -588,7 +590,10 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
     for file in LEGACY_CONFIG_FILES {
         if let Err(e) = fs::remove_file(dir.join(file)) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Warning: could not remove the legacy config '{}': {}", file, e);
+                eprintln!(
+                    "Warning: could not remove the legacy config '{}': {}",
+                    file, e
+                );
             }
         }
     }
@@ -745,7 +750,11 @@ mod tests {
         )
         .unwrap();
         let err = load_from(dir.path()).unwrap_err();
-        assert!(err.message.contains("more than one vault named 'a'"), "{}", err.message);
+        assert!(
+            err.message.contains("more than one vault named 'a'"),
+            "{}",
+            err.message
+        );
 
         // Missing path.
         std::fs::write(&path, r#"{"version":1,"vaults":[{"name":"a","path":""}]}"#).unwrap();
@@ -787,7 +796,10 @@ mod tests {
         assert!(err.message.contains("relative keyfile"), "{}", err.message);
 
         // Every error points the user at the registry file.
-        assert!(err.message.contains(path.file_name().unwrap().to_string_lossy().as_ref()));
+        assert!(
+            err.message
+                .contains(path.file_name().unwrap().to_string_lossy().as_ref())
+        );
     }
 
     #[test]
@@ -844,9 +856,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let err = resolve_from(dir.path(), Some("ghost")).unwrap_err();
         assert!(err.message.contains("passlane init"), "{}", err.message);
-        assert!(!err.message.contains("Configured vaults: ."), "{}", err.message);
+        assert!(
+            !err.message.contains("Configured vaults: ."),
+            "{}",
+            err.message
+        );
         let err = set_active_to(dir.path(), "ghost").unwrap_err();
-        assert!(err.message.contains("passlane vault add"), "{}", err.message);
+        assert!(
+            err.message.contains("passlane vault add"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

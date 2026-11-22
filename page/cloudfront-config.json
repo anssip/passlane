@@ -1,0 +1,30 @@
+{
+  "CallerReference": "passlane-approve-approve.anssipiirainen.com-1795372500",
+  "Comment": "passlane approval page (approve.anssipiirainen.com)",
+  "Enabled": true,
+  "DefaultRootObject": "index.html",
+  "Aliases": {"Quantity": 1, "Items": ["approve.anssipiirainen.com"]},
+  "Origins": {"Quantity": 1, "Items": [{
+    "Id": "S3-approve.anssipiirainen.com",
+    "DomainName": "approve.anssipiirainen.com.s3.amazonaws.com",
+    "S3OriginConfig": {"OriginAccessIdentity": ""}
+  }]},
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "S3-approve.anssipiirainen.com",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"],
+      "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}
+    },
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+    "Compress": true
+  },
+  "ViewerCertificate": {
+    "ACMCertificateArn": "arn:aws:acm:us-east-1:905317959933:certificate/6be1c7df-b870-46e0-9369-be086e944b7a",
+    "SSLSupportMethod": "sni-only",
+    "MinimumProtocolVersion": "TLSv1.2_2021"
+  },
+  "HttpVersion": "http2",
+  "PriceClass": "PriceClass_100"
+}

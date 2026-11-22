@@ -106,16 +106,10 @@ pub fn show_credential(credential: &Credential, show_password: bool, plain: bool
     let mut table = Table::new();
     apply_plain(&mut table, plain);
     let mut add_row = |label: &str, value: String| {
-        table.add_row(vec![
-            Cell::new(label).fg(Color::Yellow),
-            Cell::new(value),
-        ]);
+        table.add_row(vec![Cell::new(label).fg(Color::Yellow), Cell::new(value)]);
     };
     add_row("Title", credential.title().to_string());
-    add_row(
-        "URL",
-        credential.url().unwrap_or("-").to_string(),
-    );
+    add_row("URL", credential.url().unwrap_or("-").to_string());
     add_row("Username", credential.username().to_string());
     if show_password {
         add_row("Password", credential.password().to_string());
@@ -141,7 +135,10 @@ pub fn show_credential(credential: &Credential, show_password: bool, plain: bool
     }
     add_row(
         "Last modified",
-        credential.last_modified().format("%d.%m.%Y %H:%M").to_string(),
+        credential
+            .last_modified()
+            .format("%d.%m.%Y %H:%M")
+            .to_string(),
     );
     println!("{table}");
 }
@@ -360,7 +357,9 @@ mod tests {
             None,
             None,
         )
-        .with_url(Some("https://example.com/パスワード/とても長いURLを切り詰めるテスト"));
+        .with_url(Some(
+            "https://example.com/パスワード/とても長いURLを切り詰めるテスト",
+        ));
         show_credentials_table(&[credential], false, true, false);
     }
 }

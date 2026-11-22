@@ -8,28 +8,32 @@ use rustyline::error::ReadlineError;
 use rustyline::{Config, Editor};
 
 use crate::actions::add::AddAction;
+use crate::actions::copy_to_clipboard;
 use crate::actions::delete::DeleteAction;
 use crate::actions::edit::EditAction;
 use crate::actions::export::ExportAction;
-use crate::actions::copy_to_clipboard;
 use crate::actions::import::ImportCsvAction;
 use crate::actions::init::InitAction;
 use crate::actions::lock::LockAction;
+use crate::actions::show::ShowAction;
 use crate::actions::unlock::UnlockAction;
 use crate::actions::vault::{VaultAction, VaultCommand};
-use crate::actions::show::ShowAction;
 use crate::actions::{Action, ItemType, UnlockingAction};
 use crate::completion_cache;
 use crate::vault_registry;
 
-use commands::{parse_input, ReplCommand};
+use commands::{ReplCommand, parse_input};
 use completer::ReplHelper;
 
 const PROMPT: &str = "passlane> ";
 
 fn history_path() -> String {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
-    home.join(".passlane").join(".repl_history").to_str().unwrap().to_string()
+    home.join(".passlane")
+        .join(".repl_history")
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 /// History reveals which services the user has accounts with — keep it 0o600.
@@ -37,7 +41,10 @@ fn history_path() -> String {
 fn restrict_history_permissions(path: &str) {
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-        eprintln!("Warning: could not restrict permissions on '{}': {}", path, e);
+        eprintln!(
+            "Warning: could not restrict permissions on '{}': {}",
+            path, e
+        );
     }
 }
 
@@ -186,12 +193,12 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         }
         ReplCommand::Edit { item_type, grep } => {
             if item_type == ItemType::Credential && grep.is_none() {
-                return Err("Usage: edit <pattern> — a search pattern is required for credentials".to_string());
+                return Err(
+                    "Usage: edit <pattern> — a search pattern is required for credentials"
+                        .to_string(),
+                );
             }
-            let action = EditAction {
-                grep,
-                item_type,
-            };
+            let action = EditAction { grep, item_type };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
                 Ok(None) => {}
@@ -200,12 +207,12 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         }
         ReplCommand::Delete { item_type, grep } => {
             if item_type == ItemType::Credential && grep.is_none() {
-                return Err("Usage: delete <pattern> — a search pattern is required for credentials".to_string());
+                return Err(
+                    "Usage: delete <pattern> — a search pattern is required for credentials"
+                        .to_string(),
+                );
             }
-            let action = DeleteAction {
-                grep,
-                item_type,
-            };
+            let action = DeleteAction { grep, item_type };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
                 Ok(None) => {}
@@ -221,7 +228,9 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
         ReplCommand::Import { file_path } => {
             let file_path = match file_path {
                 Some(p) => p,
-                None => return Err("Usage: import <file> — a CSV file path is required".to_string()),
+                None => {
+                    return Err("Usage: import <file> — a CSV file path is required".to_string());
+                }
             };
             let action = ImportCsvAction { file_path };
             match action.execute() {
@@ -230,12 +239,20 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
                 Err(e) => return Err(e.message),
             }
         }
-        ReplCommand::Export { item_type, file_path } => {
+        ReplCommand::Export {
+            item_type,
+            file_path,
+        } => {
             let file_path = match file_path {
                 Some(p) => p,
-                None => return Err("Usage: export [type] <file> — a file path is required".to_string()),
+                None => {
+                    return Err("Usage: export [type] <file> — a file path is required".to_string());
+                }
             };
-            let action = ExportAction { file_path, item_type };
+            let action = ExportAction {
+                file_path,
+                item_type,
+            };
             match action.execute() {
                 Ok(Some(msg)) => println!("{}", msg),
                 Ok(None) => {}
@@ -295,7 +312,10 @@ fn dispatch(command: ReplCommand) -> Result<(), String> {
             println!("{}", message);
         }
         ReplCommand::Unknown(cmd) => {
-            return Err(format!("Unknown command: '{}'. Type 'help' for available commands.", cmd));
+            return Err(format!(
+                "Unknown command: '{}'. Type 'help' for available commands.",
+                cmd
+            ));
         }
         ReplCommand::Empty | ReplCommand::Quit => {
             // Already handled in the main loop
@@ -359,9 +379,6 @@ fn print_status() {
         } else {
             " "
         };
-        println!(
-            "{} {:<12} {} ({})",
-            marker, vault.name, vault.path, state
-        );
+        println!("{} {:<12} {} ({})", marker, vault.name, vault.path, state);
     }
 }

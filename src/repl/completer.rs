@@ -1,23 +1,19 @@
 use std::sync::{Arc, Mutex};
 
+use rustyline::Result as RustylineResult;
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::Result as RustylineResult;
 use rustyline_derive::Helper;
 
 use super::commands::{COMMAND_NAMES, TYPE_NAMES};
 
 /// Commands that accept a type as their second token
-const COMMANDS_WITH_TYPES: &[&str] = &[
-    "show", "add", "edit", "delete", "export",
-];
+const COMMANDS_WITH_TYPES: &[&str] = &["show", "add", "edit", "delete", "export"];
 
 /// Commands that accept entry name patterns (for dynamic completion)
-const COMMANDS_WITH_ENTRIES: &[&str] = &[
-    "show", "edit", "delete",
-];
+const COMMANDS_WITH_ENTRIES: &[&str] = &["show", "edit", "delete"];
 
 #[derive(Helper)]
 pub struct ReplHelper {

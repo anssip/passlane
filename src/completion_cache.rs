@@ -7,9 +7,9 @@ use std::time::{Duration, SystemTime};
 use log::debug;
 
 use crate::keychain;
+use crate::vault_registry;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::Vault;
-use crate::vault_registry;
 
 const CACHE_FILENAME_PREFIX: &str = ".completion_cache";
 const STALE_DAYS: u64 = 7;
@@ -146,7 +146,7 @@ fn create_cache_from_keychain() {
         }
         Err(e) => {
             debug!("Failed to open vault for cache: {}", e);
-        },
+        }
     }
 }
 
@@ -188,7 +188,10 @@ mod tests {
         let path_str = path.to_string_lossy();
         assert!(path_str.contains(".passlane"));
         assert!(path_str.ends_with(".completion_cache.work"));
-        assert_ne!(cache_path_in(Path::new("/a"), "work"), cache_path_in(Path::new("/b"), "work"));
+        assert_ne!(
+            cache_path_in(Path::new("/a"), "work"),
+            cache_path_in(Path::new("/b"), "work")
+        );
         assert_ne!(
             cache_path_in(Path::new("/a"), "work"),
             cache_path_in(Path::new("/a"), "personal")
@@ -244,6 +247,9 @@ mod tests {
         pairs.insert("github:alice".to_string()); // duplicate
         pairs.insert("github:bob".to_string());
         let result: Vec<String> = pairs.into_iter().collect();
-        assert_eq!(result, vec!["github:alice".to_string(), "github:bob".to_string()]);
+        assert_eq!(
+            result,
+            vec!["github:alice".to_string(), "github:bob".to_string()]
+        );
     }
 }

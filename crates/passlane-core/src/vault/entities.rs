@@ -720,7 +720,10 @@ mod tests {
             "John Doe",
             number,
             "123",
-            Expiry { month: 12, year: 2025 },
+            Expiry {
+                month: 12,
+                year: 2025,
+            },
             None,
             None,
             None,
@@ -747,7 +750,14 @@ mod tests {
 
     #[test]
     fn test_credential_with_note() {
-        let cred = Credential::new(None, "pass", "google.com", "user", Some("work account"), None);
+        let cred = Credential::new(
+            None,
+            "pass",
+            "google.com",
+            "user",
+            Some("work account"),
+            None,
+        );
         assert_eq!(cred.note(), Some("work account"));
     }
 
@@ -841,7 +851,10 @@ mod tests {
 
         let note = Note::new(None, "t", "c", None).with_agent_policy(AgentPolicy::Ask);
         assert_eq!(note.agent_policy(), AgentPolicy::Ask);
-        assert_eq!(Note::new(None, "t", "c", None).agent_policy(), AgentPolicy::Never);
+        assert_eq!(
+            Note::new(None, "t", "c", None).agent_policy(),
+            AgentPolicy::Never
+        );
 
         let totp = totp_fixture().with_agent_policy(AgentPolicy::Allow);
         assert_eq!(totp.agent_policy(), AgentPolicy::Allow);
@@ -864,7 +877,14 @@ mod tests {
 
     #[test]
     fn test_credential_json_serialization_with_note() {
-        let cred = Credential::new(None, "pass", "google.com", "user", Some("admin access"), None);
+        let cred = Credential::new(
+            None,
+            "pass",
+            "google.com",
+            "user",
+            Some("admin access"),
+            None,
+        );
         let json = serde_json::to_string(&cred).unwrap();
         assert!(json.contains("\"note\":\"admin access\""));
     }

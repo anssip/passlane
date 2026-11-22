@@ -2,20 +2,40 @@ use crate::actions::ItemType;
 
 #[derive(Debug, PartialEq)]
 pub enum ReplCommand {
-    Show { item_type: ItemType, grep: Option<String> },
-    Add { item_type: ItemType },
-    Edit { item_type: ItemType, grep: Option<String> },
-    Delete { item_type: ItemType, grep: Option<String> },
+    Show {
+        item_type: ItemType,
+        grep: Option<String>,
+    },
+    Add {
+        item_type: ItemType,
+    },
+    Edit {
+        item_type: ItemType,
+        grep: Option<String>,
+    },
+    Delete {
+        item_type: ItemType,
+        grep: Option<String>,
+    },
     Gen,
-    Import { file_path: Option<String> },
-    Export { item_type: ItemType, file_path: Option<String> },
+    Import {
+        file_path: Option<String>,
+    },
+    Export {
+        item_type: ItemType,
+        file_path: Option<String>,
+    },
     Lock,
     Unlock,
     VaultList,
-    VaultUse { name: String },
+    VaultUse {
+        name: String,
+    },
     Status,
     Completions,
-    Help { command: Option<String> },
+    Help {
+        command: Option<String>,
+    },
     Quit,
     Empty,
     /// A recognized-but-unsupported input; carries the message to show.
@@ -25,16 +45,35 @@ pub enum ReplCommand {
 
 /// Known command names for completion
 pub const COMMAND_NAMES: &[&str] = &[
-    "show", "add", "edit", "delete", "gen", "import", "export",
-    "unlock", "lock", "vault", "status", "completions", "help", "quit", "exit",
+    "show",
+    "add",
+    "edit",
+    "delete",
+    "gen",
+    "import",
+    "export",
+    "unlock",
+    "lock",
+    "vault",
+    "status",
+    "completions",
+    "help",
+    "quit",
+    "exit",
 ];
 
 /// Known type names for completion (second token)
 pub const TYPE_NAMES: &[&str] = &[
-    "creds", "cred", "credentials",
-    "cards", "card", "payments",
-    "notes", "note",
-    "otp", "totp",
+    "creds",
+    "cred",
+    "credentials",
+    "cards",
+    "card",
+    "payments",
+    "notes",
+    "note",
+    "otp",
+    "totp",
 ];
 
 fn parse_item_type(token: &str) -> Option<ItemType> {
@@ -91,21 +130,36 @@ pub fn parse_input(line: &str) -> ReplCommand {
         "export" => {
             // export [type] <file>
             if rest.is_empty() {
-                ReplCommand::Export { item_type: ItemType::Credential, file_path: None }
+                ReplCommand::Export {
+                    item_type: ItemType::Credential,
+                    file_path: None,
+                }
             } else if rest.len() == 1 {
                 // Could be a type or a file path
                 let token = rest[0].to_lowercase();
                 if let Some(item_type) = parse_item_type(&token) {
-                    ReplCommand::Export { item_type, file_path: None }
+                    ReplCommand::Export {
+                        item_type,
+                        file_path: None,
+                    }
                 } else {
-                    ReplCommand::Export { item_type: ItemType::Credential, file_path: Some(rest[0].to_string()) }
+                    ReplCommand::Export {
+                        item_type: ItemType::Credential,
+                        file_path: Some(rest[0].to_string()),
+                    }
                 }
             } else {
                 let token = rest[0].to_lowercase();
                 if let Some(item_type) = parse_item_type(&token) {
-                    ReplCommand::Export { item_type, file_path: Some(rest[1].to_string()) }
+                    ReplCommand::Export {
+                        item_type,
+                        file_path: Some(rest[1].to_string()),
+                    }
                 } else {
-                    ReplCommand::Export { item_type: ItemType::Credential, file_path: Some(rest[0].to_string()) }
+                    ReplCommand::Export {
+                        item_type: ItemType::Credential,
+                        file_path: Some(rest[0].to_string()),
+                    }
                 }
             }
         }
@@ -127,8 +181,12 @@ pub fn parse_input(line: &str) -> ReplCommand {
         "vault" => match rest.first().map(|s| s.to_lowercase()).as_deref() {
             None | Some("list") | Some("ls") => ReplCommand::VaultList,
             Some("use") | Some("switch") => match rest.get(1) {
-                Some(name) => ReplCommand::VaultUse { name: name.to_string() },
-                None => ReplCommand::Hint("Usage: vault use <name> — a vault name is required".to_string()),
+                Some(name) => ReplCommand::VaultUse {
+                    name: name.to_string(),
+                },
+                None => ReplCommand::Hint(
+                    "Usage: vault use <name> — a vault name is required".to_string(),
+                ),
             },
             Some(other) => ReplCommand::Hint(format!(
                 "Unknown vault command: '{}'. Available: list, use <name>",
@@ -354,7 +412,10 @@ mod tests {
     #[test]
     fn test_export_with_type_and_path() {
         match parse_input("export cards cards.csv") {
-            ReplCommand::Export { item_type, file_path } => {
+            ReplCommand::Export {
+                item_type,
+                file_path,
+            } => {
                 assert_eq!(item_type, ItemType::Payment);
                 assert_eq!(file_path, Some("cards.csv".to_string()));
             }
@@ -365,7 +426,10 @@ mod tests {
     #[test]
     fn test_export_with_path_only() {
         match parse_input("export credentials.csv") {
-            ReplCommand::Export { item_type, file_path } => {
+            ReplCommand::Export {
+                item_type,
+                file_path,
+            } => {
                 assert_eq!(item_type, ItemType::Credential);
                 assert_eq!(file_path, Some("credentials.csv".to_string()));
             }
@@ -399,11 +463,15 @@ mod tests {
     fn test_vault_use() {
         assert_eq!(
             parse_input("vault use work"),
-            ReplCommand::VaultUse { name: "work".to_string() }
+            ReplCommand::VaultUse {
+                name: "work".to_string()
+            }
         );
         assert_eq!(
             parse_input("vault switch work"),
-            ReplCommand::VaultUse { name: "work".to_string() }
+            ReplCommand::VaultUse {
+                name: "work".to_string()
+            }
         );
         assert!(matches!(parse_input("vault use"), ReplCommand::Hint(_)));
         assert!(matches!(parse_input("vault bogus"), ReplCommand::Hint(_)));

@@ -143,8 +143,9 @@ pub fn enrollment_challenge(
     cli_enc_pub: &[u8],
     cli_sig_pub: &[u8],
 ) -> String {
-    let mut input =
-        Vec::with_capacity(enrollment_nonce.len() + ecdh_public_key.len() + cli_enc_pub.len() + cli_sig_pub.len());
+    let mut input = Vec::with_capacity(
+        enrollment_nonce.len() + ecdh_public_key.len() + cli_enc_pub.len() + cli_sig_pub.len(),
+    );
     input.extend_from_slice(enrollment_nonce);
     input.extend_from_slice(ecdh_public_key);
     input.extend_from_slice(cli_enc_pub);
@@ -173,7 +174,10 @@ pub fn enrollment_confirmation_code(
     page_sig: &[u8],
 ) -> String {
     let mut input = Vec::with_capacity(
-        b"passlane-enrollment-code/v1".len() + cli_enc.len() + cli_sig.len() + page_enc.len()
+        b"passlane-enrollment-code/v1".len()
+            + cli_enc.len()
+            + cli_sig.len()
+            + page_enc.len()
             + page_sig.len(),
     );
     input.extend_from_slice(b"passlane-enrollment-code/v1");

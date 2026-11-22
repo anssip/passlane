@@ -1011,7 +1011,16 @@ mod tests {
         F: FnOnce() -> ApprovalChoice,
     {
         let state = tempfile::tempdir().unwrap();
-        ask_flow(log, state.path(), policy, context, entry_id, entry, field, prompt)
+        ask_flow(
+            log,
+            state.path(),
+            policy,
+            context,
+            entry_id,
+            entry,
+            field,
+            prompt,
+        )
     }
 
     fn lines(log: &ApprovalLog) -> Vec<serde_json::Value> {
@@ -1415,8 +1424,13 @@ mod tests {
         let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
         let rid = pending.records()[0].rid.clone();
         let cli = crate::approvals::load_identity(state.path()).unwrap();
-        let response =
-            crate::approvals::mock_page_response(&cli, &page, &passkey, &rid, passlane_approval::message::Decision::Allow);
+        let response = crate::approvals::mock_page_response(
+            &cli,
+            &page,
+            &passkey,
+            &rid,
+            passlane_approval::message::Decision::Allow,
+        );
         crate::approvals::approve_response(state.path(), &response.to_base64url()).unwrap();
 
         // The re-run reveals: the grant stands in for the owner's answer.

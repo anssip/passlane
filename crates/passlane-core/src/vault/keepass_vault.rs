@@ -1,23 +1,23 @@
-use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
+use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
+use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use keepass_ng::db::{
-    group_get_children, node_is_entry, node_is_group, Database, Entry, Group,
-    Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
-};
 use keepass_ng::db::DatabaseSaveError;
+use keepass_ng::db::{
+    Database, Entry, Group, Node, NodeIterator, NodePtr, SerializableNodePtr, TOTP,
+    group_get_children, node_is_entry, node_is_group,
+};
 // Only used by the usb-gated "Wrong CRC" explanation in explain_open_error.
+use keepass_ng::{
+    ChallengeResponseKey, DatabaseConfig, DatabaseKey, DatabaseOpenError, DatabaseVersion,
+};
 #[cfg(feature = "usb")]
 use keepass_ng::{ChallengeResponseKeyError, DatabaseKeyError};
-use keepass_ng::{
-    ChallengeResponseKey, DatabaseConfig, DatabaseKey,
-    DatabaseOpenError, DatabaseVersion,
-};
 
 use log::debug;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
@@ -313,7 +313,7 @@ fn sync_folder_hint(filepath: &str) -> &'static str {
     let normalized = filepath.replace('\\', "/").to_lowercase();
     const SYNCED_MARKERS: [&str; 8] = [
         "/dropbox/",
-        "/dropbox (",   // Windows business: Dropbox (Contoso)
+        "/dropbox (", // Windows business: Dropbox (Contoso)
         "/onedrive/",
         "/onedrive - ", // Windows work/school: OneDrive - Contoso
         "/google drive/",
@@ -394,19 +394,28 @@ impl KeepassVault {
         if requires_touch(self.challenge_response.as_ref()) {
             eprintln!("Touch your hardware key to authorize saving...");
         }
-        let key = Self::build_key(&self.password, &self.keyfile, self.challenge_response.as_ref())?;
+        let key = Self::build_key(
+            &self.password,
+            &self.keyfile,
+            self.challenge_response.as_ref(),
+        )?;
         debug!("Saving database to file '{}'", &self.filepath);
         self.save_atomically(key)
     }
 
     pub fn change_master_password(&mut self, mut new_password: String) -> Result<(), Error> {
-        let result =
-            Self::build_key(&new_password, &self.keyfile, self.challenge_response.as_ref()).and_then(
-                |key| {
-                    debug!("Re-encrypting database '{}' with new master password", &self.filepath);
-                    self.save_atomically(key)
-                },
+        let result = Self::build_key(
+            &new_password,
+            &self.keyfile,
+            self.challenge_response.as_ref(),
+        )
+        .and_then(|key| {
+            debug!(
+                "Re-encrypting database '{}' with new master password",
+                &self.filepath
             );
+            self.save_atomically(key)
+        });
         if let Err(e) = result {
             new_password.zeroize();
             return Err(e);
@@ -509,7 +518,9 @@ impl KeepassVault {
             Some(kf) => {
                 debug!("Using keyfile '{}' and password", kf);
                 let mut file = File::open(kf)?;
-                DatabaseKey::new().with_password(password).with_keyfile(&mut file)?
+                DatabaseKey::new()
+                    .with_password(password)
+                    .with_keyfile(&mut file)?
             }
             None => DatabaseKey::new().with_password(password),
         };
@@ -926,7 +937,9 @@ impl KeepassVault {
         // An address is present when any of its parts is, the state
         // included; entries without one store none of the address
         // attributes.
-        let has_address = [street, zip, city, state, country].iter().any(|p| p.is_some());
+        let has_address = [street, zip, city, state, country]
+            .iter()
+            .any(|p| p.is_some());
         let billing_address = if has_address {
             Some(Address::new(
                 None,
@@ -1007,9 +1020,9 @@ impl KeepassVault {
             .get_raw_otp_value()
             .ok_or(Error::new("Failed to get URL from keepass node"))?;
         let normalized_url = normalize_otp_url(raw_url);
-        let otp: TOTP = normalized_url.parse().map_err(|e| {
-            Error::new(&format!("Failed to parse OTP URL: {:?}", e))
-        })?;
+        let otp: TOTP = normalized_url
+            .parse()
+            .map_err(|e| Error::new(&format!("Failed to parse OTP URL: {:?}", e)))?;
         let last_modified = e.get_times().get_last_modification();
         Ok((
             normalized_url,
@@ -1111,10 +1124,18 @@ impl KeepassVault {
             Self::non_empty_str(payment.color().map(|color| color.as_str())),
         )?;
         let address = payment.billing_address();
-        entry
-            .set_additional_attribute(PAYMENT_FIELD_ADDRESS_STREET, Self::non_empty_str(address.map(|a| a.street())))?;
-        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_ZIP, Self::non_empty_str(address.map(|a| a.zip())))?;
-        entry.set_additional_attribute(PAYMENT_FIELD_ADDRESS_CITY, Self::non_empty_str(address.map(|a| a.city())))?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_ADDRESS_STREET,
+            Self::non_empty_str(address.map(|a| a.street())),
+        )?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_ADDRESS_ZIP,
+            Self::non_empty_str(address.map(|a| a.zip())),
+        )?;
+        entry.set_additional_attribute(
+            PAYMENT_FIELD_ADDRESS_CITY,
+            Self::non_empty_str(address.map(|a| a.city())),
+        )?;
         entry.set_additional_attribute(
             PAYMENT_FIELD_ADDRESS_STATE,
             Self::non_empty_str(address.and_then(|a| a.state()).map(|state| state.as_str())),
@@ -1148,13 +1169,11 @@ impl KeepassVault {
         totp: &Totp,
     ) -> Result<Option<Uuid>, Error> {
         Ok(self.db.create_new_entry(*parent_uuid, 0).map(|node| {
-            node.borrow_mut()
-                .downcast_mut::<Entry>()
-                .map(|entry| {
-                    entry.set_title(Some(totp.label()));
-                    entry.set_raw_otp_value(Some(totp.url()));
-                    entry.get_uuid()
-                })
+            node.borrow_mut().downcast_mut::<Entry>().map(|entry| {
+                entry.set_title(Some(totp.label()));
+                entry.set_raw_otp_value(Some(totp.url()));
+                entry.get_uuid()
+            })
         })?)
     }
 
@@ -1182,13 +1201,11 @@ impl KeepassVault {
         self.db
             .create_new_entry(parent_uuid.clone(), 0)
             .map(|node| {
-                node.borrow_mut()
-                    .downcast_mut::<Entry>()
-                    .map(|entry| {
-                        entry.set_title(Some(note.title()));
-                        entry.set_notes(Some(note.content()));
-                        entry.get_uuid()
-                    })
+                node.borrow_mut().downcast_mut::<Entry>().map(|entry| {
+                    entry.set_title(Some(note.title()));
+                    entry.set_notes(Some(note.content()));
+                    entry.get_uuid()
+                })
             })
     }
 
@@ -1263,7 +1280,7 @@ impl PasswordVault for KeepassVault {
             None => {
                 return Err(Error {
                     message: format!("Entry with uuid '{}' not found", uuid),
-                })
+                });
             }
         };
         {
@@ -1273,7 +1290,7 @@ impl PasswordVault for KeepassVault {
                 None => {
                     return Err(Error {
                         message: "Node is not an Entry".to_string(),
-                    })
+                    });
                 }
             };
             // Apply before saving: set_additional_attribute only fails for
@@ -1337,7 +1354,7 @@ impl PaymentVault for KeepassVault {
             None => {
                 return Err(Error {
                     message: format!("Entry with uuid '{}' not found", uuid),
-                })
+                });
             }
         };
         {
@@ -1347,7 +1364,7 @@ impl PaymentVault for KeepassVault {
                 None => {
                     return Err(Error {
                         message: "Node is not an Entry".to_string(),
-                    })
+                    });
                 }
             };
             // Apply before saving: set_additional_attribute only fails for
@@ -1477,7 +1494,11 @@ mod tests {
     fn normalized_braintree_url_parses_as_totp() {
         let url = "otpauth://totp/braintree:api@iki.fi?secret=ue5u4t4fzitipzo2&issuer=braintree&period=30&alorithm=SHA1&digits=6";
         let parsed: Result<TOTP, _> = normalize_otp_url(url).parse();
-        assert!(parsed.is_ok(), "expected parse to succeed, got {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "expected parse to succeed, got {:?}",
+            parsed.err()
+        );
     }
 
     #[test]
@@ -1487,7 +1508,9 @@ mod tests {
         let path_str = path.to_str().unwrap();
 
         let result = KeepassVault::open("any-password", path_str, None, None);
-        let err = result.err().expect("opening a missing vault file must fail");
+        let err = result
+            .err()
+            .expect("opening a missing vault file must fail");
         assert!(
             err.message.contains("does not exist"),
             "unexpected error message: {}",
@@ -1505,14 +1528,20 @@ mod tests {
 
         // Simulate stale trailing bytes left by a previously larger version.
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         f.write_all(&[0xAB; 4096]).unwrap();
         drop(f);
 
         vault.save_database().unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
-        assert!(!bytes.ends_with(&[0xAB; 4096]), "stale bytes survived the save");
+        assert!(
+            !bytes.ends_with(&[0xAB; 4096]),
+            "stale bytes survived the save"
+        );
         KeepassVault::open("master-pw", path_str, None, None).unwrap();
 
         let leftover_tmp = std::fs::read_dir(dir.path())
@@ -1605,8 +1634,18 @@ mod tests {
         // Card, note and TOTP: the attribute is set directly on the entry,
         // the way another KeePass client would.
         let card = PaymentCard::new(
-            None, "Visa", "Jane", "4111111111111111", "123",
-            Expiry { month: 12, year: 30 }, None, None, None,
+            None,
+            "Visa",
+            "Jane",
+            "4111111111111111",
+            "123",
+            Expiry {
+                month: 12,
+                year: 30,
+            },
+            None,
+            None,
+            None,
         );
         vault.save_payment(card).unwrap();
         {
@@ -1618,7 +1657,9 @@ mod tests {
                 .set_additional_attribute("agent", Some("ask"))
                 .unwrap();
         }
-        vault.save_note(&Note::new(None, "wifi", "wpa-key", None)).unwrap();
+        vault
+            .save_note(&Note::new(None, "wifi", "wpa-key", None))
+            .unwrap();
         {
             let note_id = vault.find_notes()[0].id();
             let node = vault.db.search_node_by_uuid(note_id).unwrap();
@@ -1669,8 +1710,18 @@ mod tests {
         let mut vault = KeepassVault::new(path_str, "master-pw", None, None).unwrap();
         vault
             .save_payment(PaymentCard::new(
-                None, "Visa", "Jane", "4111111111111111", "123",
-                Expiry { month: 12, year: 30 }, None, None, None,
+                None,
+                "Visa",
+                "Jane",
+                "4111111111111111",
+                "123",
+                Expiry {
+                    month: 12,
+                    year: 30,
+                },
+                None,
+                None,
+                None,
             ))
             .unwrap();
         {
@@ -1694,8 +1745,13 @@ mod tests {
                 stored.name_on_card(),
                 stored.number(),
                 stored.cvv(),
-                Expiry { month: 12, year: 30 },
-                None, None, None,
+                Expiry {
+                    month: 12,
+                    year: 30,
+                },
+                None,
+                None,
+                None,
             ))
             .unwrap();
         drop(vault);
@@ -1839,7 +1895,11 @@ mod tests {
             .clone()
             .with_custom_attributes(&[("Title".to_string(), "hijack".to_string())]);
         let err = vault.update_credential(rejected).unwrap_err();
-        assert!(err.message.contains("Title"), "unexpected error: {}", err.message);
+        assert!(
+            err.message.contains("Title"),
+            "unexpected error: {}",
+            err.message
+        );
         drop(vault);
 
         let vault = KeepassVault::open("master-pw", path_str, None, None).unwrap();
@@ -1871,7 +1931,11 @@ mod tests {
         // EDEADLK (Linux): the errors a File Provider emits when busy.
         for errno in [11, 16, 35] {
             let e = std::io::Error::from_raw_os_error(errno);
-            assert!(is_transient_read_error(&e), "errno {} must be transient", errno);
+            assert!(
+                is_transient_read_error(&e),
+                "errno {} must be transient",
+                errno
+            );
         }
         for errno in [2, 13, 21, 5] {
             let e = std::io::Error::from_raw_os_error(errno);
@@ -1893,18 +1957,20 @@ mod tests {
         assert!(!sync_folder_hint("/Users/x/OneDrive/store.kdbx").is_empty());
         assert!(!sync_folder_hint("/Users/x/Library/Mobile Documents/store.kdbx").is_empty());
         // macOS File Provider mounts under ~/Library/CloudStorage.
-        assert!(!sync_folder_hint(
-            "/Users/x/Library/CloudStorage/OneDrive-Personal/store.kdbx"
-        )
-        .is_empty());
-        assert!(!sync_folder_hint(
-            "/Users/x/Library/CloudStorage/GoogleDrive-user@example.com/My Drive/store.kdbx"
-        )
-        .is_empty());
-        assert!(!sync_folder_hint(
-            "/Users/x/Library/CloudStorage/Dropbox-personal/store.kdbx"
-        )
-        .is_empty());
+        assert!(
+            !sync_folder_hint("/Users/x/Library/CloudStorage/OneDrive-Personal/store.kdbx")
+                .is_empty()
+        );
+        assert!(
+            !sync_folder_hint(
+                "/Users/x/Library/CloudStorage/GoogleDrive-user@example.com/My Drive/store.kdbx"
+            )
+            .is_empty()
+        );
+        assert!(
+            !sync_folder_hint("/Users/x/Library/CloudStorage/Dropbox-personal/store.kdbx")
+                .is_empty()
+        );
         // Native Windows paths, separators and case.
         assert!(!sync_folder_hint(r"C:\Users\x\OneDrive\store.kdbx").is_empty());
         assert!(!sync_folder_hint(r"C:\Users\X\Dropbox\Documents\store.kdbx").is_empty());
@@ -1967,7 +2033,8 @@ mod tests {
         // The OS message for the injected errno differs per platform
         // (EDEADLK on macOS, EAGAIN on Linux); derive it, don't hard-code.
         assert!(
-            err.message.contains(&std::io::Error::from_raw_os_error(11).to_string()),
+            err.message
+                .contains(&std::io::Error::from_raw_os_error(11).to_string()),
             "unexpected message: {}",
             err.message
         );
@@ -1994,7 +2061,8 @@ mod tests {
         assert_eq!(*reads.borrow(), 1, "no retries for a permanent error");
         assert!(sleeps.is_empty());
         assert!(
-            err.message.contains("Failed to read vault file '/vaults/store.kdbx'"),
+            err.message
+                .contains("Failed to read vault file '/vaults/store.kdbx'"),
             "unexpected message: {}",
             err.message
         );

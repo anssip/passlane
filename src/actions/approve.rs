@@ -39,9 +39,8 @@ impl ApproveAction {
 impl Action for ApproveAction {
     fn run(&self) -> Result<String, Error> {
         let blob = self.response_blob()?;
-        let outcome =
-            crate::approvals::approve_response(&crate::approvals::state_dir(), &blob)
-                .map_err(|e| Error::new(&e))?;
+        let outcome = crate::approvals::approve_response(&crate::approvals::state_dir(), &blob)
+            .map_err(|e| Error::new(&e))?;
         let log = ApprovalLog::default_path();
 
         match outcome {
@@ -93,9 +92,7 @@ impl Action for ApproveAction {
                 } else {
                     format!("revealing the {field} of '{entry}' in vault '{vault}'")
                 };
-                let why = reason
-                    .map(|r| format!(" Reason: {r}."))
-                    .unwrap_or_default();
+                let why = reason.map(|r| format!(" Reason: {r}.")).unwrap_or_default();
                 Err(Error::new(&format!(
                     "The approver denied {target} (request {}…). The entry stays withheld.{why}",
                     &rid[..8.min(rid.len())],

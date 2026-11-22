@@ -193,6 +193,12 @@ async function main() {
   try {
     const parsed = parseEnrollFragment(location.hash);
     $("link-ok").hidden = false;
+    // The first 8 hex chars of the enrollment nonce: the terminal prints
+    // the same value, so a stale tab (a link from an earlier enroll run)
+    // is visible before anything is signed rather than rejected after.
+    $("link-id").textContent = parsed.nonce
+      .subarray(0, 4)
+      .reduce((acc, b) => acc + b.toString(16).padStart(2, "0"), "");
     requireSecureContext();
     $("start").disabled = false;
     $("start").addEventListener("click", async () => {
