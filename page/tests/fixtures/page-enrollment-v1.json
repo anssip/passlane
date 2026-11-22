@@ -1,0 +1,26 @@
+{
+  "note": "A page-produced enrollment blob (run.mjs --write-fixture driving page/js/enroll.js with node WebCrypto). The Rust test verifies it with the CLI's real ceremony verifier — the JS page side and the Rust CLI side derive the identical binding challenge.",
+  "version": 1,
+  "nonce_hex": "0a0b0c0d0e0f00112223334445556667",
+  "cli": {
+    "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+    "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+  },
+  "origin": {
+    "rp_id": "approve.passlane.test",
+    "origin": "https://approve.passlane.test"
+  },
+  "blob": {
+    "v": 1,
+    "enc_pub": "0497a89e454bc6cd749633bda9b8012e1e52fd2e65eed150034b1a28781868e683bfad812c9d8e053f5f2ce419a5935b431382977ef8dd4eb3f4bc7a5da5b71584",
+    "cose_key": "pQECAyYgASFYIIMjvPz1Fb58UXgpnSqOv6Sz-gZcJiTKCJ1mTeXQz80XIlggvly-Csgs9ZfsXauSMJWeuGpkSD7L2KEXKKyH3K3Sd3k",
+    "assertion": {
+      "authenticator_data": "OpHxkBcPhvT4Jre0nRWm0Lzw2NVBhVbx2t5muEezxp5BAAAAAAAAAAAAAAAAAAAAAAAAAAAACMDAwMDAwMDApQECAyYgASFYIIMjvPz1Fb58UXgpnSqOv6Sz-gZcJiTKCJ1mTeXQz80XIlggvly-Csgs9ZfsXauSMJWeuGpkSD7L2KEXKKyH3K3Sd3k",
+      "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiazUyNkluU0N1bGh0NC12bmlSZE9EbDNOVWlvV1VnWEZiRUVnRkdCUmoxNCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwcm92ZS5wYXNzbGFuZS50ZXN0In0",
+      "signature": "MEUCIQCJ3MIPyIPyKvRp3id6rAd5uqBGKrvil9YFZXFFHuTPlAIgIMgfo1zo0-3mRLBcSwmiF-wneW-TIen9WYP-WH1JwVI"
+    }
+  },
+  "expected": {
+    "enc_pub": "0497a89e454bc6cd749633bda9b8012e1e52fd2e65eed150034b1a28781868e683bfad812c9d8e053f5f2ce419a5935b431382977ef8dd4eb3f4bc7a5da5b71584"
+  }
+}

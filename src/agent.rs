@@ -212,10 +212,28 @@ impl ApprovalLog {
         policy: AgentPolicy,
     ) -> String {
         let id = Uuid::new_v4().to_string();
+        self.log_request_for(&id, vault, entry_id, entry, field, policy);
+        id
+    }
+
+    /// [`Self::log_request_with`] with a caller-chosen id — the link
+    /// transport correlates by the protocol request id (`rid`) instead of
+    /// a fresh uuid, so `passlane approve --response` decisions line up
+    /// with the request events.
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_request_for(
+        &self,
+        id: &str,
+        vault: &str,
+        entry_id: Option<&str>,
+        entry: &str,
+        field: &str,
+        policy: AgentPolicy,
+    ) {
         self.append(&ApprovalEvent {
             ts: Utc::now().to_rfc3339(),
             event: "request",
-            id: Some(&id),
+            id: Some(id),
             vault,
             entry,
             entry_id,
@@ -226,7 +244,6 @@ impl ApprovalLog {
             decision: None,
             session_until: None,
         });
-        id
     }
 
     /// Record how an approval request was resolved.
@@ -431,6 +448,23 @@ fn owner_reveal_command(entry: &str, field: &str, vault: &str) -> String {
     )
 }
 
+/// The single-code retry command for an agent-facing `ask` TOTP entry:
+/// `--once` prints exactly one code (matching the single-use approval),
+/// the label is shell-quoted and `--`-separated, and the vault is
+/// targeted explicitly when it is not the active one.
+pub(crate) fn once_code_command(entry: &str, vault: &str) -> String {
+    once_code_command_for(entry, vault, crate::vault_registry::get_active().as_deref())
+}
+
+/// [`once_code_command`] with the active vault injected (testable).
+fn once_code_command_for(entry: &str, vault: &str, active: Option<&str>) -> String {
+    with_vault_targeting(
+        format!("passlane show -o --once -- {}", shell_quote(entry)),
+        vault,
+        active,
+    )
+}
+
 fn owner_reveal_base_command(entry: &str, field: &str) -> String {
     match field {
         "code" | "secret" => format!("passlane show -o {}", positional(entry)),
@@ -535,7 +569,21 @@ pub fn enforce_reveal(
     )
 }
 
-/// [`enforce_reveal`] with the approval log injected, and the interactive
+/// [`enforce_with_prompt`] with the real interactive prompt.
+pub fn enforce_with(
+    log: &ApprovalLog,
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    enforce_with_prompt(log, policy, context, entry_id, entry, field, || {
+        ask_approval(entry, field)
+    })
+}
+
+/// [`enforce_with`] with the approval log injected, and the interactive
 /// approval prompt injected so the ask flow is testable without a
 /// terminal.
 pub fn enforce_with_prompt<F>(
@@ -552,6 +600,7 @@ where
 {
     enforce_with_seams(
         log,
+        &crate::approvals::state_dir(),
         policy,
         context,
         entry_id,
@@ -561,10 +610,57 @@ where
         &|vault, id, entry, field| {
             crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
         },
+        GateMode::Full,
         prompt,
     )
 }
 
+/// Reveal gate for surfaces that stream secrets continuously (the TOTP
+/// code view): identical to [`enforce_reveal`] except that in an
+/// agent-facing context a **live reveal session is the only approval**
+/// that may pass it. A single-use link-transport grant must never fund an
+/// endless code stream — and a session that dies between the caller's
+/// own precheck and this gate must not silently fall through to grant
+/// consumption, so the gate has no grant fallback at all.
+pub fn enforce_reveal_session_only(
+    policy: AgentPolicy,
+    context: RevealContext,
+    entry_id: &str,
+    entry: &str,
+    field: &str,
+) -> Result<(), Error> {
+    enforce_with_seams(
+        &ApprovalLog::default_path(),
+        &crate::approvals::state_dir(),
+        policy,
+        context,
+        entry_id,
+        entry,
+        field,
+        &|vault, id, _entry, field| crate::session_agent::check_reveal(vault, id, field),
+        &|vault, id, entry, field| {
+            crate::session_agent::open_reveal_session(vault, id, entry, field).unwrap_or(false)
+        },
+        GateMode::SessionOnly,
+        // Owner contexts keep the real three-way prompt (Once / for this
+        // session / Deny) — the mode only tightens the agent-facing
+        // branch, which never reaches the prompt.
+        || ask_approval(entry, field),
+    )
+}
+
+/// Which approvals may pass an agent-facing ask gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateMode {
+    /// Sessions, single-use link grants, and link emission (the default).
+    Full,
+    /// Live reveal sessions only — for continuous secret views.
+    SessionOnly,
+}
+
+/// The ask flow, with the approval-log and approvals-state locations
+/// injected: the link transport (emission, grants) reads the same state
+/// directory `passlane approve` writes.
 /// Whether the most recent reveal gate in this process passed via a
 /// live agent session (set by the ask flow's session consult; see
 /// [`enforce_with_seams`]). Long-running reveals (the continuous TOTP
@@ -577,12 +673,13 @@ pub(crate) fn last_gate_used_session() -> bool {
 static LAST_GATE_USED_SESSION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// The ask flow with the agent consult and the session-creation
-/// injected, so the session integration is testable without a running
-/// agent.
+/// The ask flow with the agent consult, the session creation and the
+/// link-transport state directory injected, so both integrations are
+/// testable without a running agent or a real `~/.passlane`.
 #[allow(clippy::too_many_arguments)]
 fn enforce_with_seams<F>(
     log: &ApprovalLog,
+    approvals_dir: &std::path::Path,
     policy: AgentPolicy,
     context: RevealContext,
     entry_id: &str,
@@ -590,6 +687,7 @@ fn enforce_with_seams<F>(
     field: &str,
     check_session: &dyn Fn(&str, &str, &str, &str) -> Option<u64>,
     open_session: &dyn Fn(&str, &str, &str, &str) -> bool,
+    mode: GateMode,
     prompt: F,
 ) -> Result<(), Error>
 where
@@ -612,17 +710,86 @@ where
                     LAST_GATE_USED_SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
                     return Ok(());
                 }
-                let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
-                Err(Error::new(&format!(
-                    "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
-                     recorded in the approval log ({}). The owner can approve it \
-                     interactively with {} — choosing 'Approve for this session' there \
-                     covers repeated agent use until the session expires.",
+                if mode == GateMode::SessionOnly {
+                    // Continuous secret views refuse here — before any
+                    // single-use grant could be consumed — and point at
+                    // the one-shot form instead.
+                    let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
+                    return Err(Error::new(&format!(
+                        "Entry '{}' needs an interactive owner or a single approved code; this \
+                         view streams secrets continuously, so a one-shot approval cannot \
+                         cover it (approval request {} was recorded in the approval log). Use \
+                         '{}' for the single approved code",
+                        entry,
+                        id,
+                        once_code_command(entry, &vault)
+                    )));
+                }
+
+                // A single-use grant released by 'passlane approve
+                // --response' stands in for the owner's answer (passlane
+                // #51): consume it and reveal — exactly once.
+                if let Some(rid) =
+                    crate::approvals::consume_grant(approvals_dir, &vault, entry_id, field)
+                {
+                    log.log_decision_with(&rid, &vault, Some(entry_id), entry, field, policy, true);
+                    return Ok(());
+                }
+
+                // Emit the request over the link transport when an approver
+                // is pinned: link on stdout (an agent relays it in chat),
+                // QR on stderr (the human at the terminal scans it).
+                match crate::approvals::emit_approval_request(
+                    approvals_dir,
+                    &vault,
                     entry,
-                    id,
-                    log.path().display(),
-                    owner_reveal_command(entry, field, &vault)
-                )))
+                    entry_id,
+                    field,
+                    &requester(),
+                ) {
+                    Ok(emitted) => {
+                        println!("{}", emitted.link);
+                        if let Ok(qr) = crate::approvals::render_qr(&emitted.link) {
+                            eprintln!("{qr}");
+                        }
+                        log.log_request_for(
+                            &emitted.rid,
+                            &vault,
+                            Some(entry_id),
+                            entry,
+                            field,
+                            policy,
+                        );
+                        Err(Error::new(&format!(
+                            "Entry '{}' needs owner approval (agent=ask). Approval request {} has \
+                             been emitted: scan the QR or relay the link to the approver, approve \
+                             it on the page, then run 'passlane approve --response <blob-from-the-page>' \
+                             and re-run this command to receive the {}. The request is recorded in \
+                             the approval log ({}).",
+                            entry,
+                            &emitted.rid[..8],
+                            field,
+                            log.path().display()
+                        )))
+                    }
+                    Err(_) => {
+                        // No pinned approver (or a transport failure): the
+                        // pre-link guidance, with both resolution paths.
+                        let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
+                        Err(Error::new(&format!(
+                            "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
+                             recorded in the approval log ({}). The owner can approve it \
+                             interactively with {} — choosing 'Approve for this session' there \
+                             covers repeated agent use until the session expires — or enroll \
+                             the approval page with 'passlane approvals enroll' to approve \
+                             remotely",
+                            entry,
+                            id,
+                            log.path().display(),
+                            owner_reveal_command(entry, field, &vault)
+                        )))
+                    }
+                }
             } else {
                 let id = log.log_request_with(&vault, Some(entry_id), entry, field, policy);
                 match prompt() {
@@ -695,20 +862,6 @@ where
             }
         }
     }
-}
-
-/// [`enforce_with_prompt`] with the real interactive prompt.
-pub fn enforce_with(
-    log: &ApprovalLog,
-    policy: AgentPolicy,
-    context: RevealContext,
-    entry_id: &str,
-    entry: &str,
-    field: &str,
-) -> Result<(), Error> {
-    enforce_with_prompt(log, policy, context, entry_id, entry, field, || {
-        ask_approval(entry, field)
-    })
 }
 
 /// The Phase 0 ask flow in an owner context: the interactive prompt *is*
@@ -810,6 +963,55 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = ApprovalLog::at(dir.path().join("approvals.log"));
         (log, dir)
+    }
+
+    /// The ask flow against a scratch approvals state directory (so tests
+    /// never touch `~/.passlane`; a pinned approver there would turn the
+    /// withheld-reveal assertions into emission paths), with the
+    /// session-agent seams injected like [`enforce_sessions`].
+    fn ask_flow<F>(
+        log: &ApprovalLog,
+        approvals_dir: &std::path::Path,
+        policy: AgentPolicy,
+        context: RevealContext,
+        entry_id: &str,
+        entry: &str,
+        field: &str,
+        prompt: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce() -> ApprovalChoice,
+    {
+        enforce_with_seams(
+            log,
+            approvals_dir,
+            policy,
+            context,
+            entry_id,
+            entry,
+            field,
+            &|_, _, _, _| None,
+            &|_, _, _, _| false,
+            GateMode::Full,
+            prompt,
+        )
+    }
+
+    /// [`ask_flow`] with a fresh scratch state.
+    fn enforce_scratch<F>(
+        log: &ApprovalLog,
+        policy: AgentPolicy,
+        context: RevealContext,
+        entry_id: &str,
+        entry: &str,
+        field: &str,
+        prompt: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce() -> ApprovalChoice,
+    {
+        let state = tempfile::tempdir().unwrap();
+        ask_flow(log, state.path(), policy, context, entry_id, entry, field, prompt)
     }
 
     fn lines(log: &ApprovalLog) -> Vec<serde_json::Value> {
@@ -969,7 +1171,7 @@ mod tests {
     #[test]
     fn enforce_agent_never_blocks_and_logs() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Never,
             RevealContext::Agent,
@@ -992,7 +1194,7 @@ mod tests {
     #[test]
     fn enforce_agent_ask_withholds_and_logs_request() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Agent,
@@ -1016,9 +1218,245 @@ mod tests {
     }
 
     #[test]
+    fn session_only_gate_never_consumes_a_link_grant() {
+        // The interleaving regression (review round 6): a reveal session
+        // covered the entry moments ago but dies before the continuous
+        // view's gate runs — while a single-use link-transport grant
+        // happens to be available. The session-only gate must refuse and
+        // leave the grant intact for the one-shot retry, not consume it
+        // and start streaming codes.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, _page, _passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
+
+        // Seed a live single-use grant through the real emission helper.
+        crate::approvals::emit_approval_request(
+            state.path(),
+            "default",
+            "Stripe test key",
+            "uuid-stripe",
+            "password",
+            "test",
+        )
+        .unwrap();
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let rid = pending.records()[0].rid.clone();
+        let mut store = pending;
+        store.grant(&rid, true, u64::MAX - 10);
+        store.save().unwrap();
+
+        // The gate: session check says "not covered" (the session died),
+        // mode SessionOnly.
+        let result = enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None, // session dead
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || panic!("no prompt in an agent context"),
+        );
+        let err = result.expect_err("the session-only gate must refuse");
+        assert!(
+            err.message.contains("--once") || err.message.contains("one-shot"),
+            "{}",
+            err.message
+        );
+
+        // The grant is untouched: still live, still single-use.
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let record = pending.find(&rid).unwrap();
+        assert!(matches!(
+            record.state,
+            crate::approvals::pending::RequestState::Granted { once: true, .. }
+        ));
+        assert_eq!(
+            crate::approvals::consume_grant(state.path(), "default", "uuid-stripe", "password"),
+            Some(rid),
+            "the grant must remain consumable by the one-shot retry"
+        );
+    }
+
+    #[test]
+    fn session_only_gate_passes_on_a_live_session() {
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, id, e, _f| {
+                assert_eq!(id, ENTRY_ID);
+                assert_eq!(e, "Stripe test key");
+                Some(u64::MAX - 10)
+            },
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || panic!("a live session must not prompt"),
+        )
+        .expect("a covering session passes the session-only gate");
+        assert!(last_gate_used_session());
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["event"], "session");
+    }
+
+    #[test]
+    fn session_only_gate_still_prompts_the_owner() {
+        // The mode tightens only the agent-facing branch: an owner at the
+        // terminal still gets the interactive choice — a `Deny` is
+        // honored, and nothing is auto-approved or auto-denied.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None,
+            &|_, _, _, _| false,
+            GateMode::SessionOnly,
+            || ApprovalChoice::Deny,
+        )
+        .expect_err("the owner's Deny must be honored");
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["decision"], "denied");
+
+        let (log, _dir) = log_in_tempdir();
+        enforce_with_seams(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Owner,
+            ENTRY_ID,
+            "Stripe test key",
+            "password",
+            &|_, _, _, _| None,
+            &|_, _, _, _| true,
+            GateMode::SessionOnly,
+            || ApprovalChoice::Session,
+        )
+        .expect("the owner's session choice is honored too");
+    }
+
+    #[test]
+    fn enforce_agent_ask_with_pinned_approver_emits_the_link() {
+        // With an approver pinned, the ask flow emits the request envelope
+        // over the link transport instead of only recording it: the error
+        // guides through 'passlane approve --response', and the log
+        // correlates by the protocol rid.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, _page, _passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
+
+        let result = ask_flow(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        );
+        let err = result.expect_err("ask must still withhold until approved");
+        assert!(
+            err.message.contains("passlane approve --response"),
+            "{}",
+            err.message
+        );
+
+        // A pending request exists, and the log's request id is its rid.
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        assert_eq!(pending.records().len(), 1);
+        let rid = pending.records()[0].rid.clone();
+        let events = lines(&log);
+        assert_eq!(events[0]["id"].as_str().unwrap(), rid);
+    }
+
+    #[test]
+    fn enforce_agent_ask_released_by_grant_exactly_once() {
+        // A grant created by 'passlane approve --response' releases the
+        // agent reveal; a Scope::Once grant works a single time.
+        let (log, _dir) = log_in_tempdir();
+        let state = tempfile::tempdir().unwrap();
+        let (pin, page, passkey) = crate::approvals::mock_page();
+        crate::approvals::pin_approver(state.path(), pin, None).unwrap();
+
+        // The ask flow emits the request; a mocked page approves it.
+        let err = ask_flow(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        )
+        .expect_err("still withheld before the approval");
+        assert!(
+            err.message.contains("passlane approve --response"),
+            "{}",
+            err.message
+        );
+        let pending = crate::approvals::pending::PendingStore::load(state.path()).unwrap();
+        let rid = pending.records()[0].rid.clone();
+        let cli = crate::approvals::load_identity(state.path()).unwrap();
+        let response =
+            crate::approvals::mock_page_response(&cli, &page, &passkey, &rid, passlane_approval::message::Decision::Allow);
+        crate::approvals::approve_response(state.path(), &response.to_base64url()).unwrap();
+
+        // The re-run reveals: the grant stands in for the owner's answer.
+        ask_flow(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            || panic!("a grant must not prompt"),
+        )
+        .expect("the grant releases the reveal");
+        // The log records the approving decision, correlated by rid.
+        let events = lines(&log);
+        assert_eq!(events.last().unwrap()["decision"], "approved");
+        assert_eq!(events.last().unwrap()["id"].as_str().unwrap(), rid);
+
+        // Once granted, once only: the second reveal is withheld again.
+        let result = ask_flow(
+            &log,
+            state.path(),
+            AgentPolicy::Ask,
+            RevealContext::Agent,
+            "uuid-stripe",
+            "Stripe test key",
+            "password",
+            || panic!("no prompt in an agent context"),
+        );
+        assert!(
+            result.is_err(),
+            "a Scope::Once grant is consumed by the first reveal"
+        );
+    }
+
+    #[test]
     fn enforce_owner_ask_approved_reveals() {
         let (log, _dir) = log_in_tempdir();
-        enforce_with_prompt(
+        enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
@@ -1038,7 +1476,7 @@ mod tests {
     #[test]
     fn enforce_owner_ask_denied_errors() {
         let (log, _dir) = log_in_tempdir();
-        let result = enforce_with_prompt(
+        let result = enforce_scratch(
             &log,
             AgentPolicy::Ask,
             RevealContext::Owner,
@@ -1056,7 +1494,7 @@ mod tests {
     fn enforce_owner_never_and_all_allow_reveal_without_logging() {
         let (log, _dir) = log_in_tempdir();
         for policy in [AgentPolicy::Never, AgentPolicy::Allow] {
-            enforce_with_prompt(
+            enforce_scratch(
                 &log,
                 policy,
                 RevealContext::Owner,
@@ -1076,7 +1514,7 @@ mod tests {
     #[test]
     fn enforce_agent_allow_reveals_without_logging() {
         let (log, _dir) = log_in_tempdir();
-        enforce_with_prompt(
+        enforce_scratch(
             &log,
             AgentPolicy::Allow,
             RevealContext::Agent,
@@ -1132,7 +1570,8 @@ mod tests {
         assert_eq!(events[1]["id"], events[0]["id"]);
     }
 
-    /// Drive the ask flow with injected session-agent seams.
+    /// Drive the ask flow with injected session-agent seams (and a
+    /// scratch approvals state, so the link transport stays inert).
     fn enforce_sessions(
         log: &ApprovalLog,
         policy: AgentPolicy,
@@ -1142,8 +1581,10 @@ mod tests {
         opened: Result<bool, ()>,
     ) -> Result<(), Error> {
         let opened = opened.unwrap_or(false);
+        let state = tempfile::tempdir().unwrap();
         enforce_with_seams(
             log,
+            state.path(),
             policy,
             context,
             ENTRY_ID,
@@ -1159,6 +1600,7 @@ mod tests {
                 assert_eq!(e, entry);
                 opened
             },
+            GateMode::Full,
             || ApprovalChoice::Session,
         )
     }
@@ -1410,6 +1852,40 @@ mod tests {
         assert_eq!(
             with_vault_targeting("passlane show -- -root".into(), "work", Some("default")),
             "passlane --vault work show -- -root"
+        );
+    }
+
+    #[test]
+    fn once_code_command_is_shell_safe_and_targets_the_vault() {
+        let for_active = |entry: &str, vault: &str, active: Option<&str>| {
+            once_code_command_for(entry, vault, active)
+        };
+        assert_eq!(
+            for_active("GitHub:user", "work", Some("default")),
+            "passlane --vault work show -o --once -- GitHub:user"
+        );
+        // Plain titles stay readable; the active vault needs no flag.
+        assert_eq!(
+            for_active("github.com", "work", Some("work")),
+            "passlane show -o --once -- github.com"
+        );
+        assert_eq!(
+            for_active("github.com", "work", None),
+            "passlane --vault work show -o --once -- github.com"
+        );
+        // Spaces are quoted; injection attempts cannot escape the command.
+        assert_eq!(
+            for_active("work; printf INJECTED", "work", Some("work")),
+            "passlane show -o --once -- 'work; printf INJECTED'"
+        );
+        assert_eq!(
+            for_active("x'; rm -rf ~", "work", Some("work")),
+            "passlane show -o --once -- 'x'\\''; rm -rf ~'"
+        );
+        // Leading dashes stay a positional after --.
+        assert_eq!(
+            for_active("-root", "work", Some("work")),
+            "passlane show -o --once -- -root"
         );
     }
 }

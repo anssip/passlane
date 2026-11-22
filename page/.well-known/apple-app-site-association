@@ -1,0 +1,20 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "TEAMID.anssip.passlane.app"
+        ],
+        "components": [
+          { "/": "/approve*" },
+          { "/": "/enroll*" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "TEAMID.anssip.passlane.app"
+    ]
+  }
+}

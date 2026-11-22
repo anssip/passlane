@@ -196,17 +196,27 @@ ECDH that HPKE needs. The page therefore enrolls:
 
 **Enrollment** (one-time, at the computer): `passlane approvals enroll`
 prints a QR/link to `https://<domain>/enroll` carrying a fresh CLI
-enrollment nonce. The page generates the ECDH keypair, creates the passkey
-with `navigator.credentials.create()` (`attestation: "none"` is fine —
+enrollment nonce plus the CLI's two public keys. The page generates the
+ECDH keypair, creates the passkey with
+`navigator.credentials.create()` (`attestation: "none"` is fine —
 attestation statements are signed by vendor attestation keys, not the
 credential key, so they cannot bind anything to this user's passkey), and
 then — the binding step — requests a **subsequent assertion** with
 `navigator.credentials.get()`, whose challenge is
-`SHA-256(enrollment_nonce ‖ ECDH_public_key)`. The credential-key
+`SHA-256(enrollment_nonce ‖ ECDH_public_key ‖ cli_enc_pub ‖ cli_sig_pub)`.
+Covering the CLI's keys closes the swapped-link hole: a relay that
+substitutes its own `c=`/`s=` key material produces a challenge the
+genuine CLI never issued, so the assertion it elicits fails on the CLI,
+which recomputes the challenge from **its own** identity keys — never
+from the link. The credential-key
 signature over that challenge is what proves the passkey (and the human
-behind it) vouches for this exact ECDH key. The CLI verifies the assertion
-(`webauthn::verify_assertion` semantics: origin, RP-id hash, UP flag,
-credential-key signature) and pins
+behind it) vouches for this exact ECDH key. Both sides then display a
+twelve-digit confirmation code over both parties' keys (SPEC §5's human
+check, `webauthn::enrollment_confirmation_code`); the CLI persists the
+pin only after the human confirms the two displays match — a substituted
+link or raced-in blob produces mismatched codes. The CLI verifies the
+assertion (`webauthn::verify_assertion` semantics: origin, RP-id hash,
+UP flag, credential-key signature) and pins
 `enc_pub = ECDH public key`, `sig_pub = passkey public key`,
 `webauthn = { rp_id, origin }`. (COSE parsing and this ceremony land with
 the CLI command — passlane#51.)

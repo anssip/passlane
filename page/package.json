@@ -1,0 +1,9 @@
+{
+  "name": "passlane-approval-page",
+  "private": true,
+  "type": "module",
+  "description": "Static passkey approval page for passlane (SPEC sections 3 and 6). No build step, no dependencies; node is only used by the test harness in tests/.",
+  "scripts": {
+    "test": "node tests/run.mjs"
+  }
+}

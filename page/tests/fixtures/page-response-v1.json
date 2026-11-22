@@ -1,0 +1,28 @@
+{
+  "note": "Produced by page/tests/run.mjs --write-fixture (page/js logic, node WebCrypto). The Rust test opens this envelope with passlane-approval: the JS page side and the Rust CLI side speak the same protocol.",
+  "version": 1,
+  "now": 1760000050,
+  "rid": "d13451de7160efa2b23076fd782de967",
+  "envelope_base64url": "UExBUAEEArIAeyJ2IjoxLCJ0Ijo0LCJuIjoiZWE5ZjExZjhkZmIwY2EwOGE4ODEwZjllYTM5YzNhNmEiLCJ0cyI6MTc2MDAwMDA1MCwiZXhwIjoxNzYwMDAwMzUwLCJza2lkIjoiY2NjNDViZDU0MDE5NmVjMyIsInJraWQiOiI4YWVkODI2ZGI2Yzg2YTJhIiwicmlkIjoiZDEzNDUxZGU3MTYwZWZhMmIyMzA3NmZkNzgyZGU5NjcifUEABPYvcVbu-_Yrl0jxSU5stiHStAOCln_rYhEfWtiqL5wwbRtQzyMsZYrK0eTslx14EV02Ksm4OnoQXGUGD2nU2KFXAAAAdw_gQ7OY_Ysc8DkPvqfO5P-1frcDZNGHlWL7ICT9fXnU5Mzw7IF0_h8XPgNCDuTnmZPoNiVo7drpDSpf7si6_15lXQGEnpj4_FZaQ8CyNAa79bMGRYSvcgF7ImF1dGhlbnRpY2F0b3JfZGF0YSI6Ik9wSHhrQmNQaHZUNEpyZTBuUldtMEx6dzJOVkJoVmJ4MnQ1bXVFZXp4cDRCQUFBQUFBIiwiY2xpZW50X2RhdGFfanNvbiI6ImV5SjBlWEJsSWpvaWQyVmlZWFYwYUc0dVoyVjBJaXdpWTJoaGJHeGxibWRsSWpvaWVtRklXa0puYTBaMVUycGpVMWhGY2xBNFMzZFZNVFpRUm1zMlVtbFNaMUZYZVROUlUyNDJjRXRCTUNJc0ltOXlhV2RwYmlJNkltaDBkSEJ6T2k4dllYQndjbTkyWlM1d1lYTnpiR0Z1WlM1MFpYTjBJbjAiLCJzaWduYXR1cmUiOiJNRVVDSUVTRGtGVi1yRFpDRlRwaVdHVUh1S09sbGdhRWtHQW1OS0lQMXVreF85RVFBaUVBcGZKS1ZyQ2ZtTHRndUNTeV9GRkdtMkY3YkJqdUtFeDFJWkRXOUpfMmU1RSJ9",
+  "recipient": {
+    "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+    "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+  },
+  "sender_pin": {
+    "label": "approval-page",
+    "enc_pub": "043cf509826fd9bcb398c0f3278c4d5d930c3b1c11624693c9b27748f7967052da7d86f1bca861c839fede8a22980da8bfa45fde7376190a1b57da72d76cdceaf4",
+    "sig_pub": "0439c44a30cd65bc4579513450b1bf35cdabdea6f60fe11a73abf86e4ce7cc7f88fd28953f78ff199173f9b56ccdfdd0a78d4de17a6d478f90185b04edab40e899",
+    "paired_at": 1760000050,
+    "webauthn": {
+      "rp_id": "approve.passlane.test",
+      "origin": "https://approve.passlane.test"
+    }
+  },
+  "expected_body": {
+    "type": "approval_response",
+    "decision": "Allow",
+    "scope": {
+      "kind": "once"
+    }
+  }
+}

@@ -1,4 +1,6 @@
 pub mod add;
+pub mod approvals;
+pub mod approve;
 pub mod change_password;
 pub mod completions;
 pub mod delete;

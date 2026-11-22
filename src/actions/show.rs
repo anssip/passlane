@@ -368,11 +368,18 @@ impl MatchHandlerTemplate for ShowTotpTemplate {
 
 impl ShowTotpTemplate {
     fn show_code(the_match: Totp) -> Result<Option<String>, Error> {
-        // The interactive code view is an owner reveal; an `ask` entry
-        // prompts for its approval before the first code appears.
-        gate_reveal(
+        // The continuous code view is interactive-only for agent-facing
+        // `ask` entries: it streams fresh secrets, which a one-shot
+        // approval must never fund. The session-only gate passes on a
+        // live reveal session (the view below watches that session and
+        // stops when it ends) and refuses otherwise — pointing at the
+        // one-shot `--once` form — WITHOUT consuming or emitting
+        // anything, so a single-use link-transport grant stays available
+        // for that retry, even if a session died moments before this
+        // gate.
+        crate::agent::enforce_reveal_session_only(
             the_match.agent_policy(),
-            false,
+            crate::agent::RevealContext::for_reveal(false),
             &the_match.id().to_string(),
             the_match.label(),
             "code",

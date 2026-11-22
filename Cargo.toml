@@ -64,8 +64,19 @@ fs4 = "1.1"
 # path+version form lets `cargo publish` rewrite it to the registry
 # dependency once passlane-approval is published.
 passlane-approval = { path = "crates/passlane-approval", version = "0.1.0" }
+# Terminal QR rendering for the approval link transport (issue #51): the
+# request envelope rides the URL fragment, printed as a scannable QR.
+qrcode = "0.14"
+# Approval-key generation and envelope randomness (issue #51); same 0.8
+# line as passlane-approval, one shared lockfile version.
+rand = "0.8"
 # Session-agent client for unlock/approval sessions (issue #54).
 passlane-agent = { path = "crates/passlane-agent", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3.24.0"
+# Same versions as passlane-approval's, so the workspace unifies: the
+# approval-transport tests build mocked passkeys with p256 and mirror the
+# enrollment challenge with sha2.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+sha2 = "0.10"

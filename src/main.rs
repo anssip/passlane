@@ -1,5 +1,6 @@
 mod actions;
 mod agent;
+mod approvals;
 mod completion_cache;
 mod hwkey;
 mod keychain;
@@ -10,6 +11,8 @@ mod ui;
 mod vault_registry;
 
 use crate::actions::add::AddAction;
+use crate::actions::approvals::ApprovalsAction;
+use crate::actions::approve::ApproveAction;
 use crate::actions::change_password::ChangePasswordAction;
 use crate::actions::completions::CompletionsAction;
 use crate::actions::delete::DeleteAction;
@@ -284,6 +287,41 @@ pub fn cli() -> Command {
                 ).action(ArgAction::SetTrue))
         )
         .subcommand(
+            Command::new("approve")
+                .about("Verify an approval response pasted from the approval page and release the pending request it answers.")
+                .long_about("Verifies the response envelope against the pinned approver keys (replay-protected, request-id matched), then releases the pending request: an Allow turns into a grant the original command consumes on re-run. BLOB is the pasted envelope, or @<file> to read it from a file.")
+                .arg(arg!(
+                    --response <BLOB> "The response envelope from the approval page (or @file)."
+                ).required(true))
+        )
+        .subcommand(
+            Command::new("approvals")
+                .about("Manage approvers for the link transport: enroll the approval page (ECDH + passkey), list pins, inspect pending requests.")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("enroll")
+                        .about("Pin the static approval page as an approver (SPEC §6: ECDH key + passkey binding ceremony).")
+                        .long_about("Prints an enrollment link for the approval page. The page enrolls a WebCrypto ECDH encryption key and a WebAuthn passkey, and its passkey signs SHA-256(enrollment_nonce ‖ ECDH public key); the pasted blob is verified and both keys pinned before any approval travels.")
+                        .arg(arg!(
+                            --page <URL> "Approval page base URL. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.passlane.app."
+                        ))
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List pinned approvers.")
+                )
+                .subcommand(
+                    Command::new("pending")
+                        .about("List pending approval requests and their state.")
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Forget a pinned approver.")
+                        .arg(arg!(<LABEL> "Label of the approver to remove."))
+                )
+        )
+        .subcommand(
             Command::new("repl")
                 .about("Launch the interactive REPL session.")
         )
@@ -333,7 +371,10 @@ fn main() {
     // No subcommand at all means help output (or the bare REPL): never gate
     // that on vault resolution, so 'passlane --vault bogus' still shows help.
     let needs_vault = match subcommand {
-        Some("vault" | "init" | "gen" | "completions" | "repl" | "sessions") => false,
+        Some(
+            "vault" | "init" | "gen" | "completions" | "repl" | "approvals" | "approve"
+            | "sessions",
+        ) => false,
         Some(_) => true,
         None => false,
     };
@@ -410,6 +451,12 @@ fn main() {
         }
         Some(("hwkey", sub_matches)) => {
             RoutedAction::Action(Box::new(HwKeyAction::new(sub_matches)))
+        }
+        Some(("approve", sub_matches)) => {
+            RoutedAction::Action(Box::new(ApproveAction::new(sub_matches)))
+        }
+        Some(("approvals", sub_matches)) => {
+            RoutedAction::Action(Box::new(ApprovalsAction::new(sub_matches)))
         }
         Some(("export", sub_matches)) => {
             RoutedAction::UnlockingAction(Box::new(ExportAction::new(sub_matches)))
