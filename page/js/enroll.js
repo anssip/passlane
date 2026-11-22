@@ -196,9 +196,15 @@ async function main() {
     // The first 8 hex chars of the enrollment nonce: the terminal prints
     // the same value, so a stale tab (a link from an earlier enroll run)
     // is visible before anything is signed rather than rejected after.
-    $("link-id").textContent = parsed.nonce
-      .subarray(0, 4)
-      .reduce((acc, b) => acc + b.toString(16).padStart(2, "0"), "");
+    // Guarded: a briefly cached pre-change enroll.html has no #link-id,
+    // and an unguarded assignment would abort the wiring (button never
+    // enables). The id display is a nicety, not a prerequisite.
+    const linkId = $("link-id");
+    if (linkId) {
+      linkId.textContent = parsed.nonce
+        .subarray(0, 4)
+        .reduce((acc, b) => acc + b.toString(16).padStart(2, "0"), "");
+    }
     requireSecureContext();
     $("start").disabled = false;
     $("start").addEventListener("click", async () => {
