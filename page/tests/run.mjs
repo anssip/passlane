@@ -195,7 +195,9 @@ function concatU8(...parts) {
   return out;
 }
 
-process.exit(failed ? 1 : 0);
+// Both suites contribute to the exit code: a failing DOM test must fail
+// the run even when the protocol suite is green.
+process.exit(failed + domOut.failed > 0 ? 1 : 0);
 
 function hexToBytes(hex) {
   const out = new Uint8Array(hex.length / 2);
