@@ -687,17 +687,25 @@ pub fn verify_enrollment(
         &challenge,
     )
     .map_err(|e| {
-        // The common live failure: everything about the blob is valid, but
-        // the page signed a different enrollment link than this run — a
-        // stale tab from an earlier `approvals enroll`, or a blob pasted
-        // into a different invocation. Point at it instead of the bare
-        // protocol error.
+        // The challenge covers the nonce, the page's ECDH key, and both
+        // CLI keys, so a mismatch does not by itself establish *which*
+        // input differed: a stale link/tab is the common benign cause,
+        // but substituted key material lands here too (the relay-swap
+        // test reaches this branch with matching link ids). Describe the
+        // failure, list the causes, and give a recovery path that works:
+        // this process exits on error and its nonce dies with it, so the
+        // old link can never produce an acceptable blob again.
         if e.to_string().contains("challenge mismatch") {
             format!(
-                "the passkey binding assertion failed: the page signed a different \
-                 enrollment link than this run (nonce mismatch). This terminal's link id \
-                 is '{}' — the page must show the same id. Re-open the link printed above \
-                 (in the browser you are enrolling) and paste the new blob it produces.",
+                "the passkey binding assertion failed: the page's signature does not \
+                 match this enrollment (challenge mismatch). This terminal's link id is \
+                 '{}' — the page must have shown the same id, opened from THIS run's \
+                 link. Likely causes: the page tab was from an earlier 'passlane \
+                 approvals enroll' run (or the blob was pasted into a different \
+                 invocation), or the enrollment used different key material than this \
+                 link carried (a substituted link). Recover by starting fresh: re-run \
+                 the same command (keeping any --page option), open the newly printed \
+                 link, and paste the new blob into that invocation.",
                 &enrollment_nonce.chars().take(8).collect::<String>()
             )
         } else {
@@ -1492,8 +1500,8 @@ mod tests {
         // A different ceremony nonce (the page answered a stale request).
         let err = verify_enrollment(&blob, &"f".repeat(32), &origin, &cli).unwrap_err();
         assert!(
-            err.contains("different enrollment link") && err.contains("nonce mismatch"),
-            "the stale-link failure must say what happened and how to recover: {err}"
+            err.contains("challenge mismatch") && err.contains("Recover by starting fresh"),
+            "the mismatch failure must describe the failure and a working recovery: {err}"
         );
         // ...and it must carry this run's link id so the mismatch is
         // diagnosable from the terminal alone.
