@@ -48,25 +48,29 @@ if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
     --bucket "$BUCKET" \
     --region "$REGION" \
     --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null
-  # Public read through a bucket policy (ACL-free, works with the modern
-  # BucketOwnerEnforced default; matches the account's website pattern).
-  aws s3api put-public-access-block --bucket "$BUCKET" \
-    --public-access-block \
-    BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
-  aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [{
-      \"Sid\": \"PublicReadGetObject\",
-      \"Effect\": \"Allow\",
-      \"Principal\": \"*\",
-      \"Action\": \"s3:GetObject\",
-      \"Resource\": \"arn:aws:s3:::$BUCKET/*\"
-    }]
-  }"
   echo "bucket created"
 else
   echo "bucket exists"
 fi
+# Access setup runs on EVERY pass: a run interrupted between bucket
+# creation and these calls would otherwise leave an "existing" bucket
+# half-provisioned and CloudFront's anonymous origin returning 403s.
+# (ACL-free bucket policy — works with the modern BucketOwnerEnforced
+# default; matches the account's website pattern. Both calls idempotent.)
+aws s3api put-public-access-block --bucket "$BUCKET" \
+  --public-access-block \
+  BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [{
+    \"Sid\": \"PublicReadGetObject\",
+    \"Effect\": \"Allow\",
+    \"Principal\": \"*\",
+    \"Action\": \"s3:GetObject\",
+    \"Resource\": \"arn:aws:s3:::$BUCKET/*\"
+  }]
+}"
+echo "public read access ensured"
 
 log "Uploading $PAGE_DIR -> s3://$BUCKET/"
 upload() { # upload <path> <content-type> <cache-control>
@@ -157,8 +161,15 @@ batch = {"Comment": "passlane approval page", "Changes": [{"Action": "UPSERT",
 open(path, "w").write(json.dumps(batch, indent=2))
 PYEOF
   if [[ -n "$zone" && "$zone" != "None" ]]; then
-    aws route53 change-resource-record-sets --hosted-zone-id "$zone" \
-      --change-batch "file://$file" >/dev/null && echo "  created $name $type"
+    # Zone visibility does not imply record-write permission; a failed
+    # write must fall back to the manual batch, not abort the deploy.
+    if aws route53 change-resource-record-sets --hosted-zone-id "$zone" \
+      --change-batch "file://$file" >/dev/null 2>&1; then
+      echo "  created $name $type"
+    else
+      echo "  pending (manual): $name $type -> $value  [$file]"
+      echo "  (this profile can see the zone but not write records)"
+    fi
   else
     echo "  pending (manual): $name $type -> $value  [$file]"
   fi
@@ -236,8 +247,13 @@ batch = {"Comment": "passlane approval page alias", "Changes": [
 open(path, "w").write(json.dumps(batch, indent=2))
 PYEOF
   if [[ -n "$ZONE_ID" && "$ZONE_ID" != "None" ]]; then
-    aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-      --change-batch "file://$ALIAS_BATCH" >/dev/null && echo "  created alias $DOMAIN -> $ALIAS_TARGET"
+    if aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+      --change-batch "file://$ALIAS_BATCH" >/dev/null 2>&1; then
+      echo "  created alias $DOMAIN -> $ALIAS_TARGET"
+    else
+      echo "  pending (manual): alias $DOMAIN -> $ALIAS_TARGET  [$ALIAS_BATCH]"
+      echo "  (this profile can see the zone but not write records)"
+    fi
   else
     echo "  pending (manual): alias $DOMAIN -> $ALIAS_TARGET  [$ALIAS_BATCH]"
   fi
@@ -254,9 +270,25 @@ echo "deployed"
 log "Stage 5: verifying https://$DOMAIN/"
 URL="https://$DOMAIN"
 check() { # check <path> <expected-content-type>
-  local ct
-  ct="$(curl -sSI "$URL$1" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
-  if [[ "$ct" == "$2"* ]]; then echo "  OK  $1 ($ct)"; else echo "  FAIL $1 (got: '$ct', want: '$2')"; return 1; fi
+  local headers status ct location
+  headers="$(curl -sSI "$URL$1")"
+  status="$(printf '%s' "$headers" | head -1 | awk '{print $2}')"
+  location="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
+  ct="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
+  if [[ "$status" != "200" ]]; then
+    echo "  FAIL $1 (HTTP $status, want 200)"
+    return 1
+  fi
+  if [[ -n "$location" ]]; then
+    echo "  FAIL $1 (redirects to $location; the site must answer directly)"
+    return 1
+  fi
+  if [[ "$ct" == "$2"* ]]; then
+    echo "  OK   $1 ($status, $ct)"
+  else
+    echo "  FAIL $1 (got: '$ct', want: '$2')"
+    return 1
+  fi
 }
 FAILURES=0
 check "/" "text/html" || FAILURES=$((FAILURES+1))
