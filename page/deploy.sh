@@ -117,8 +117,12 @@ aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/cloudfront-config.json" >/dev/null 2>&1 ||
 # Stage 2: ACM certificate (us-east-1)
 # ---------------------------------------------------------------------------
 log "Stage 2: ACM certificate for $DOMAIN ($CERT_REGION)"
+# Reuse only recoverable certificates: terminal statuses (FAILED,
+# VALIDATION_TIMED_OUT, EXPIRED) would make a resumed provisioning wait
+# forever on a certificate that can never issue; request a fresh one
+# instead.
 CERT_ARN="$(aws acm list-certificates --region "$CERT_REGION" --output text \
-  --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn | [0]")"
+  --query "CertificateSummaryList[?DomainName=='$DOMAIN' && (Status=='ISSUED' || Status=='PENDING_VALIDATION')].CertificateArn | [0]")"
 if [[ -z "$CERT_ARN" || "$CERT_ARN" == "None" ]]; then
   CERT_ARN="$(aws acm request-certificate --region "$CERT_REGION" \
     --domain-name "$DOMAIN" --validation-method DNS \
@@ -141,9 +145,15 @@ done
 # Stage 3: DNS (Route 53 if writable, otherwise instructions)
 # ---------------------------------------------------------------------------
 log "Stage 3: DNS records"
+# Exact public-zone match: list-hosted-zones-by-name returns a sorted
+# listing starting at the name, not a filter — an unrelated or private
+# zone with a matching name must not be selected (its records could never
+# publicly validate the certificate). No exact public match falls back to
+# the manual batches, like a denied Route 53.
+ZONE_NAME="${DOMAIN#*.}."
 ZONE_ID="$(aws route53 list-hosted-zones-by-name \
   --dns-name "${DOMAIN#*.}" --output text \
-  --query 'HostedZones[0].Id' 2>/dev/null || true)"
+  --query "HostedZones[?Name=='$ZONE_NAME' && Config.PrivateZone==\`false\`].Id | [0]" 2>/dev/null || true)"
 ZONE_ID="${ZONE_ID##*/}"
 
 if [[ -n "$ZONE_ID" && "$ZONE_ID" != "None" ]]; then
@@ -280,7 +290,10 @@ URL="https://$DOMAIN"
 check() { # check <path> <expected-content-type>
   local headers status ct location
   headers="$(curl -sSI "$URL$1")"
-  status="$(printf '%s' "$headers" | head -1 | awk '{print $2}')"
+  # Through an HTTPS proxy curl prepends the proxy's own
+  # "HTTP/1.1 200 Connection established" — the FINAL status line is the
+  # origin's, and it is what a browser would actually see.
+  status="$(printf '%s' "$headers" | tr -d '\r' | awk '/^HTTP/{s=$2} END{print s}')"
   location="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
   ct="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
   if [[ "$status" != "200" ]]; then
