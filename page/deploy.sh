@@ -246,6 +246,27 @@ EOF
   echo "created: $DIST_ID"
 else
   echo "existing: $DIST_ID"
+  # A replaced certificate (expired/failed before) must actually be
+  # installed: leaving the distribution pointed at the dead ARN keeps
+  # HTTPS broken after "recovery". Content-only deploys (same ARN) stay
+  # read-only.
+  CURRENT_CERT="$(aws cloudfront get-distribution --id "$DIST_ID" \
+    --query 'Distribution.DistributionConfig.ViewerCertificate.ACMCertificateArn' --output text)"
+  if [[ "$CURRENT_CERT" != "$CERT_ARN" ]]; then
+    echo "certificate changed ($CURRENT_CERT -> $CERT_ARN); updating distribution"
+    ETAG="$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text)"
+    aws cloudfront get-distribution --id "$DIST_ID" \
+      --query 'Distribution.DistributionConfig' --output json > "$PAGE_DIR/cloudfront-config.json"
+    python3 - "$PAGE_DIR/cloudfront-config.json" "$CERT_ARN" <<'PYEOF'
+import json, sys
+path, arn = sys.argv[1:3]
+cfg = json.load(open(path))
+cfg["ViewerCertificate"]["ACMCertificateArn"] = arn
+json.dump(cfg, open(path, "w"), indent=2)
+PYEOF
+    aws cloudfront put-distribution-config --id "$DIST_ID" --if-match "$ETAG" \
+      --distribution-config "file://$PAGE_DIR/cloudfront-config.json" >/dev/null
+  fi
 fi
 
 DIST_DOMAIN="$(aws cloudfront get-distribution --id "$DIST_ID" \
