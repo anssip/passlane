@@ -264,7 +264,7 @@ cfg = json.load(open(path))
 cfg["ViewerCertificate"]["ACMCertificateArn"] = arn
 json.dump(cfg, open(path, "w"), indent=2)
 PYEOF
-    aws cloudfront put-distribution-config --id "$DIST_ID" --if-match "$ETAG" \
+    aws cloudfront update-distribution --id "$DIST_ID" --if-match "$ETAG" \
       --distribution-config "file://$PAGE_DIR/cloudfront-config.json" >/dev/null
   fi
 fi
