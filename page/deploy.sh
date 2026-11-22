@@ -92,7 +92,14 @@ while IFS= read -r -d '' f; do
   esac
 done < <(find "$PAGE_DIR" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \
              -o -name '*.json' -o -name 'apple-app-site-association' \
-             -o -name '*.svg' -o -name '*.png' -o -name '*.ico' -o -name '*.txt' \) -print0)
+             -o -name '*.svg' -o -name '*.png' -o -name '*.ico' -o -name '*.txt' \) \
+             ! -name 'r53-*.json' ! -name 'cloudfront-config.json' -print0)
+
+# Generated run-time files never belong on the site; remove any that a
+# previous run of this script uploaded before the exclusion existed.
+aws s3 rm "s3://$BUCKET/r53-acm-validation.json" >/dev/null 2>&1 || true
+aws s3 rm "s3://$BUCKET/r53-alias.json" >/dev/null 2>&1 || true
+aws s3 rm "s3://$BUCKET/cloudfront-config.json" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Stage 2: ACM certificate (us-east-1)
@@ -168,8 +175,9 @@ aws acm wait certificate-validated --region "$CERT_REGION" --certificate-arn "$C
 echo "certificate issued"
 
 log "CloudFront distribution for $DOMAIN"
+# Guard Aliases.Items against null (distributions without aliases).
 DIST_ID="$(aws cloudfront list-distributions --output text \
-  --query "DistributionList.Items[?contains(Aliases.Items, '$DOMAIN')].Id | [0]")"
+  --query "DistributionList.Items[?Aliases.Items != null && contains(Aliases.Items, '$DOMAIN')].Id | [0]")"
 if [[ -z "$DIST_ID" || "$DIST_ID" == "None" ]]; then
   cat > "$PAGE_DIR/cloudfront-config.json" <<EOF
 {
@@ -186,8 +194,11 @@ if [[ -z "$DIST_ID" || "$DIST_ID" == "None" ]]; then
   "DefaultCacheBehavior": {
     "TargetOriginId": "S3-$BUCKET",
     "ViewerProtocolPolicy": "redirect-to-https",
-    "AllowedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
-    "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"],
+      "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}
+    },
     "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
     "Compress": true
   },
@@ -226,9 +237,9 @@ open(path, "w").write(json.dumps(batch, indent=2))
 PYEOF
   if [[ -n "$ZONE_ID" && "$ZONE_ID" != "None" ]]; then
     aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-      --change-batch "file://$ALIAS_BATCH" >/dev/null && echo "  created alias $DOMAIN -> $target"
+      --change-batch "file://$ALIAS_BATCH" >/dev/null && echo "  created alias $DOMAIN -> $ALIAS_TARGET"
   else
-    echo "  pending (manual): alias $DOMAIN -> $target  [$ALIAS_BATCH]"
+    echo "  pending (manual): alias $DOMAIN -> $ALIAS_TARGET  [$ALIAS_BATCH]"
   fi
 }
 upsert_alias
