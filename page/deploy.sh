@@ -34,8 +34,16 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+# Normalize: a trailing slash in --page-dir would defeat the key-prefix
+# stripping in upload() and land every file under a bogus S3 prefix.
+while [[ "$PAGE_DIR" == */ ]]; do PAGE_DIR="${PAGE_DIR%/}"; done
 BUCKET="$DOMAIN"
 export AWS_PROFILE="$PROFILE"
+# Regional S3 endpoint: the global endpoint can answer 307 redirects for
+# freshly created regional buckets while routing propagates, and CloudFront
+# passes origin redirects through to viewers (breaking the AASA
+# no-redirect requirement and stage 5).
+S3_EP=(--endpoint-url "https://s3.${REGION}.amazonaws.com")
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -43,8 +51,8 @@ log() { printf '\n==> %s\n' "$*"; }
 # Stage 1: bucket + upload
 # ---------------------------------------------------------------------------
 log "Stage 1: S3 bucket $BUCKET ($REGION)"
-if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-  aws s3api create-bucket \
+if ! aws s3api "${S3_EP[@]}" head-bucket --bucket "$BUCKET" 2>/dev/null; then
+  aws s3api "${S3_EP[@]}" create-bucket \
     --bucket "$BUCKET" \
     --region "$REGION" \
     --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null
@@ -57,10 +65,10 @@ fi
 # half-provisioned and CloudFront's anonymous origin returning 403s.
 # (ACL-free bucket policy — works with the modern BucketOwnerEnforced
 # default; matches the account's website pattern. Both calls idempotent.)
-aws s3api put-public-access-block --bucket "$BUCKET" \
+aws s3api "${S3_EP[@]}" put-public-access-block --bucket "$BUCKET" \
   --public-access-block \
   BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
-aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
+aws s3api "${S3_EP[@]}" put-bucket-policy --bucket "$BUCKET" --policy "{
   \"Version\": \"2012-10-17\",
   \"Statement\": [{
     \"Sid\": \"PublicReadGetObject\",
@@ -75,7 +83,7 @@ echo "public read access ensured"
 log "Uploading $PAGE_DIR -> s3://$BUCKET/"
 upload() { # upload <path> <content-type> <cache-control>
   local path="$1" type="$2" cache="$3" key="${1#"$PAGE_DIR"/}"
-  aws s3 cp "$path" "s3://$BUCKET/$key" \
+  aws s3 "${S3_EP[@]}" cp "$path" "s3://$BUCKET/$key" \
     --content-type "$type" --cache-control "$cache" >/dev/null
   echo "  $key ($type, $cache)"
 }
@@ -101,9 +109,9 @@ done < <(find "$PAGE_DIR" -type f \( -name '*.html' -o -name '*.js' -o -name '*.
 
 # Generated run-time files never belong on the site; remove any that a
 # previous run of this script uploaded before the exclusion existed.
-aws s3 rm "s3://$BUCKET/r53-acm-validation.json" >/dev/null 2>&1 || true
-aws s3 rm "s3://$BUCKET/r53-alias.json" >/dev/null 2>&1 || true
-aws s3 rm "s3://$BUCKET/cloudfront-config.json" >/dev/null 2>&1 || true
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/r53-acm-validation.json" >/dev/null 2>&1 || true
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/r53-alias.json" >/dev/null 2>&1 || true
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/cloudfront-config.json" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Stage 2: ACM certificate (us-east-1)
@@ -199,7 +207,7 @@ if [[ -z "$DIST_ID" || "$DIST_ID" == "None" ]]; then
   "Aliases": {"Quantity": 1, "Items": ["$DOMAIN"]},
   "Origins": {"Quantity": 1, "Items": [{
     "Id": "S3-$BUCKET",
-    "DomainName": "$BUCKET.s3.amazonaws.com",
+    "DomainName": "$BUCKET.s3.$REGION.amazonaws.com",
     "S3OriginConfig": {"OriginAccessIdentity": ""}
   }]},
   "DefaultCacheBehavior": {
