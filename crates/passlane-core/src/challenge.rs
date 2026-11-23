@@ -249,12 +249,20 @@ pub(crate) fn validate_for_enrollment(factor: &ChallengeFactor) -> Result<(), Er
 
 /// A secret as entered: whitespace dropped (pasted secrets carry line
 /// breaks) and lower-cased, since either case is the same key.
+///
+/// Pre-allocated to the input's length so building it never reallocates: a
+/// growing buffer moves through the heap, stranding copies of the secret in
+/// freed memory that no zeroization can reach. With one fixed allocation
+/// there are exactly two copies — the caller's input and the returned one.
 fn normalize_secret_hex(secret_hex: &str) -> String {
-    secret_hex
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
+    let mut normalized = String::with_capacity(secret_hex.len());
+    normalized.extend(
+        secret_hex
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_ascii_lowercase()),
+    );
+    normalized
 }
 
 /// Check that `secret_hex` is a well-formed virtual key: exactly the 20-byte
@@ -344,6 +352,32 @@ mod tests {
         let pasted = format!("  {}  \n", SECRET.to_uppercase());
         let factor = ChallengeFactor::from_secret_hex(&pasted).unwrap();
         assert_eq!(secret_of(&factor), SECRET);
+    }
+
+    #[test]
+    fn normalization_never_outgrows_its_allocation() {
+        // The normalized secret must be built in one fixed allocation: a
+        // buffer that grows moves through the heap and strands copies of
+        // the secret in freed memory that no zeroization can reach.
+        for input in [
+            SECRET.to_string(),
+            format!("  {}  \n", SECRET.to_uppercase()),
+            String::from(" ab "),
+            format!(" {SECRET}"),
+        ] {
+            let factor = ChallengeFactor::from_existing_secret_hex(&input).unwrap();
+            let secret_hex = match &factor {
+                ChallengeFactor::Virtual { secret_hex } => secret_hex,
+                #[cfg(feature = "usb")]
+                ChallengeFactor::Yubikey { .. } => panic!("expected a virtual factor"),
+            };
+            assert!(
+                secret_hex.capacity() <= input.len(),
+                "normalized capacity {} grew past the input's {}",
+                secret_hex.capacity(),
+                input.len()
+            );
+        }
     }
 
     #[test]
