@@ -356,8 +356,11 @@ impl KeepassVault {
         challenge_factor: Option<&ChallengeFactor>,
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
-        let db = Self::open_database(filepath, password, &keyfile_path, challenge_factor)?;
+        // Pinned before opening, so the vault keeps the very key that
+        // answered the open's challenge — not whichever key is connected
+        // by the time parsing finishes.
         let challenge_factor = Self::pinned(challenge_factor)?;
+        let db = Self::open_database(filepath, password, &keyfile_path, challenge_factor.as_ref())?;
         Ok(Self {
             password: String::from(password),
             db,
