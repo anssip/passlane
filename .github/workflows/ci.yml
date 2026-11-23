@@ -21,6 +21,10 @@ jobs:
       # passlane-core without its `usb` feature is the mobile (iOS/FFI)
       # configuration: virtual challenge-response keys in, libusb out.
       - run: cargo test --locked -p passlane-core --no-default-features
+      # Cargo unifies features: another crate in a build may turn on
+      # keepass-ng's USB feature without passlane-core's `usb`. Core must
+      # still compile there, with virtual keys only.
+      - run: cargo build --locked -p passlane-core --no-default-features --features keepass-ng/challenge_response_usb
 
   ios:
     # The no-USB configuration must build for iOS, where libusb does not

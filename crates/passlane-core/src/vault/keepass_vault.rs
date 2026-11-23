@@ -2373,9 +2373,10 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_virtual_factor_still_fails_to_open() {
+    fn a_malformed_virtual_factor_is_rejected_before_the_key_derivation() {
         // A factor built by hand can bypass from_secret_hex; the vault must
-        // then simply fail to open rather than panic or succeed.
+        // refuse it up front rather than panic, silently weaken the factor,
+        // or report it as a wrong key.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.kdbx");
         let path_str = path.to_str().unwrap();
@@ -2384,13 +2385,85 @@ mod tests {
             .unwrap();
 
         let malformed = ChallengeFactor::Virtual {
-            secret_hex: "not hex".to_string(),
+            secret_hex: String::new(),
         };
         let err =
             KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&malformed))
                 .err()
                 .expect("a malformed secret must not open the vault");
-        assert!(!err.message.is_empty());
+        assert!(
+            err.message.contains("40 hex characters"),
+            "unexpected message: {}",
+            err.message
+        );
+        // The failed attempt left the vault intact.
+        KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&factor))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_empty_virtual_factor_cannot_be_enrolled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+        let empty = ChallengeFactor::Virtual {
+            secret_hex: String::new(),
+        };
+
+        // Creating a vault with it fails and leaves no vault file.
+        let err =
+            KeepassVault::new_with_challenge_factor(path_str, "master-pw", None, Some(&empty))
+                .err()
+                .expect("an empty secret must not protect a vault");
+        assert!(
+            err.message.contains("but has 0 characters"),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(!path.exists(), "no vault file must be left behind");
+
+        // Enrolling it on an existing vault fails and keeps the enrolled
+        // factor, in memory as on disk.
+        let factor = virtual_factor();
+        let mut vault =
+            KeepassVault::new_with_challenge_factor(path_str, "master-pw", None, Some(&factor))
+                .unwrap();
+        vault
+            .update_challenge_factor(Some(ChallengeFactor::Virtual {
+                secret_hex: String::new(),
+            }))
+            .expect_err("an empty secret must not be enrolled");
+        vault
+            .save_one_credential(Credential::new(
+                None, "secret", "GitHub", "user", None, None,
+            ))
+            .unwrap();
+        drop(vault);
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, None).is_err()
+        );
+        KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&factor))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_legacy_local_challenge_with_a_short_secret_cannot_protect_a_vault() {
+        // keepass-ng alone would accept this; through the vault it meets
+        // the virtual-factor rule and is refused with a clear message.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+        let short = ChallengeResponseKey::LocalChallenge("ab".to_string());
+
+        let err = KeepassVault::new(path_str, "master-pw", None, Some(&short))
+            .err()
+            .expect("a two-character secret must not protect a vault");
+        assert!(
+            err.message.contains("40 hex characters"),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(!path.exists(), "no vault file must be left behind");
     }
 
     #[cfg(feature = "usb")]

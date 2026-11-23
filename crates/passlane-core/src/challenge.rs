@@ -38,7 +38,9 @@ pub enum ChallengeFactor {
     /// A virtual key: the HMAC-SHA1 secret as 40 hex characters, answered
     /// locally with no device and no touch. This is also how a recovery
     /// secret is used — the backed-up slot secret of a lost hardware key
-    /// is the same key material. Build it with [`Self::from_secret_hex`].
+    /// is the same key material. Build it with [`Self::from_secret_hex`];
+    /// a hand-built one whose secret is not a 20-byte key in hex is
+    /// rejected when it answers a challenge (see [`Self::challenge_response_key`]).
     Virtual { secret_hex: String },
     /// A YubiKey's HMAC-SHA1 challenge-response `slot` (1 or 2). `serial`
     /// identifies the key, or is `None` for whichever single key is
@@ -59,20 +61,9 @@ impl ChallengeFactor {
             .filter(|c| !c.is_whitespace())
             .map(|c| c.to_ascii_lowercase())
             .collect();
-        let is_hex = secret_hex.bytes().all(|b| b.is_ascii_hexdigit());
-        if secret_hex.len() != SECRET_HEX_LEN || !is_hex {
-            // Describe the input by its flaws only: it is secret material.
-            let flaw = if !is_hex {
-                "but it contains a character that is not a hex digit".to_string()
-            } else {
-                format!("but has {} characters", secret_hex.len())
-            };
+        if let Err(e) = validate_secret_hex(&secret_hex) {
             secret_hex.zeroize();
-            return Err(Error::new(&format!(
-                "The challenge-response secret must be {} hex characters (a 20-byte HMAC-SHA1 \
-                 key), {flaw}.",
-                SECRET_HEX_LEN
-            )));
+            return Err(e);
         }
         Ok(Self::Virtual { secret_hex })
     }
@@ -104,12 +95,18 @@ impl ChallengeFactor {
     }
 
     /// The keepass-ng key that answers the vault's challenges with this
-    /// factor. For a YubiKey the connected device is resolved here, so a
-    /// key that is not connected — or an invalid slot — fails before the
-    /// key derivation runs.
+    /// factor. A virtual factor whose secret is not a 20-byte key in hex is
+    /// rejected here, and for a YubiKey the connected device is resolved
+    /// here, so a key that is not connected — or an invalid slot — fails
+    /// before the key derivation runs.
     pub fn challenge_response_key(&self) -> Result<ChallengeResponseKey, Error> {
         match self {
+            // Validated here and not only in `from_secret_hex`: the variant's
+            // fields are public, and the alternative is silently deriving the
+            // factor from an empty or tiny secret — keepass-ng accepts any
+            // hex string. This covers keepass-ng `LocalChallenge` keys too.
             Self::Virtual { secret_hex } => {
+                validate_secret_hex(secret_hex)?;
                 Ok(ChallengeResponseKey::LocalChallenge(secret_hex.clone()))
             }
             #[cfg(feature = "usb")]
@@ -132,8 +129,18 @@ impl TryFrom<&ChallengeResponseKey> for ChallengeFactor {
     /// The factor that answers challenges the way `key` does: a
     /// `LocalChallenge` secret becomes [`ChallengeFactor::Virtual`], a
     /// YubiKey key becomes [`ChallengeFactor::Yubikey`]. A YubiKey key
-    /// whose slot is not 1 or 2 is rejected.
+    /// whose slot is not 1 or 2 is rejected, and so is a YubiKey key when
+    /// this crate was built without its `usb` feature. The secret of a
+    /// `LocalChallenge` key is checked when it answers a challenge (see
+    /// [`ChallengeFactor::challenge_response_key`]), so one that is not a
+    /// 20-byte key fails there with a clear message.
     fn try_from(key: &ChallengeResponseKey) -> Result<Self, Error> {
+        // The fallback arm is what keeps this compiling in every
+        // configuration. keepass-ng's YubiKey variant exists whenever any
+        // crate in the build enables its USB feature — Cargo unifies
+        // features — which need not be this crate's `usb` feature. An
+        // exhaustive match with a cfg-gated arm would not compile there,
+        // and an `if let` on `LocalChallenge` is irrefutable without it.
         match key {
             ChallengeResponseKey::LocalChallenge(secret_hex) => Ok(Self::Virtual {
                 secret_hex: secret_hex.clone(),
@@ -149,6 +156,12 @@ impl TryFrom<&ChallengeResponseKey> for ChallengeFactor {
                     serial: Some(device.serial_number),
                 })
             }
+            // Unreachable unless keepass-ng's USB feature is on and this
+            // crate's `usb` feature is off.
+            #[allow(unreachable_patterns)]
+            _ => Err(Error::new(
+                "YubiKey challenge-response needs a build of passlane-core with its `usb` feature",
+            )),
         }
     }
 }
@@ -171,6 +184,34 @@ impl fmt::Debug for ChallengeFactor {
                 .finish(),
         }
     }
+}
+
+/// Check that `secret_hex` is a well-formed virtual key: exactly the 20-byte
+/// HMAC-SHA1 secret, in hex. The one rule for a secret, applied by
+/// [`ChallengeFactor::from_secret_hex`] and again when a factor answers a
+/// challenge.
+fn validate_secret_hex(secret_hex: &str) -> Result<(), Error> {
+    let is_hex = secret_hex.bytes().all(|b| b.is_ascii_hexdigit());
+    if secret_hex.len() == SECRET_HEX_LEN && is_hex {
+        Ok(())
+    } else {
+        Err(invalid_secret_error(secret_hex.len(), is_hex))
+    }
+}
+
+/// The shared rejection of a secret that is not a well-formed virtual key.
+/// It describes the input by its flaws only: the input is secret material.
+fn invalid_secret_error(length: usize, is_hex: bool) -> Error {
+    let flaw = if !is_hex {
+        "but it contains a character that is not a hex digit".to_string()
+    } else {
+        format!("but has {length} characters")
+    };
+    Error::new(&format!(
+        "The challenge-response secret must be {} hex characters (a 20-byte HMAC-SHA1 \
+         key), {flaw}.",
+        SECRET_HEX_LEN
+    ))
 }
 
 #[cfg(feature = "usb")]
@@ -300,6 +341,64 @@ mod tests {
         let key = ChallengeResponseKey::LocalChallenge(SECRET.to_string());
         let factor = ChallengeFactor::try_from(&key).unwrap();
         assert_eq!(secret_of(&factor), SECRET);
+    }
+
+    #[test]
+    fn a_hand_built_virtual_factor_is_validated_when_it_answers_a_challenge() {
+        // The variant's fields are public, so from_secret_hex can be
+        // bypassed — and keepass-ng derives the factor from any hex string,
+        // an empty one included. The boundary must not let that through.
+        for secret_hex in [
+            String::new(),
+            "ab".to_string(),
+            SECRET[..39].to_string(),
+            format!("{SECRET}0"),
+            "zz".repeat(20),
+            String::from(" \n"),
+        ] {
+            let factor = ChallengeFactor::Virtual { secret_hex };
+            let err = factor
+                .challenge_response_key()
+                .expect_err("a malformed secret must be rejected");
+            assert!(
+                err.message.contains("40 hex characters"),
+                "unexpected message: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_built_virtual_factor_in_upper_case_is_the_same_key() {
+        // Either case is the same 20-byte key; the constructor merely
+        // normalizes it.
+        let factor = ChallengeFactor::Virtual {
+            secret_hex: SECRET.to_uppercase(),
+        };
+        let key = factor.challenge_response_key().unwrap();
+        assert_eq!(
+            key,
+            ChallengeResponseKey::LocalChallenge(SECRET.to_uppercase())
+        );
+    }
+
+    #[test]
+    fn a_legacy_local_challenge_with_a_malformed_secret_is_rejected_clearly() {
+        // keepass-ng's LocalChallenge accepts any hex string. Routed through
+        // the factor it meets the same rule, with the same message, instead
+        // of silently protecting a vault with a weak factor.
+        for secret_hex in ["", "ab", "not hex"] {
+            let key = ChallengeResponseKey::LocalChallenge(secret_hex.to_string());
+            let factor = ChallengeFactor::try_from(&key).unwrap();
+            let err = factor
+                .challenge_response_key()
+                .expect_err("a malformed secret must be rejected");
+            assert!(
+                err.message.contains("40 hex characters"),
+                "unexpected message: {}",
+                err.message
+            );
+        }
     }
 
     #[test]
