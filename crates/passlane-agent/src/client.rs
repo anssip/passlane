@@ -402,6 +402,7 @@ fn answer_within<T: Send + 'static>(
 /// [`read_frame`] with an absolute deadline for the whole frame: every
 /// read is given only the time left, so a peer drip-feeding bytes — each
 /// read within its own slice — still ends at the deadline.
+#[cfg(unix)]
 fn read_frame_deadlined(
     stream: &mut UnixStream,
     deadline: std::time::Instant,
@@ -422,6 +423,7 @@ fn read_frame_deadlined(
 
 /// [`std::io::Read::read_exact`] with an absolute deadline, adjusting the
 /// socket's read timeout to the time left before every read.
+#[cfg(unix)]
 fn read_exact_deadlined(
     stream: &mut UnixStream,
     mut buf: &mut [u8],
