@@ -139,7 +139,7 @@ This design allows for potential alternative storage backends beyond Keepass, th
 2. Subcommand is matched to an Action implementation
 3. Actions are categorized as `RoutedAction::Action` or `RoutedAction::UnlockingAction`
 4. `UnlockingAction` types automatically unlock the current vault before execution
-5. Vault unlocking checks OS keychain first, prompts for password if not found
+5. Vault unlocking walks one chain for every command (`actions/mod.rs`, sources injected for the tests): a live session-agent session first — the only source guaranteed prompt-free — then the OS keychain, then the password prompt, taking the first that opens the vault. Without a terminal on stdin nothing may block: no hardware-key touch, no unbounded keychain wait, no password prompt; an agent named by `PASSLANE_AGENT_SOCK` that cannot be used is an error, never a silent fallback (see `docs/features/session-agent.md`)
 6. Actions use the `MatchHandlerTemplate` pattern to handle single vs. multiple search results uniformly
 
 ### ItemType Pattern
