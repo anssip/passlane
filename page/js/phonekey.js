@@ -14,7 +14,7 @@
 // why the sheet hides itself first: reading it off the same screen would
 // prove nothing.
 
-import { randomBytes, timingSafeEqualStr, toHex, utf8 } from "./lib.js";
+import { randomBytes, timingSafeEqualStr, toHex } from "./lib.js";
 
 /// The secret's length in bytes: KeePass challenge-response slots hold
 /// 20-byte HMAC-SHA1 keys.
@@ -192,6 +192,3 @@ export function sheetInstructions() {
 export function wipe(bytes) {
   bytes.fill(0);
 }
-
-/** Unused import silencer for environments that tree-shake poorly. */
-export const _internal = { utf8 };

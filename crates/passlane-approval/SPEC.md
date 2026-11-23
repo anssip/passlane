@@ -286,7 +286,7 @@ itself (it never learns the secret); the re-key and the open that follows are
 what prove the holder's key is the one the vault now needs.
 
 A holder keys its secrets by `vault_id`. It denies `unlock` and `save` requests
-for a vault it holds no key for: answering would mint a key nobody enrolled.
+for a vault it holds no key for — answering one would only produce a wrong key.
 
 On the Phase 0 page the secret is a non-extractable WebCrypto HMAC key. The
 page computes the response when the owner approves and releases it only after

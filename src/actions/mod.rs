@@ -147,7 +147,6 @@ fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
 
 /// [`get_vault_properties`] with the keychain, agent and second-factor
 /// lookups injected (tests run without touching any of them).
-#[allow(clippy::too_many_arguments)]
 fn get_vault_properties_with(
     keychain_lookup: &dyn Fn(&str) -> Option<String>,
     agent_lookup: &dyn Fn(&str) -> Option<Zeroizing<String>>,
