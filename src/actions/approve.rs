@@ -71,15 +71,6 @@ fn hand_over(
     running: bool,
     hold: &dyn Fn(&str, &str, &str, Scope) -> Result<(), Error>,
 ) -> Result<(), String> {
-    // Enrollment is answered where it started: that terminal is waiting
-    // for the paste and goes on to re-key the vault itself.
-    if handoff.kind == RequestKind::EnrollKey {
-        return Err(
-            "an enrollment request is answered at the terminal that started it: paste this \
-             response there (the enrollment re-keys the vault itself)"
-                .into(),
-        );
-    }
     if !running {
         return Err(format!(
             "this response (request {}…) carries the answer that {} but there is nowhere to \
@@ -157,12 +148,16 @@ impl Action for ApproveAction {
                 log.log_challenge_decision(&rid, &vault, verified.kind.label(), true);
                 let target = match verified.kind {
                     RequestKind::Save => format!("saving vault '{vault}'"),
+                    RequestKind::EnrollKey => {
+                        format!("enrolling a phone-held key for vault '{vault}'")
+                    }
                     _ => format!("opening vault '{vault}'"),
                 };
                 let next = match verified.kind {
                     // The command that is saving is still running, waiting.
                     RequestKind::Save => "The command that is saving continues now.",
-                    // A command that could not wait has exited: re-run it.
+                    // Commands that could not wait have exited: re-run them.
+                    RequestKind::EnrollKey => "Re-run 'passlane hwkey add --phone' to continue.",
                     _ => "Re-run the command to proceed; the answer is used once.",
                 };
                 Ok(format!(
@@ -261,15 +256,21 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_is_answered_where_it_started() {
-        let err = hand_over(&handoff(RequestKind::EnrollKey), true, &|_, _, _, _| {
-            panic!("enrollment answers are not held by the agent")
-        })
-        .unwrap_err();
-        assert!(
-            err.contains("answered at the terminal that started it"),
-            "{err}"
-        );
+    fn an_enrollment_answer_is_held_for_the_re_run() {
+        // 'hwkey add --phone' without a terminal exits with its link and
+        // is re-run once the owner has approved from elsewhere.
+        hand_over(
+            &handoff(RequestKind::EnrollKey),
+            true,
+            &|vault, challenge, answer, scope| {
+                assert_eq!(vault, "work");
+                assert_eq!(challenge, "ab".repeat(32));
+                assert_eq!(answer, "07".repeat(20));
+                assert_eq!(scope, Scope::Once);
+                Ok(())
+            },
+        )
+        .unwrap();
     }
 
     #[test]
