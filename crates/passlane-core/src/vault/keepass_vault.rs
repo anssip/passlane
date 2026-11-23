@@ -347,7 +347,8 @@ impl KeepassVault {
 
     /// Open the vault at `filepath` with its master password, an optional
     /// keyfile and an optional challenge-response factor. The factor answers
-    /// the vault's challenges itself, and does so again on every save.
+    /// the vault's challenges itself, and does so again on every save. A
+    /// YubiKey factor that names no key is pinned to the one it opened with.
     pub fn open_with_challenge_factor(
         password: &str,
         filepath: &str,
@@ -356,12 +357,13 @@ impl KeepassVault {
     ) -> Result<KeepassVault, Error> {
         debug!("Opening database '{}'", filepath);
         let db = Self::open_database(filepath, password, &keyfile_path, challenge_factor)?;
+        let challenge_factor = Self::pinned(challenge_factor)?;
         Ok(Self {
             password: String::from(password),
             db,
             filepath: filepath.to_string(),
             keyfile: keyfile_path,
-            challenge_factor: challenge_factor.cloned(),
+            challenge_factor,
         })
     }
 
@@ -389,7 +391,8 @@ impl KeepassVault {
     /// YubiKey that is not connected — fails here and leaves no vault file.
     /// So does one that may not be enrolled: a virtual factor whose secret
     /// is not a 20-byte key in hex. It may open a vault, but not protect a
-    /// new one.
+    /// new one. A YubiKey factor that names no key is pinned to the one
+    /// connected now.
     pub fn new_with_challenge_factor(
         filepath: &str,
         password: &str,
@@ -399,6 +402,7 @@ impl KeepassVault {
         if let Some(factor) = challenge_factor {
             validate_for_enrollment(factor)?;
         }
+        let challenge_factor = Self::pinned(challenge_factor)?;
         let mut db = Database::new(DatabaseConfig::default());
         db.meta.database_name = Some("Passlane database".to_string());
 
@@ -410,12 +414,12 @@ impl KeepassVault {
             password: password.to_string(),
             filepath: filepath.to_string(),
             keyfile: keyfile.map(ToString::to_string),
-            challenge_factor: challenge_factor.cloned(),
+            challenge_factor: challenge_factor.clone(),
         };
-        let key = Self::build_key(password, &vault.keyfile, challenge_factor)?;
+        let key = Self::build_key(password, &vault.keyfile, challenge_factor.as_ref())?;
         // The challenge happens during the save below; print only once the
         // keyfile opened fine, mirroring the open path.
-        if let Some(notice) = touch_notice(challenge_factor) {
+        if let Some(notice) = touch_notice(challenge_factor.as_ref()) {
             eprintln!("{notice} to encrypt the vault...");
         }
         vault.save_atomically(key)?;
@@ -477,6 +481,8 @@ impl KeepassVault {
     /// The new factor has to be fit to enroll: a virtual factor whose
     /// secret is not a 20-byte key in hex is refused before anything
     /// changes, although such a factor may well have opened the vault.
+    /// A YubiKey factor that names no key is pinned to the one connected
+    /// now, and kept pinned for the saves that follow.
     pub fn update_challenge_factor(
         &mut self,
         challenge_factor: Option<ChallengeFactor>,
@@ -484,12 +490,28 @@ impl KeepassVault {
         if let Some(factor) = &challenge_factor {
             validate_for_enrollment(factor)?;
         }
+        let challenge_factor = Self::pinned(challenge_factor.as_ref())?;
         let previous = std::mem::replace(&mut self.challenge_factor, challenge_factor);
         if let Err(e) = self.save_database() {
             self.challenge_factor = previous;
             return Err(e);
         }
         Ok(())
+    }
+
+    /// The factor to keep for the saves that follow an open, a creation or
+    /// an enrollment: the given one, except that a YubiKey factor naming no
+    /// key is pinned to the key connected right now (see
+    /// [`ChallengeFactor::pinned_to_connected`]).
+    fn pinned(
+        challenge_factor: Option<&ChallengeFactor>,
+    ) -> Result<Option<ChallengeFactor>, Error> {
+        let factor = challenge_factor.cloned();
+        #[cfg(feature = "usb")]
+        let factor = factor
+            .map(|factor| factor.pinned_to_connected(|slot| ChallengeFactor::yubikey(slot, None)))
+            .transpose()?;
+        Ok(factor)
     }
 
     /// [`Self::update_challenge_factor`] with the new factor given as
@@ -2580,33 +2602,41 @@ mod tests {
         assert!(!path.exists(), "no vault file must be left behind");
     }
 
-    #[cfg(feature = "usb")]
     #[test]
     fn a_failed_factor_update_keeps_the_enrolled_factor() {
-        // A slot that cannot answer fails the re-save; the vault must keep
-        // the factor it was enrolled with, in memory as on disk.
+        // A replacement that is fit to enroll, but whose save fails: the
+        // keyfile disappeared after the vault was opened. The vault must
+        // keep the factor it was enrolled with, in memory as on disk.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.kdbx");
         let path_str = path.to_str().unwrap();
+        let keyfile_path = dir.path().join("vault.key");
+        let keyfile = b"passlane test keyfile".to_vec();
+        std::fs::write(&keyfile_path, &keyfile).unwrap();
+        let keyfile_str = keyfile_path.to_str().unwrap();
         let factor = virtual_factor();
 
-        let mut vault =
-            KeepassVault::new_with_challenge_factor(path_str, "master-pw", None, Some(&factor))
-                .unwrap();
-        let invalid_slot = ChallengeFactor::Yubikey {
-            slot: 7,
-            serial: Some(1),
-        };
+        let mut vault = KeepassVault::new_with_challenge_factor(
+            path_str,
+            "master-pw",
+            Some(keyfile_str),
+            Some(&factor),
+        )
+        .unwrap();
+
+        std::fs::remove_file(&keyfile_path).unwrap();
         let err = vault
-            .update_challenge_factor(Some(invalid_slot))
-            .expect_err("an invalid slot must fail the update");
+            .update_challenge_factor(Some(another_virtual_factor()))
+            .expect_err("the save must fail without the keyfile");
+        // The save failed; the enrollment check did not reject the factor.
         assert!(
-            err.message.contains("must be 1 or 2"),
+            !err.message.contains("40 hex characters"),
             "unexpected message: {}",
             err.message
         );
+        std::fs::write(&keyfile_path, &keyfile).unwrap();
 
-        // In memory the virtual key is still the enrolled factor: the next
+        // In memory the original key is still the enrolled factor: the next
         // save is challenged with it and goes through.
         vault
             .save_one_credential(Credential::new(
@@ -2615,14 +2645,66 @@ mod tests {
             .unwrap();
         drop(vault);
 
-        // So it is on disk.
+        // So it is on disk: the replacement never took.
+        let keyfile = Some(keyfile_str.to_string());
         assert!(
-            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, None).is_err()
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, keyfile.clone(), None)
+                .is_err()
+        );
+        assert!(
+            KeepassVault::open_with_challenge_factor(
+                "master-pw",
+                path_str,
+                keyfile.clone(),
+                Some(&another_virtual_factor())
+            )
+            .is_err()
         );
         let vault =
-            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&factor))
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, keyfile, Some(&factor))
                 .unwrap();
         assert_eq!(vault.grep(None).len(), 1);
+    }
+
+    #[test]
+    fn a_kept_factor_is_the_one_given() {
+        // No factor, or one that already names what answers for it, is
+        // kept exactly as given.
+        assert!(KeepassVault::pinned(None).unwrap().is_none());
+        let factor = virtual_factor();
+        let kept = KeepassVault::pinned(Some(&factor)).unwrap().unwrap();
+        assert_eq!(
+            kept.challenge_response_key().unwrap(),
+            factor.challenge_response_key().unwrap()
+        );
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn a_kept_yubikey_factor_is_kept_named_or_refused_before_any_key_is_looked_for() {
+        let named = ChallengeFactor::Yubikey {
+            slot: 1,
+            serial: Some(42),
+        };
+        let kept = KeepassVault::pinned(Some(&named)).unwrap().unwrap();
+        assert!(matches!(
+            kept,
+            ChallengeFactor::Yubikey {
+                slot: 1,
+                serial: Some(42)
+            }
+        ));
+        // An invalid slot is refused before the lookup, so this needs no key.
+        let nameless = ChallengeFactor::Yubikey {
+            slot: 7,
+            serial: None,
+        };
+        let err = KeepassVault::pinned(Some(&nameless)).expect_err("must be refused");
+        assert!(
+            err.message.contains("must be 1 or 2"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 
     #[cfg(feature = "usb")]

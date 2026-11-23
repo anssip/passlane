@@ -46,7 +46,9 @@ pub enum ChallengeFactor {
     Virtual { secret_hex: String },
     /// A YubiKey's HMAC-SHA1 challenge-response `slot` (1 or 2). `serial`
     /// identifies the key, or is `None` for whichever single key is
-    /// connected. Build it with [`Self::yubikey`].
+    /// connected when the factor answers. A vault pins such a factor to the
+    /// key it opened or enrolled with, so that later saves cannot switch to
+    /// another key. Build it with [`Self::yubikey`].
     #[cfg(feature = "usb")]
     Yubikey { slot: u8, serial: Option<u32> },
 }
@@ -75,11 +77,15 @@ impl ChallengeFactor {
     /// one, and opening a vault must not be stricter than its file format.
     /// Such a factor opens a vault, but it cannot be enrolled on one.
     pub fn from_existing_secret_hex(secret_hex: &str) -> Result<Self, Error> {
-        let secret_hex = normalize_secret_hex(secret_hex);
+        let mut secret_hex = normalize_secret_hex(secret_hex);
         let is_hex = secret_hex.bytes().all(|b| b.is_ascii_hexdigit());
         if !secret_hex.is_empty() && is_hex {
-            Ok(Self::Virtual { secret_hex })
-        } else if secret_hex.is_empty() {
+            return Ok(Self::Virtual { secret_hex });
+        }
+        // A mistyped secret still holds most of the real key: scrub this
+        // copy, which no factor will own and zeroize on drop.
+        secret_hex.zeroize();
+        if is_hex {
             Err(Error::new(
                 "The challenge-response secret must be hex, but nothing was entered.",
             ))
@@ -104,6 +110,23 @@ impl ChallengeFactor {
             slot,
             serial: Some(device.serial_number),
         })
+    }
+
+    /// This factor as kept once it has been used to open, create or re-key
+    /// a vault. A YubiKey factor that names no key ("whichever is
+    /// connected") is pinned to the key `connected` finds for its slot now.
+    /// Left unresolved, a later save would answer with whichever key is then
+    /// the only one connected — silently re-encrypting the vault for it —
+    /// instead of failing because the enrolled key is missing.
+    #[cfg(feature = "usb")]
+    pub(crate) fn pinned_to_connected(
+        self,
+        connected: impl FnOnce(u8) -> Result<Self, Error>,
+    ) -> Result<Self, Error> {
+        match self {
+            Self::Yubikey { slot, serial: None } => connected(slot),
+            named => Ok(named),
+        }
     }
 
     /// Whether answering a challenge waits for the user to touch a physical
@@ -561,6 +584,55 @@ mod tests {
                 slot,
                 serial: Some(12345678),
             }
+        }
+
+        fn unresolved_factor(slot: u8) -> ChallengeFactor {
+            ChallengeFactor::Yubikey { slot, serial: None }
+        }
+
+        #[test]
+        fn a_factor_that_names_no_key_is_pinned_to_the_key_found_now() {
+            // Without the pin, a save after the key was swapped for another
+            // one would answer with the new key and re-encrypt the vault
+            // for it.
+            let pinned = unresolved_factor(2)
+                .pinned_to_connected(|slot| {
+                    assert_eq!(slot, 2, "the key is looked up for the factor's slot");
+                    Ok(ChallengeFactor::Yubikey {
+                        slot,
+                        serial: Some(42),
+                    })
+                })
+                .unwrap();
+            assert!(matches!(
+                pinned,
+                ChallengeFactor::Yubikey {
+                    slot: 2,
+                    serial: Some(42)
+                }
+            ));
+        }
+
+        #[test]
+        fn a_factor_that_names_a_key_is_kept_as_it_is() {
+            let pinned = yubikey_factor(1)
+                .pinned_to_connected(|_| panic!("a named key is not looked up again"))
+                .unwrap();
+            assert!(matches!(
+                pinned,
+                ChallengeFactor::Yubikey {
+                    slot: 1,
+                    serial: Some(12345678)
+                }
+            ));
+        }
+
+        #[test]
+        fn a_key_that_cannot_be_found_is_reported_when_pinning() {
+            let err = unresolved_factor(2)
+                .pinned_to_connected(|_| Err(Error::new("No hardware key detected.")))
+                .expect_err("a missing key must not be pinned");
+            assert_eq!(err.message, "No hardware key detected.");
         }
 
         #[test]
