@@ -1,4 +1,4 @@
-use crate::challenge::ChallengeFactor;
+use crate::challenge::{ChallengeFactor, validate_for_enrollment};
 use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -387,12 +387,18 @@ impl KeepassVault {
     /// keyfile and an optional challenge-response factor. The first save
     /// already challenges the factor, so a factor that cannot answer — a
     /// YubiKey that is not connected — fails here and leaves no vault file.
+    /// So does one that may not be enrolled: a virtual factor whose secret
+    /// is not a 20-byte key in hex. It may open a vault, but not protect a
+    /// new one.
     pub fn new_with_challenge_factor(
         filepath: &str,
         password: &str,
         keyfile: Option<&str>,
         challenge_factor: Option<&ChallengeFactor>,
     ) -> Result<KeepassVault, Error> {
+        if let Some(factor) = challenge_factor {
+            validate_for_enrollment(factor)?;
+        }
         let mut db = Database::new(DatabaseConfig::default());
         db.meta.database_name = Some("Passlane database".to_string());
 
@@ -467,10 +473,17 @@ impl KeepassVault {
     /// the vault, which the caller has already done. If the save fails, the
     /// previous factor is restored so the in-memory state keeps matching the
     /// file on disk.
+    ///
+    /// The new factor has to be fit to enroll: a virtual factor whose
+    /// secret is not a 20-byte key in hex is refused before anything
+    /// changes, although such a factor may well have opened the vault.
     pub fn update_challenge_factor(
         &mut self,
         challenge_factor: Option<ChallengeFactor>,
     ) -> Result<(), Error> {
+        if let Some(factor) = &challenge_factor {
+            validate_for_enrollment(factor)?;
+        }
         let previous = std::mem::replace(&mut self.challenge_factor, challenge_factor);
         if let Err(e) = self.save_database() {
             self.challenge_factor = previous;
@@ -2373,10 +2386,11 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_virtual_factor_is_rejected_before_the_key_derivation() {
-        // A factor built by hand can bypass from_secret_hex; the vault must
-        // refuse it up front rather than panic, silently weaken the factor,
-        // or report it as a wrong key.
+    fn a_malformed_virtual_factor_fails_to_open_and_leaves_the_vault_intact() {
+        // A factor built by hand can bypass the constructors. Opening does
+        // not second-guess its secret — that is keepass-ng's job, and the
+        // file format's rule — so the attempt simply fails to open: no
+        // panic, and nothing weakened.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.kdbx");
         let path_str = path.to_str().unwrap();
@@ -2385,20 +2399,120 @@ mod tests {
             .unwrap();
 
         let malformed = ChallengeFactor::Virtual {
-            secret_hex: String::new(),
+            secret_hex: "not hex".to_string(),
         };
         let err =
             KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&malformed))
                 .err()
                 .expect("a malformed secret must not open the vault");
         assert!(
+            err.message
+                .contains("Error decoding local challenge secret"),
+            "unexpected message: {}",
+            err.message
+        );
+        // To keepass-ng an empty secret is a valid, merely different key.
+        let empty = ChallengeFactor::Virtual {
+            secret_hex: String::new(),
+        };
+        let err =
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&empty))
+                .err()
+                .expect("an empty secret must not open this vault");
+        assert!(
+            err.message.contains("Incorrect key"),
+            "unexpected message: {}",
+            err.message
+        );
+        // The failed attempts left the vault intact.
+        KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&factor))
+            .unwrap();
+    }
+
+    /// Write a vault with keepass-ng alone, protected by a local challenge
+    /// secret that is not 20 bytes. Nothing in passlane writes one — the
+    /// enrollment refuses it — but nothing stops another tool from doing so.
+    fn keepass_ng_vault_with_short_secret(path: &str, password: &str, secret_hex: &str) {
+        let db = Database::new(DatabaseConfig::default());
+        let key = DatabaseKey::new()
+            .with_password(password)
+            .with_challenge_response_key(ChallengeResponseKey::LocalChallenge(
+                secret_hex.to_string(),
+            ));
+        let mut file = std::fs::File::create(path).unwrap();
+        db.save(&mut file, key).unwrap();
+    }
+
+    #[test]
+    fn a_vault_written_by_keepass_ng_with_a_shorter_secret_still_opens_and_resaves() {
+        // Opening must never be stricter than the file format. keepass-ng
+        // accepts a challenge secret of any length, so one of its own vaults
+        // with a 16-byte secret keeps opening here, through either API, and
+        // keeps its factor across a re-save.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path_str = path.to_str().unwrap();
+        // 16 bytes: a fifth short of a YubiKey slot's key.
+        let secret_hex = "000102030405060708090a0b0c0d0e0f";
+        keepass_ng_vault_with_short_secret(path_str, "master-pw", secret_hex);
+
+        let legacy = ChallengeResponseKey::LocalChallenge(secret_hex.to_string());
+        let mut vault = KeepassVault::open("master-pw", path_str, None, Some(&legacy)).unwrap();
+        vault
+            .save_one_credential(Credential::new(
+                None, "secret", "GitHub", "user", None, None,
+            ))
+            .unwrap();
+        drop(vault);
+
+        let existing = ChallengeFactor::from_existing_secret_hex(secret_hex).unwrap();
+        let vault =
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&existing))
+                .unwrap();
+        assert_eq!(vault.grep(None).len(), 1);
+        // It is still this secret that protects the vault.
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, None).is_err()
+        );
+        assert!(
+            KeepassVault::open_with_challenge_factor(
+                "master-pw",
+                path_str,
+                None,
+                Some(&virtual_factor())
+            )
+            .is_err()
+        );
+
+        // The short secret is not fit to be enrolled, though: not afresh...
+        let fresh = dir.path().join("fresh.kdbx");
+        assert!(
+            KeepassVault::new(fresh.to_str().unwrap(), "master-pw", None, Some(&legacy)).is_err()
+        );
+        assert!(!fresh.exists());
+        // ...and not on the very vault it protects. The refusal leaves the
+        // vault as it was, in memory as on disk.
+        let mut vault =
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&existing))
+                .unwrap();
+        let err = vault
+            .update_challenge_factor(Some(existing.clone()))
+            .expect_err("a short secret must not be enrolled");
+        assert!(
             err.message.contains("40 hex characters"),
             "unexpected message: {}",
             err.message
         );
-        // The failed attempt left the vault intact.
-        KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&factor))
+        vault
+            .save_one_credential(Credential::new(
+                None, "another", "GitLab", "user", None, None,
+            ))
             .unwrap();
+        drop(vault);
+        let vault =
+            KeepassVault::open_with_challenge_factor("master-pw", path_str, None, Some(&existing))
+                .unwrap();
+        assert_eq!(vault.grep(None).len(), 2);
     }
 
     #[test]

@@ -38,9 +38,11 @@ pub enum ChallengeFactor {
     /// A virtual key: the HMAC-SHA1 secret as 40 hex characters, answered
     /// locally with no device and no touch. This is also how a recovery
     /// secret is used — the backed-up slot secret of a lost hardware key
-    /// is the same key material. Build it with [`Self::from_secret_hex`];
-    /// a hand-built one whose secret is not a 20-byte key in hex is
-    /// rejected when it answers a challenge (see [`Self::challenge_response_key`]).
+    /// is the same key material. Build a new one with
+    /// [`Self::from_secret_hex`], and one for a secret that already
+    /// protects a vault with [`Self::from_existing_secret_hex`]. A secret
+    /// that is not a 20-byte key in hex can still open a vault, but it
+    /// cannot be enrolled on one.
     Virtual { secret_hex: String },
     /// A YubiKey's HMAC-SHA1 challenge-response `slot` (1 or 2). `serial`
     /// identifies the key, or is `None` for whichever single key is
@@ -50,22 +52,43 @@ pub enum ChallengeFactor {
 }
 
 impl ChallengeFactor {
-    /// A [`Self::Virtual`] factor from its secret: the 20-byte HMAC-SHA1 key
-    /// as 40 hex characters, in either case. Whitespace is ignored, since
-    /// pasted secrets carry line breaks. Anything else is rejected here, so
-    /// a mistyped secret fails with a clear message instead of as a
-    /// wrong-key error after the key derivation.
+    /// A new [`Self::Virtual`] key from its secret: the 20-byte HMAC-SHA1
+    /// key as 40 hex characters, in either case. Whitespace is ignored,
+    /// since pasted secrets carry line breaks. Anything else is rejected
+    /// here, so a mistyped secret fails with a clear message instead of as
+    /// a wrong-key error after the key derivation. Enrolling a virtual
+    /// factor on a vault applies the same rule, however it was built.
     pub fn from_secret_hex(secret_hex: &str) -> Result<Self, Error> {
-        let mut secret_hex: String = secret_hex
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
+        let mut secret_hex = normalize_secret_hex(secret_hex);
         if let Err(e) = validate_secret_hex(&secret_hex) {
             secret_hex.zeroize();
             return Err(e);
         }
         Ok(Self::Virtual { secret_hex })
+    }
+
+    /// A [`Self::Virtual`] factor for a secret that already protects a
+    /// vault — a backed-up slot secret used to recover one. Whitespace and
+    /// case are handled as by [`Self::from_secret_hex`] and the secret must
+    /// be non-empty hex, but it need not be 20 bytes: keepass-ng accepts a
+    /// secret of any length, so a vault written by another tool may rely on
+    /// one, and opening a vault must not be stricter than its file format.
+    /// Such a factor opens a vault, but it cannot be enrolled on one.
+    pub fn from_existing_secret_hex(secret_hex: &str) -> Result<Self, Error> {
+        let secret_hex = normalize_secret_hex(secret_hex);
+        let is_hex = secret_hex.bytes().all(|b| b.is_ascii_hexdigit());
+        if !secret_hex.is_empty() && is_hex {
+            Ok(Self::Virtual { secret_hex })
+        } else if secret_hex.is_empty() {
+            Err(Error::new(
+                "The challenge-response secret must be hex, but nothing was entered.",
+            ))
+        } else {
+            Err(Error::new(
+                "The challenge-response secret must be hex, but it contains a character that \
+                 is not a hex digit.",
+            ))
+        }
     }
 
     /// A connected YubiKey as the factor: its challenge-response `slot`
@@ -95,18 +118,20 @@ impl ChallengeFactor {
     }
 
     /// The keepass-ng key that answers the vault's challenges with this
-    /// factor. A virtual factor whose secret is not a 20-byte key in hex is
-    /// rejected here, and for a YubiKey the connected device is resolved
-    /// here, so a key that is not connected — or an invalid slot — fails
-    /// before the key derivation runs.
+    /// factor. For a YubiKey the connected device is resolved here, so a
+    /// key that is not connected — or an invalid slot — fails before the
+    /// key derivation runs. A virtual factor is taken as it is and
+    /// keepass-ng checks the secret itself: opening a vault has to accept
+    /// whatever the file was protected with. Whether a secret is fit to be
+    /// *enrolled* is a separate question, decided by
+    /// [`KeepassVault::new_with_challenge_factor`] and
+    /// [`KeepassVault::update_challenge_factor`].
+    ///
+    /// [`KeepassVault::new_with_challenge_factor`]: crate::vault::keepass_vault::KeepassVault::new_with_challenge_factor
+    /// [`KeepassVault::update_challenge_factor`]: crate::vault::keepass_vault::KeepassVault::update_challenge_factor
     pub fn challenge_response_key(&self) -> Result<ChallengeResponseKey, Error> {
         match self {
-            // Validated here and not only in `from_secret_hex`: the variant's
-            // fields are public, and the alternative is silently deriving the
-            // factor from an empty or tiny secret — keepass-ng accepts any
-            // hex string. This covers keepass-ng `LocalChallenge` keys too.
             Self::Virtual { secret_hex } => {
-                validate_secret_hex(secret_hex)?;
                 Ok(ChallengeResponseKey::LocalChallenge(secret_hex.clone()))
             }
             #[cfg(feature = "usb")]
@@ -131,9 +156,8 @@ impl TryFrom<&ChallengeResponseKey> for ChallengeFactor {
     /// YubiKey key becomes [`ChallengeFactor::Yubikey`]. A YubiKey key
     /// whose slot is not 1 or 2 is rejected, and so is a YubiKey key when
     /// this crate was built without its `usb` feature. The secret of a
-    /// `LocalChallenge` key is checked when it answers a challenge (see
-    /// [`ChallengeFactor::challenge_response_key`]), so one that is not a
-    /// 20-byte key fails there with a clear message.
+    /// `LocalChallenge` key is taken as it is, so that any vault keepass-ng
+    /// can open opens; whether it may be *enrolled* is checked separately.
     fn try_from(key: &ChallengeResponseKey) -> Result<Self, Error> {
         // The fallback arm is what keeps this compiling in every
         // configuration. keepass-ng's YubiKey variant exists whenever any
@@ -186,10 +210,34 @@ impl fmt::Debug for ChallengeFactor {
     }
 }
 
+/// Whether `factor` may be **enrolled** on a vault — the bar a new factor
+/// has to clear, unlike one that merely opens a vault already requiring it.
+/// A virtual key must be a real 20-byte key in hex: the variant's fields
+/// are public, and keepass-ng derives the factor from any hex string, an
+/// empty one included, so without this check a hand-built factor could
+/// protect a vault with a zero- or few-bit secret.
+pub(crate) fn validate_for_enrollment(factor: &ChallengeFactor) -> Result<(), Error> {
+    match factor {
+        ChallengeFactor::Virtual { secret_hex } => validate_secret_hex(secret_hex),
+        #[cfg(feature = "usb")]
+        ChallengeFactor::Yubikey { slot, .. } => validate_slot(*slot),
+    }
+}
+
+/// A secret as entered: whitespace dropped (pasted secrets carry line
+/// breaks) and lower-cased, since either case is the same key.
+fn normalize_secret_hex(secret_hex: &str) -> String {
+    secret_hex
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// Check that `secret_hex` is a well-formed virtual key: exactly the 20-byte
-/// HMAC-SHA1 secret, in hex. The one rule for a secret, applied by
-/// [`ChallengeFactor::from_secret_hex`] and again when a factor answers a
-/// challenge.
+/// HMAC-SHA1 secret, in hex. This is the rule for a secret that is
+/// *enrolled*, applied by [`ChallengeFactor::from_secret_hex`] and by
+/// [`validate_for_enrollment`]; opening a vault accepts any secret.
 fn validate_secret_hex(secret_hex: &str) -> Result<(), Error> {
     let is_hex = secret_hex.bytes().all(|b| b.is_ascii_hexdigit());
     if secret_hex.len() == SECRET_HEX_LEN && is_hex {
@@ -344,28 +392,93 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_built_virtual_factor_is_validated_when_it_answers_a_challenge() {
-        // The variant's fields are public, so from_secret_hex can be
-        // bypassed — and keepass-ng derives the factor from any hex string,
-        // an empty one included. The boundary must not let that through.
+    fn a_hand_built_virtual_factor_answers_with_whatever_secret_it_holds() {
+        // Opening a vault must never be stricter than its file format:
+        // keepass-ng derives the factor from any secret and checks the hex
+        // itself, so the factor passes the secret through untouched, even
+        // for a factor built by hand. Whether it may be *enrolled* is a
+        // separate question (see `only_a_real_virtual_key_may_be_enrolled`).
         for secret_hex in [
             String::new(),
             "ab".to_string(),
             SECRET[..39].to_string(),
-            format!("{SECRET}0"),
             "zz".repeat(20),
             String::from(" \n"),
         ] {
-            let factor = ChallengeFactor::Virtual { secret_hex };
-            let err = factor
-                .challenge_response_key()
-                .expect_err("a malformed secret must be rejected");
+            let factor = ChallengeFactor::Virtual {
+                secret_hex: secret_hex.clone(),
+            };
+            assert_eq!(
+                factor.challenge_response_key().unwrap(),
+                ChallengeResponseKey::LocalChallenge(secret_hex)
+            );
+        }
+    }
+
+    #[test]
+    fn from_existing_secret_hex_accepts_any_non_empty_hex_secret() {
+        // A 16-byte secret: nothing in passlane writes one, but a vault made
+        // with another tool may be protected by it, and recovery must not
+        // lock it out.
+        let short = "000102030405060708090a0b0c0d0e0f";
+        let factor = ChallengeFactor::from_existing_secret_hex(short).unwrap();
+        assert_eq!(secret_of(&factor), short);
+        // Whitespace and case are normalized, exactly as for a new key.
+        let pasted = format!("  {}\n", SECRET.to_uppercase());
+        let factor = ChallengeFactor::from_existing_secret_hex(&pasted).unwrap();
+        assert_eq!(secret_of(&factor), SECRET);
+        // A single byte is still a secret keepass-ng accepts.
+        ChallengeFactor::from_existing_secret_hex("ab").unwrap();
+    }
+
+    #[test]
+    fn from_existing_secret_hex_rejects_nothing_and_non_hex() {
+        let err = ChallengeFactor::from_existing_secret_hex(" \n")
+            .expect_err("an empty secret is no secret");
+        assert!(
+            err.message.contains("nothing was entered"),
+            "unexpected message: {}",
+            err.message
+        );
+        let not_hex = format!("{}z", &SECRET[..39]);
+        let err = ChallengeFactor::from_existing_secret_hex(&not_hex)
+            .expect_err("a non-hex secret is no secret");
+        assert!(
+            err.message.contains("not a hex digit"),
+            "unexpected message: {}",
+            err.message
+        );
+        // The rejected input is secret material too: never echo it.
+        assert!(!err.message.contains(&not_hex[..20]), "{}", err.message);
+    }
+
+    #[test]
+    fn only_a_real_virtual_key_may_be_enrolled() {
+        // The enrollment bar, however the factor was built. The variant's
+        // fields are public and keepass-ng derives the factor from any hex
+        // string, an empty one included.
+        for secret_hex in [
+            String::new(),
+            "ab".to_string(),
+            SECRET[..39].to_string(),
+            "zz".repeat(20),
+        ] {
+            let factor = ChallengeFactor::Virtual {
+                secret_hex: secret_hex.clone(),
+            };
+            let err = validate_for_enrollment(&factor).expect_err("must not be enrolled");
             assert!(
                 err.message.contains("40 hex characters"),
                 "unexpected message: {}",
                 err.message
             );
         }
+        validate_for_enrollment(&virtual_factor()).unwrap();
+        // A secret that already protects a vault opens it, but is not fit
+        // to be enrolled.
+        let existing =
+            ChallengeFactor::from_existing_secret_hex("000102030405060708090a0b0c0d0e0f").unwrap();
+        assert!(validate_for_enrollment(&existing).is_err());
     }
 
     #[test]
@@ -383,21 +496,14 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_local_challenge_with_a_malformed_secret_is_rejected_clearly() {
-        // keepass-ng's LocalChallenge accepts any hex string. Routed through
-        // the factor it meets the same rule, with the same message, instead
-        // of silently protecting a vault with a weak factor.
-        for secret_hex in ["", "ab", "not hex"] {
+    fn a_legacy_local_challenge_opens_with_its_secret_as_given() {
+        // keepass-ng's LocalChallenge accepts any secret. One that is not a
+        // 20-byte key still opens the vault it protects — that is the file
+        // format's rule, not passlane's to tighten.
+        for secret_hex in ["ab", "not hex"] {
             let key = ChallengeResponseKey::LocalChallenge(secret_hex.to_string());
             let factor = ChallengeFactor::try_from(&key).unwrap();
-            let err = factor
-                .challenge_response_key()
-                .expect_err("a malformed secret must be rejected");
-            assert!(
-                err.message.contains("40 hex characters"),
-                "unexpected message: {}",
-                err.message
-            );
+            assert_eq!(factor.challenge_response_key().unwrap(), key);
         }
     }
 
@@ -460,6 +566,21 @@ mod tests {
         #[test]
         fn a_yubikey_requires_a_touch() {
             assert!(yubikey_factor(1).requires_touch());
+        }
+
+        #[test]
+        fn an_invalid_slot_may_not_be_enrolled() {
+            // Before any USB device is looked for, so this needs no key.
+            for slot in [0u8, 3, 255] {
+                let err = validate_for_enrollment(&yubikey_factor(slot))
+                    .expect_err("the slot must be rejected");
+                assert!(
+                    err.message.contains("must be 1 or 2"),
+                    "unexpected message: {}",
+                    err.message
+                );
+            }
+            validate_for_enrollment(&yubikey_factor(2)).unwrap();
         }
 
         #[test]
