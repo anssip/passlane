@@ -18,7 +18,8 @@ use zeroize::Zeroizing;
 
 use crate::error::AgentError;
 use crate::protocol::{
-    Event, GrantSpec, Request, Response, SessionInfo, decode, read_frame, write_frame,
+    ChallengeResponseMaterial, Event, GrantSpec, PROTOCOL_VERSION, Request, Response, SessionInfo,
+    decode, read_frame, write_frame,
 };
 
 /// A connection to a running agent.
@@ -46,6 +47,29 @@ pub struct CreatedSession {
     pub id: String,
     /// Expiry, unix seconds (`None` for `once`).
     pub expires_at: Option<u64>,
+}
+
+/// The unlock factors a live session holds for a vault. `Debug` redacts
+/// the password.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnlockFactors {
+    /// The vault's master password.
+    pub master_password: Zeroizing<String>,
+    /// The vault's challenge-response factor, when the session holds it.
+    pub challenge_response: Option<ChallengeResponseMaterial>,
+    /// When the serving session expires, unix seconds (`None` for a
+    /// consumed `once` session) so long-running callers can revalidate.
+    pub expires_at: Option<u64>,
+}
+
+impl std::fmt::Debug for UnlockFactors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnlockFactors")
+            .field("master_password", &"***")
+            .field("challenge_response", &self.challenge_response)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// The answer to a reveal check: allowed (with the covering session's
@@ -143,6 +167,22 @@ impl AgentClient {
         }
     }
 
+    /// Make sure the agent speaks this client's protocol dialect, and
+    /// return what [`AgentClient::ping`] learned about it. An agent left
+    /// running from an older binary would take every request and quietly
+    /// drop the factors it does not know about, so a mismatch is reported
+    /// as [`AgentError::VersionMismatch`] instead.
+    pub fn check_version(&mut self) -> Result<PongInfo, AgentError> {
+        let pong = self.ping()?;
+        if pong.version != PROTOCOL_VERSION {
+            return Err(AgentError::VersionMismatch {
+                agent: pong.version,
+                client: PROTOCOL_VERSION,
+            });
+        }
+        Ok(pong)
+    }
+
     /// Create a session. `Err(AgentError::Server { code:
     /// ErrorCode::TooLong, .. })` means the requested duration exceeds
     /// the agent's cap.
@@ -164,21 +204,24 @@ impl AgentClient {
         }
     }
 
-    /// Fetch a vault's unlock factors from a live session (consuming a
-    /// `once`-scoped one). Returns the password and the serving
-    /// session's expiry (unix seconds; `None` for a consumed `once`
-    /// session) so long-running callers can revalidate.
-    pub fn get_unlock_factors(
-        &mut self,
-        vault: &str,
-    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
+    /// Fetch the unlock factors a live session holds for the vault — the
+    /// master password and, when the session carries it, the
+    /// challenge-response material — plus the serving session's expiry
+    /// (unix seconds; `None` for a consumed `once` session). Consumes a
+    /// `once`-scoped session.
+    pub fn get_unlock_factors(&mut self, vault: &str) -> Result<UnlockFactors, AgentError> {
         match self.call(Request::GetUnlockFactors {
             vault: vault.to_string(),
         })? {
             Response::UnlockFactors {
                 master_password,
+                challenge_response,
                 expires_at,
-            } => Ok((master_password.into_inner(), expires_at)),
+            } => Ok(UnlockFactors {
+                master_password: master_password.into_inner(),
+                challenge_response,
+                expires_at,
+            }),
             other => Err(AgentError::Protocol(format!(
                 "unexpected answer: {other:?}"
             ))),
@@ -382,6 +425,10 @@ impl AgentClient {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).
+    pub fn check_version(&mut self) -> Result<PongInfo, AgentError> {
+        unsupported!()
+    }
+    /// Unsupported on this platform (see [`AgentClient::connect`]).
     pub fn create_session(
         &mut self,
         _vault: &str,
@@ -391,10 +438,7 @@ impl AgentClient {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).
-    pub fn get_unlock_factors(
-        &mut self,
-        _vault: &str,
-    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
+    pub fn get_unlock_factors(&mut self, _vault: &str) -> Result<UnlockFactors, AgentError> {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).
@@ -441,5 +485,68 @@ impl EventStream {
     /// Unsupported on this platform (see [`AgentClient::connect`]).
     pub fn next_event(&mut self) -> Result<Event, AgentError> {
         unsupported!()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    /// An agent that answers `ping` with the given dialect and nothing
+    /// else: enough to test what a client does before trusting it.
+    fn scripted_agent(version: u32) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(frame) = read_frame(&mut stream) else {
+                return;
+            };
+            assert!(matches!(decode::<Request>(&frame), Ok(Request::Ping)));
+            let pong = Response::Pong {
+                version,
+                max_session_secs: 900,
+                sessions: 0,
+            };
+            let _ = write_frame(&mut stream, &pong);
+        });
+        (dir, path)
+    }
+
+    #[test]
+    fn a_client_refuses_an_agent_speaking_another_dialect() {
+        let (_dir, path) = scripted_agent(PROTOCOL_VERSION + 1);
+        let mut client = AgentClient::connect(&path).unwrap();
+        match client.check_version() {
+            Err(AgentError::VersionMismatch { agent, client }) => {
+                assert_eq!(agent, PROTOCOL_VERSION + 1);
+                assert_eq!(client, PROTOCOL_VERSION);
+            }
+            other => panic!("expected VersionMismatch, got {other:?}"),
+        }
+
+        let (_dir, path) = scripted_agent(PROTOCOL_VERSION);
+        let mut client = AgentClient::connect(&path).unwrap();
+        assert_eq!(client.check_version().unwrap().version, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn unlock_factors_debug_redacts_the_password() {
+        let factors = UnlockFactors {
+            master_password: Zeroizing::new("canary-pw".to_string()),
+            challenge_response: Some(ChallengeResponseMaterial::Secret {
+                secret_hex: crate::protocol::SecretString::new("canary-secret"),
+            }),
+            expires_at: None,
+        };
+        let debug = format!("{factors:?}");
+        assert!(debug.contains("challenge_response"), "{debug}");
+        assert!(!debug.contains("canary"), "{debug}");
     }
 }

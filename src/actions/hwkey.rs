@@ -6,7 +6,6 @@ use crate::hwkey;
 use crate::vault_registry::{self, VaultConfig};
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
-use zeroize::Zeroize;
 
 pub struct HwKeyAction {
     pub command: HwKeyCommand,
@@ -68,7 +67,7 @@ impl HwKeyAction {
         // Fail fast if no key is connected, before asking for the password.
         let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
-        let mut password = get_vault_password(&config.name);
+        let password = get_vault_password()?;
         let result = (|| {
             println!("Unlocking vault '{}'...", config.name);
             let mut vault =
@@ -90,7 +89,6 @@ impl HwKeyAction {
             }
             Ok::<(), Error>(())
         })();
-        password.zeroize();
         result?;
 
         hwkey::print_backup_reminder();
@@ -111,7 +109,7 @@ impl HwKeyAction {
             passlane_core::hwkey::configured_challenge_response_key(&enrolled)?
         };
 
-        let mut password = get_vault_password(&config.name);
+        let password = get_vault_password()?;
         let result = (|| {
             println!("Unlocking vault '{}'...", config.name);
             let mut vault = KeepassVault::open(
@@ -147,7 +145,6 @@ impl HwKeyAction {
             }
             Ok::<(), Error>(())
         })();
-        password.zeroize();
         result?;
 
         Ok(format!(

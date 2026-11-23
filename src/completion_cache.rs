@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -87,9 +87,24 @@ pub fn ensure_cache_from_vault(vault: &Box<dyn Vault>) {
 
 /// Checks if the current vault's cache file is older than 7 days. If so, and
 /// the vault is unlocked (master password in keychain), silently refreshes
-/// the cache.
+/// the cache — but only at a terminal. The keychain read that follows can
+/// wait on a permission dialog for as long as nobody clicks it, and a
+/// silent refresh must never be what blocks a command that runs unattended.
 pub fn refresh_if_stale() {
-    let Some(path) = current_cache_path() else {
+    refresh_if_stale_with(
+        std::io::stdin().is_terminal(),
+        current_cache_path(),
+        &create_cache_from_keychain,
+    );
+}
+
+/// [`refresh_if_stale`] with what reaches outside the process injected, so
+/// the rule is testable without a terminal, a home directory or a keychain.
+fn refresh_if_stale_with(interactive: bool, cache_path: Option<PathBuf>, refresh: &dyn Fn()) {
+    if !interactive {
+        return;
+    }
+    let Some(path) = cache_path else {
         return;
     };
     if !path.exists() {
@@ -114,7 +129,7 @@ pub fn refresh_if_stale() {
     }
 
     debug!("Completion cache is stale, attempting refresh...");
-    create_cache_from_keychain();
+    refresh();
 }
 
 /// Opens the current vault using the keychain password and writes the cache.
@@ -181,6 +196,7 @@ fn write_cache(path: &Path, entries: &[String]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn test_cache_path_is_per_vault() {
@@ -251,5 +267,50 @@ mod tests {
             result,
             vec!["github:alice".to_string(), "github:bob".to_string()]
         );
+    }
+
+    /// A cache file whose modification time is `age` old.
+    fn cache_aged(dir: &Path, age: Duration) -> PathBuf {
+        let path = cache_path_in(dir, "work");
+        fs::write(&path, "github:alice\n").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_silent_cache_refresh_never_runs_without_a_terminal() {
+        // The refresh reads the keychain, which can block on a permission
+        // dialog nobody is there to answer.
+        let dir = tempfile::tempdir().unwrap();
+        let stale = cache_aged(dir.path(), Duration::from_secs(8 * 24 * 60 * 60));
+        let refreshed = Cell::new(0);
+        refresh_if_stale_with(false, Some(stale), &|| refreshed.set(1));
+        assert_eq!(
+            refreshed.get(),
+            0,
+            "unattended commands must not touch the keychain"
+        );
+    }
+
+    #[test]
+    fn a_stale_cache_is_refreshed_at_a_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let refreshed = Cell::new(0);
+        let refresh = || refreshed.set(refreshed.get() + 1);
+
+        let stale = cache_aged(dir.path(), week + Duration::from_secs(60));
+        refresh_if_stale_with(true, Some(stale), &refresh);
+        assert_eq!(refreshed.get(), 1);
+
+        let fresh = cache_aged(dir.path(), week - Duration::from_secs(60));
+        refresh_if_stale_with(true, Some(fresh), &refresh);
+        assert_eq!(refreshed.get(), 1, "a fresh cache is left alone");
+
+        let missing = cache_path_in(dir.path(), "other");
+        refresh_if_stale_with(true, Some(missing), &refresh);
+        refresh_if_stale_with(true, None, &refresh);
+        assert_eq!(refreshed.get(), 1, "nothing to refresh without a cache");
     }
 }

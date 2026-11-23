@@ -19,8 +19,9 @@ use passlane_approval::policy::Policy;
 
 use crate::error::AgentError;
 use crate::protocol::{
-    self, ErrorCode, Event, GrantInfo, GrantSpec, MAX_ENTRY_NAME_LEN, MAX_FIELD_NAME_LEN,
-    MAX_ID_LEN, MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, Request, Response, SessionInfo,
+    self, ChallengeResponseMaterial, ErrorCode, Event, GrantInfo, GrantSpec, MAX_ENTRY_NAME_LEN,
+    MAX_FIELD_NAME_LEN, MAX_ID_LEN, MAX_SECRET_LEN, MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, Request,
+    Response, SessionInfo,
 };
 use crate::session::{Grant, KeyMaterial, Session};
 
@@ -489,6 +490,17 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                     );
                 }
             }
+            if let GrantSpec::Unlock {
+                challenge_response: Some(ChallengeResponseMaterial::Secret { secret_hex }),
+                ..
+            } = &grant
+                && (secret_hex.expose().is_empty() || secret_hex.expose().len() > MAX_SECRET_LEN)
+            {
+                return error_response(
+                    ErrorCode::Invalid,
+                    format!("challenge-response secret must be 1..={MAX_SECRET_LEN} bytes"),
+                );
+            }
             let seconds = scope.seconds();
             if seconds > shared.max_session_secs {
                 return error_response(
@@ -501,14 +513,27 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
             }
             let now = now_secs();
             let grant = match grant {
-                GrantSpec::Unlock { master_password } => {
-                    Grant::Unlock(KeyMaterial::new(master_password.expose()))
+                GrantSpec::Unlock {
+                    master_password,
+                    challenge_response,
+                } => {
+                    let mut material = KeyMaterial::new(master_password.expose());
+                    if let Some(challenge_response) = challenge_response {
+                        material = material.with_challenge_response(challenge_response);
+                    }
+                    Grant::Unlock(material)
                 }
                 GrantSpec::Reveal { id, entry, field } => Grant::Reveal { id, entry, field },
             };
             let vault_name = vault.clone();
+            // Only the grant's kind is logged — never what it holds.
             let grant_kind = match grant.info() {
-                GrantInfo::Unlock => "unlock",
+                GrantInfo::Unlock {
+                    challenge_response: false,
+                } => "unlock",
+                GrantInfo::Unlock {
+                    challenge_response: true,
+                } => "unlock with challenge-response",
                 GrantInfo::Reveal { .. } => "reveal",
             };
             let session = Session::new(vault, grant, scope, now);
@@ -545,6 +570,7 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                             master_password: crate::protocol::SecretString::new(
                                 material.master_password(),
                             ),
+                            challenge_response: material.challenge_response().cloned(),
                             expires_at: session.expires_at,
                         };
                     }
@@ -564,6 +590,7 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                             master_password: crate::protocol::SecretString::new(
                                 material.master_password(),
                             ),
+                            challenge_response: material.challenge_response().cloned(),
                             // A once session: no expiry to revalidate.
                             expires_at: None,
                         },
@@ -736,7 +763,101 @@ mod tests {
     fn unlock_grant(pw: &str) -> GrantSpec {
         GrantSpec::Unlock {
             master_password: crate::protocol::SecretString::new(pw),
+            challenge_response: None,
         }
+    }
+
+    fn keyed_grant(pw: &str, secret: &str) -> GrantSpec {
+        GrantSpec::Unlock {
+            master_password: crate::protocol::SecretString::new(pw),
+            challenge_response: Some(ChallengeResponseMaterial::Secret {
+                secret_hex: crate::protocol::SecretString::new(secret),
+            }),
+        }
+    }
+
+    #[test]
+    fn unlock_session_hands_out_the_challenge_response_it_was_given() {
+        let shared = shared(60);
+        let created = match dispatch(
+            &shared,
+            Request::CreateSession {
+                vault: "keyed".into(),
+                grant: keyed_grant("pw", "aabbcc"),
+                scope: Scope::Timed { seconds: 60 },
+            },
+        ) {
+            Response::SessionCreated { id, .. } => id,
+            other => panic!("{other:?}"),
+        };
+        // A timed session serves the whole factor set, as often as asked.
+        for _ in 0..2 {
+            match dispatch(
+                &shared,
+                Request::GetUnlockFactors {
+                    vault: "keyed".into(),
+                },
+            ) {
+                Response::UnlockFactors {
+                    master_password,
+                    challenge_response,
+                    expires_at,
+                } => {
+                    assert_eq!(master_password.expose(), "pw");
+                    assert_eq!(
+                        challenge_response,
+                        Some(ChallengeResponseMaterial::Secret {
+                            secret_hex: crate::protocol::SecretString::new("aabbcc")
+                        })
+                    );
+                    assert!(expires_at.is_some());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // The listing says the factor is held — and nothing about it.
+        match dispatch(&shared, Request::ListSessions) {
+            Response::Sessions { list } => {
+                assert_eq!(
+                    list[0].grant,
+                    GrantInfo::Unlock {
+                        challenge_response: true
+                    }
+                );
+                assert!(!format!("{:?}", list[0].grant).contains("aabbcc"));
+                assert_eq!(list[0].id, created);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_challenge_response_secrets_are_refused() {
+        let shared = shared(60);
+        for secret in ["", &"a".repeat(MAX_SECRET_LEN + 1)] {
+            match dispatch(
+                &shared,
+                Request::CreateSession {
+                    vault: "keyed".into(),
+                    grant: keyed_grant("pw", secret),
+                    scope: Scope::Timed { seconds: 60 },
+                },
+            ) {
+                Response::Error { code, .. } => assert_eq!(code, ErrorCode::Invalid),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(matches!(
+            dispatch(
+                &shared,
+                Request::CreateSession {
+                    vault: "keyed".into(),
+                    grant: keyed_grant("pw", &"a".repeat(MAX_SECRET_LEN)),
+                    scope: Scope::Timed { seconds: 60 },
+                }
+            ),
+            Response::SessionCreated { .. }
+        ));
     }
 
     #[test]

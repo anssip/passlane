@@ -48,7 +48,7 @@ A **session** is one granted approval:
 
 | Kind | Holds | Created by | Ends |
 | --- | --- | --- | --- |
-| `unlock` | the vault's master password | `passlane unlock --session` (later: a phone approval of `Operation::Unlock`) | expiry, revoke, `lock`, agent stop |
+| `unlock` | what opens the vault with no prompt: the master password, plus the hardware-key factor when it is one a session can hold (see below) | `passlane unlock --session` (later: a phone approval of `Operation::Unlock`) | expiry, revoke, `lock`, agent stop |
 | `reveal` | no secret — a recorded "approve for this session" covering one entry field | the ask flow's *Approve for this session* | first use (`once`), expiry, revoke, `lock`, agent stop |
 
 Reveal sessions are keyed by the entry's **stable UUID** (the title travels
@@ -94,6 +94,12 @@ candidate runtime directory that is writable by group or others (a
 stray `TMPDIR=/tmp` is rejected, not honored), and on Linux without
 `XDG_RUNTIME_DIR` you set `PASSLANE_AGENT_SOCK` explicitly.
 
+**Agent platforms should always set `PASSLANE_AGENT_SOCK`.** They
+routinely override `TMPDIR` (so the default lookup misses) and run
+commands without a terminal. With the variable set, a live session is
+found whatever `TMPDIR` is, and a socket that cannot be used is an
+error rather than a silent fall-through to a prompt nobody can answer.
+
 **Socket trust.** Before a client sends anything, it validates the
 socket path — and after connecting, re-validates it: it must be an
 actual socket, carry no group/other permission bits, and be owned by
@@ -116,19 +122,72 @@ The wire protocol is 4-byte big-endian length + JSON frames of
 requests/responses (`ping`, `create_session`, `get_unlock_factors`,
 `check_reveal`, `list_sessions`, `revoke_session`, `revoke_vault`,
 `revoke_all`, `lock`, `subscribe`); see `crates/passlane-agent/src/protocol.rs`.
-Secrets travel only over the local socket in `SecretString` wrappers
-that zeroize on drop and redact in `Debug` output.
+A client checks the agent's protocol dialect (`ping`) before trusting it
+with a session. Secrets travel only over the local socket in
+`SecretString` wrappers that zeroize on drop and redact in `Debug`
+output.
 
 ## CLI integration
 
-- **Unlock consults the agent.** The password chain is: OS keychain →
-  session agent → interactive prompt. A `once` unlock session is
-  consumed by the unlock that uses it; a `timed` session serves every
-  command until it expires.
-- **`passlane unlock --session [SECS]`** opens the vault (verifying the
-  password) and hands the factors to the agent *instead of* the
-  keychain. Requires the agent; fails early with a hint when it is not
-  running.
+### How a command opens the vault
+
+Every command that opens the vault walks the same unlock chain and takes
+the **first source that opens it**:
+
+1. **The session agent.** It is the only source guaranteed prompt-free, so
+   it is asked first. With a live session the vault opens with no keychain
+   dialog from any context — a terminal, a pipe, or a daemon with no
+   terminal at all — and with no hardware-key prompt either when the
+   session holds the vault's key factor (see below).
+2. **The OS keychain.**
+3. **The master-password prompt** — only when there is a terminal on
+   stdin to ask at.
+
+A source that fails does not end the chain: a session whose factors no
+longer open the vault (it was re-keyed elsewhere) is reported and the
+keychain is tried, a stale keychain password gives way to the prompt.
+
+**What a session holds.** `passlane unlock --session` hands the agent
+everything a command needs to open the vault without a prompt: the master
+password, and — when the vault has a hardware-key factor a session *can*
+hold — that factor too. A session can hold a **secret-backed** key (a
+recovery secret, a virtual key): the factor answers every challenge,
+including the fresh one a save issues, so such a vault stays writable
+through the session. A **physical** key's secret never leaves the device,
+so it cannot be handed over: for such a vault the session covers the
+master password only and the key is still touched for every command, as
+without a session. `passlane sessions list` shows which is which —
+`unlock` versus `unlock + hwkey` — and `unlock --session` says so when it
+creates the session.
+
+**Without a terminal, nothing waits.** A command whose stdin is not a
+terminal (an agent daemon, a scheduled job, `passlane … < /dev/null`) can
+expect no answer to any prompt, so the chain never blocks on one:
+
+- a hardware-key vault whose key factor the session does not hold fails
+  at once, before the keychain is even asked, with a message that names
+  the key and the session;
+- the keychain is given a few seconds (the dialog macOS shows for a
+  password stored by another build of passlane never closes by itself);
+  a keychain that has not answered is reported as such;
+- the master password is never prompted for; the error says how to open a
+  session instead.
+
+The silent completion-cache refresh follows the same rule: it reads the
+keychain, so it only runs at a terminal.
+
+**A configured agent is not optional.** When `PASSLANE_AGENT_SOCK` names
+a socket, a command that cannot use it stops with an error saying what
+is wrong and what to do — nothing is listening there, the socket is
+untrusted, or the agent speaks another protocol dialect (an agent left
+running from an older binary; restart it). Quietly moving on to the
+keychain or a prompt is how an agent context used to end up waiting
+forever (passlane#65). Without `PASSLANE_AGENT_SOCK` an absent agent is
+just absent, and the chain continues with the keychain.
+
+- **`passlane unlock --session [SECS]`** opens the vault and hands the
+  factors to the agent *instead of* the keychain. Requires the agent;
+  fails early with a hint when it is not running or cannot be used.
 - **`passlane lock`** removes the keychain password *and* revokes the
   vault's agent sessions (`--all` drops every session). Locking must not
   leave a vault effectively unlocked through a live session.
@@ -219,6 +278,12 @@ systemctl --user enable --now passlane-agent.service
   never-on-disk key material instead of an unbounded keychain copy.
 - **IPC buffers** holding serialized secrets are zeroized on both sides
   after use; `Debug` output redacts them; log lines never contain them.
+- **A held hardware-key factor is the key's secret, never a key's
+  response.** A session carries a challenge-response factor only as the
+  secret of a secret-backed key, held and wiped like the master password
+  beside it (the test suite plants a canary secret and scans for it). A
+  physical key contributes nothing to a session: its secret stays in the
+  device, and so does every response it computes.
 - **A locked vault is locked everywhere**: `passlane lock` clears the
   keychain *and* the agent's sessions for that vault.
 - Sessions die with the agent: there is no persistence file, by design.
@@ -231,7 +296,13 @@ When the link transport and phone-held key land (passlane-ios v1), the
 phone's `ApprovalResponse { scope: Timed { .. } }` for an
 `Operation::Unlock` becomes exactly one `unlock` session — the agent
 already speaks the protocol's `Scope` shape. The HMAC response will be
-held the same way the master password is today (memory only, wiped on
-expiry), and `Body::SessionRevoke` from the phone maps to
-`revoke_session`. That is why the session model lives in the shared
-crates rather than the CLI.
+held the same way the master password and the challenge-response
+material are today (memory only, wiped on expiry), and
+`Body::SessionRevoke` from the phone maps to `revoke_session`. Note that
+the phone answers with a *response to one challenge*, which is valid only
+until the vault is saved — a different thing from the secret a session
+holds today, and one the vault layer does not yet accept in place of a
+key; that plumbing (a pre-computed challenge response as an unlock
+factor) is also what would let a physical key's one touch serve a whole
+session. That is why the session model lives in the shared crates rather
+than the CLI.
