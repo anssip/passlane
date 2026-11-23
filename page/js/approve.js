@@ -470,7 +470,9 @@ async function main() {
             next = promoteStagedKey(next, body.vault_id, pendingTransition.key.id);
           }
           if (pendingTransition.dropStaged) {
-            next = dropStagedKey(next, body.vault_id, pendingTransition.key.id);
+            // The staged generation's id, not the held key's that
+            // answered: the drop forgets the abandoned enrollment.
+            next = dropStagedKey(next, body.vault_id, pendingTransition.stagedId);
           }
           return next;
         });

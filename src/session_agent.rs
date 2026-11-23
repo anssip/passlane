@@ -244,8 +244,14 @@ fn try_challenge_response_current(
     let challenge_hex = passlane_approval::encoding::hex_encode(&seed);
     let mut client = connect_result()?;
     match client.get_challenge_response(&config.name, &challenge_hex) {
-        Ok((response, _expiry)) => {
-            note_phone_answer_backing();
+        Ok((response, expiry)) => {
+            // Only a timed answer backs a view: a single-use one is
+            // consumed by this very fetch, so nothing live remains to
+            // watch — claiming backing would fail the view's liveness
+            // check before any code is shown.
+            if (expiry.is_some()) {
+                note_phone_answer_backing();
+            }
             let bytes = passlane_approval::encoding::hex_decode(&response).map_err(|e| {
                 AgentError::Protocol(format!("the agent returned a malformed answer: {e}"))
             })?;
@@ -298,8 +304,14 @@ fn note_phone_answer_backing() {
 pub fn try_challenge_response(vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
     let mut client = try_connect()?;
     match client.get_challenge_response(vault, challenge_hex) {
-        Ok((response, _expiry)) => {
-            note_phone_answer_backing();
+        Ok((response, expiry)) => {
+            // Only a timed answer backs a view: a single-use one is
+            // consumed by this very fetch, so nothing live remains to
+            // watch — claiming backing would fail the view's liveness
+            // check before any code is shown.
+            if (expiry.is_some()) {
+                note_phone_answer_backing();
+            }
             let bytes = match passlane_approval::encoding::hex_decode(&response) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -900,7 +912,7 @@ mod tests {
                 &config.name,
                 GrantSpec::ChallengeResponse {
                     challenge: SecretString::new(challenge_hex.clone()),
-                    response: SecretString::new(answer),
+                    response: SecretString::new(answer.clone()),
                 },
                 Scope::Timed { seconds: 300 },
             )
@@ -938,6 +950,45 @@ mod tests {
         assert!(
             session_access_live(false, false, false, &config.name, "entry", "code"),
             "nothing phone-backed is claimed: nothing to be live"
+        );
+
+        // A single-use answer does NOT back a view: the fetch consumes
+        // it, so nothing live remains to watch, and claiming backing
+        // would fail the view's liveness check before any code shows.
+        client
+            .create_session(
+                &config.name,
+                GrantSpec::ChallengeResponse {
+                    challenge: SecretString::new(challenge_hex.clone()),
+                    response: SecretString::new(answer.clone()),
+                },
+                Scope::Once,
+            )
+            .unwrap();
+        reset_phone_answer_backing();
+        // The timed session still holds its answer, so the single-use one
+        // is not what the fetch below serves... revoke the timed one to
+        // force it.
+        client.revoke_vault(&config.name).unwrap();
+        client
+            .create_session(
+                &config.name,
+                GrantSpec::ChallengeResponse {
+                    challenge: SecretString::new(challenge_hex.clone()),
+                    response: SecretString::new(answer.clone()),
+                },
+                Scope::Once,
+            )
+            .unwrap();
+        assert!(
+            crate::session_agent::held_phone_answer(&config)
+                .expect("the single-use answer is served")
+                .is_some(),
+            "the single-use answer is fetched"
+        );
+        assert!(
+            !phone_answer_backed(),
+            "a single-use answer backs nothing: it died with this fetch"
         );
 
         drop(env);

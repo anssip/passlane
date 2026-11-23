@@ -278,6 +278,9 @@ if (process.argv.includes("--write-fixture")) {
       pure.push({ ok: false, name, error: String(e && e.message ? e.message : e) });
     }
   };
+  const assertNotEq = (a, b, msg) => {
+    if (a === b) throw new Error(`${msg ?? "values must differ"}: ${JSON.stringify(a)}`);
+  };
   const assertEq = (a, b, msg) => {
     if (a !== b) throw new Error(`${msg ?? "values differ"}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
   };
@@ -331,7 +334,11 @@ if (process.argv.includes("--write-fixture")) {
     const which = pk.keyDecision(record, unlock);
     assertEq(which.key, held, "the held key answers the unlock");
     assertEq(which.dropStaged, true, "the staged one is dead: the vault opened with the old key");
-    const next = pk.dropStagedKey(record, VAULT, staged.id);
+    // The drop binds to the staged generation's id — which is NOT the
+    // answering (held) key's id.
+    assertEq(which.stagedId, staged.id, "the decision carries the staged generation");
+    assertNotEq(which.stagedId, which.key.id, "a different id than the answering key's");
+    const next = pk.dropStagedKey(record, VAULT, which.stagedId);
     assertEq(pk.heldKeyOf(next, VAULT), held, "the held key survives");
     assert(!pk.stagedKey(next, VAULT), "the staged key is gone");
   });

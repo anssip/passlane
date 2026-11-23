@@ -237,10 +237,11 @@ export function dropStagedKey(record, vaultId, expectedId) {
  * pin them. Enrollment requests are not answered from here at all: their
  * ceremony builds a key and stages it.
  *
- * Returns `{ key, promote, dropStaged }` (the key record to answer
- * with), or `null` when this record holds no key for the vault — an
- * unlock with only a staged key has nothing to answer with, which is
- * right: the vault is not phone-held until an enrollment completes.
+ * Returns `{ key, promote, dropStaged, stagedId }` (the key record to
+ * answer with, and the staged generation the transitions bind to), or
+ * `null` when this record holds no key for the vault — an unlock with
+ * only a staged key has nothing to answer with, which is right: the
+ * vault is not phone-held until an enrollment completes.
  */
 export function keyDecision(record, body) {
   const held = heldKeyOf(record, body.vault_id);
@@ -251,10 +252,15 @@ export function keyDecision(record, body) {
     // staged key — so a save with a staged key present is the
     // enrollment's own.
     const key = staged ?? held;
-    return key ? { key, promote: !!staged, dropStaged: false } : null;
+    return key
+      ? { key, promote: !!staged, dropStaged: false, stagedId: staged?.id ?? null }
+      : null;
   }
   if (!held) return null;
-  return { key: held, promote: false, dropStaged: !!staged };
+  // The key that answers is the held one; the staged generation to
+  // forget is the staged one — two different ids, and the drop binds to
+  // the latter.
+  return { key: held, promote: false, dropStaged: !!staged, stagedId: staged?.id ?? null };
 }
 
 /**
