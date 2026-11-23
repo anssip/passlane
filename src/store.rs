@@ -1,7 +1,7 @@
-use passlane_core::vault::entities::{parse_tags, Credential, Error, Note, PaymentCard};
 use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, Writer};
-use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet};
+use passlane_core::vault::entities::{Credential, Error, Note, PaymentCard, parse_tags};
+use percent_encoding::{AsciiSet, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::path::Path;
@@ -146,7 +146,9 @@ fn parse_custom_attributes(encoded: &str) -> Vec<(String, String)> {
             // Only the key is trimmed: trimming values would irreversibly
             // drop leading/trailing whitespace the user stored.
             (
-                percent_decode_str(key.trim()).decode_utf8_lossy().to_string(),
+                percent_decode_str(key.trim())
+                    .decode_utf8_lossy()
+                    .to_string(),
                 percent_decode_str(value).decode_utf8_lossy().to_string(),
             )
         })
@@ -270,7 +272,8 @@ pub(crate) fn write_credentials_to_csv(
                 .unwrap_or_default(),
             custom_attributes: encode_custom_attributes(cred.custom_attributes()),
             last_modified: cred.last_modified().to_rfc3339(),
-        }).map_err(csv_error)?;
+        })
+        .map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(creds.len() as i64)
@@ -296,7 +299,8 @@ pub(crate) fn write_payment_cards_to_csv(
                 Some(address) => format!("{}", address),
                 None => String::from(""),
             },
-        }).map_err(csv_error)?;
+        })
+        .map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(cards.len() as i64)
@@ -308,7 +312,8 @@ pub(crate) fn write_secure_notes_to_csv(file_path: &str, notes: &Vec<Note>) -> R
         wtr.serialize(CSVSecureNote {
             title: note.title().to_string(),
             note: note.content().to_string(),
-        }).map_err(csv_error)?;
+        })
+        .map_err(csv_error)?;
     }
     wtr.flush()?;
     Ok(notes.len() as i64)
@@ -366,12 +371,22 @@ mod tests {
 
     #[test]
     fn test_csv_export_includes_note() {
-        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", Some("work account"), None);
+        let cred = Credential::new(
+            None,
+            "pass123",
+            "google.com",
+            "user@gmail.com",
+            Some("work account"),
+            None,
+        );
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
         write_credentials_to_csv(&path, &vec![cred]).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("work account"), "CSV should contain the note value");
+        assert!(
+            content.contains("work account"),
+            "CSV should contain the note value"
+        );
         assert!(content.contains("note"), "CSV header should contain 'note'");
     }
 
@@ -427,7 +442,10 @@ mod tests {
         let imported = read_from_csv(&path).unwrap();
         assert_eq!(
             imported[0].custom_attributes(),
-            &[("Rate limit=high;strict".to_string(), "a=b;c %100".to_string())]
+            &[(
+                "Rate limit=high;strict".to_string(),
+                "a=b;c %100".to_string()
+            )]
         );
     }
 
@@ -486,7 +504,14 @@ mod tests {
 
     #[test]
     fn test_csv_roundtrip_with_note() {
-        let cred = Credential::new(None, "pass123", "google.com", "user@gmail.com", Some("shared login"), None);
+        let cred = Credential::new(
+            None,
+            "pass123",
+            "google.com",
+            "user@gmail.com",
+            Some("shared login"),
+            None,
+        );
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
         write_credentials_to_csv(&path, &vec![cred]).unwrap();

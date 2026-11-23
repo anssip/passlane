@@ -30,11 +30,19 @@ const { runTests, setVectors, mockedApprovalResponse } = await import(
 setVectors(vectors);
 const { passed, failed, results } = await runTests();
 
+// DOM-level wiring tests (node-only; see tests/dom.mjs).
+const dom = await import(join(here, "dom.mjs"));
+const domOut = await dom.runDomTests();
+for (const r of domOut.results) {
+  if (r.ok) console.log(`ok   ${r.name}`);
+  else console.log(`FAIL ${r.name}\n     ${r.error}`);
+}
+
 for (const r of results) {
   if (r.ok) console.log(`ok   ${r.name}`);
   else console.log(`FAIL ${r.name}\n     ${r.error}`);
 }
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed + domOut.passed} passed, ${failed + domOut.failed} failed`);
 
 if (process.argv.includes("--write-fixture")) {
   const request = vectors.cases.find((c) => c.name === "approval_request_unlock");
@@ -187,7 +195,9 @@ function concatU8(...parts) {
   return out;
 }
 
-process.exit(failed ? 1 : 0);
+// Both suites contribute to the exit code: a failing DOM test must fail
+// the run even when the protocol suite is green.
+process.exit(failed + domOut.failed > 0 ? 1 : 0);
 
 function hexToBytes(hex) {
   const out = new Uint8Array(hex.length / 2);

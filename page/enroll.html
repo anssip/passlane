@@ -12,6 +12,13 @@
     <p id="link-error" class="error" hidden></p>
     <div id="link-ok" hidden>
       <p>
+        Terminal link id — <strong>the terminal must show the same id</strong>
+        (it is printed above the QR code; if it differs, you are enrolling
+        into a different <code>passlane approvals enroll</code> run, and the
+        terminal will reject the blob):
+        <strong id="link-id" class="code"></strong>
+      </p>
+      <p>
         This device will hold two keys for approvals (SPEC §6): a
         <strong>WebCrypto ECDH key</strong> that approval requests are
         encrypted to, and a <strong>WebAuthn passkey</strong> that signs your

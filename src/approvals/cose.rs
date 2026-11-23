@@ -105,7 +105,8 @@ pub fn parse_cose_ec2_p256(bytes: &[u8]) -> Result<CoseEc2Key> {
     }
     if alg != Some(ALG_ES256) {
         return Err(Error::Malformed(
-            "COSE key algorithm is not ES256 (-7); the protocol verifies only ES256 passkeys".into(),
+            "COSE key algorithm is not ES256 (-7); the protocol verifies only ES256 passkeys"
+                .into(),
         ));
     }
     if crv != Some(CRV_P256) {
@@ -176,7 +177,9 @@ fn cbor_item_at_depth(bytes: &[u8], depth: usize) -> Result<(CborValue, usize)> 
     if depth > MAX_CBOR_DEPTH {
         return Err(malformed("CBOR nesting exceeds the depth limit"));
     }
-    let (&major, rest) = bytes.split_first().ok_or_else(|| malformed("empty CBOR input"))?;
+    let (&major, rest) = bytes
+        .split_first()
+        .ok_or_else(|| malformed("empty CBOR input"))?;
     let mt = major >> 5;
     let info = major & 0x1f;
     let (arg, rest) = read_argument(info, rest)?;
@@ -232,9 +235,7 @@ fn cbor_item_at_depth(bytes: &[u8], depth: usize) -> Result<(CborValue, usize)> 
             }
             Ok((CborValue::Map(entries), consumed))
         }
-        other => Err(malformed(&format!(
-            "unsupported CBOR major type {other}"
-        ))),
+        other => Err(malformed(&format!("unsupported CBOR major type {other}"))),
     }
 }
 
@@ -449,14 +450,20 @@ mod tests {
         // be rejected outright, not accepted as alg -7 (ES256).
         let mut k = canonical_cose_key();
         k[4] = 0x1b; // alg as u64
-        k.splice(5..6, [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9]].concat());
+        k.splice(
+            5..6,
+            [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9]].concat(),
+        );
         assert!(parse_cose_ec2_p256(&k).is_err());
 
         // Same trick on a label: u64::MAX - 1 would wrap to -2 (the x
         // coordinate's label).
         let mut k = canonical_cose_key();
         k[6] = 0x1b;
-        k.splice(7..8, [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe]].concat());
+        k.splice(
+            7..8,
+            [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe]].concat(),
+        );
         assert!(parse_cose_ec2_p256(&k).is_err());
     }
 }

@@ -1,6 +1,6 @@
+use rand::Rng;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand::Rng;
 
 const LOW_CASE: &str = "abcdefghijklmnopqrstuvwxyz";
 const UP_CASE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn random_char_reaches_last_character() {
-        use rand::{rngs::StdRng, SeedableRng};
+        use rand::{SeedableRng, rngs::StdRng};
         // Seeded so the run is deterministic; 2000 draws cover all 26 chars.
         let mut rng = StdRng::seed_from_u64(42);
         assert!((0..2000).any(|_| random_char(&mut rng, LOW_CASE) == 'z'));
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn random_char_handles_multibyte_charsets() {
-        use rand::{rngs::StdRng, SeedableRng};
+        use rand::{SeedableRng, rngs::StdRng};
         let mut rng = StdRng::seed_from_u64(42);
         for _ in 0..500 {
             let c = random_char(&mut rng, SPECIAL);

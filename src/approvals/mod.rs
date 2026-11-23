@@ -83,11 +83,14 @@ pub fn remember_page_base(
     base_url: &str,
 ) -> Result<(), String> {
     let mut map = load_page_bases(dir);
-    map.insert(enc_kid.to_string(), base_url.trim_end_matches('/').to_string());
+    map.insert(
+        enc_kid.to_string(),
+        base_url.trim_end_matches('/').to_string(),
+    );
     std::fs::create_dir_all(dir)
         .and_then(|()| {
-            let bytes = serde_json::to_vec(&map)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let bytes =
+                serde_json::to_vec(&map).map_err(|e| std::io::Error::other(e.to_string()))?;
             let tmp = dir.join(format!("{PAGES_FILENAME}.tmp"));
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create(true).truncate(true);
@@ -166,7 +169,12 @@ pub fn approve_link(base: &str, envelope_b64url: &str) -> String {
 /// the CLI's public keys are what the page later seals its approval
 /// responses to (`c`) and verifies request signatures against (`s`).
 /// Everything stays in the fragment.
-pub fn enroll_link(page: &str, nonce_hex: &str, cli_enc_pub_hex: &str, cli_sig_pub_hex: &str) -> String {
+pub fn enroll_link(
+    page: &str,
+    nonce_hex: &str,
+    cli_enc_pub_hex: &str,
+    cli_sig_pub_hex: &str,
+) -> String {
     format!(
         "{}/enroll.html#n={nonce_hex}&c={cli_enc_pub_hex}&s={cli_sig_pub_hex}",
         page.trim_end_matches('/')
@@ -300,8 +308,9 @@ fn emit_request(
     body: Body,
 ) -> Result<EmittedRequest, String> {
     let peers = load_peers_pinned(dir)?;
-    let peer = preferred_peer(&peers)
-        .ok_or_else(|| "no approver is pinned; run 'passlane approvals enroll' first".to_string())?;
+    let peer = preferred_peer(&peers).ok_or_else(|| {
+        "no approver is pinned; run 'passlane approvals enroll' first".to_string()
+    })?;
     let identity = load_identity(dir)?;
     let now = now_secs();
     let envelope = passlane_approval::envelope::seal(
@@ -312,7 +321,7 @@ fn emit_request(
         now,
         &Policy::default(),
     )
-        .map_err(|e| format!("could not seal the approval request: {e}"))?;
+    .map_err(|e| format!("could not seal the approval request: {e}"))?;
     let rid = envelope.header().rid.clone();
     let exp = envelope.header().exp;
     let encoded = envelope.to_base64url();
@@ -415,16 +424,14 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
         .map_err(|e| format!("the response is not a valid envelope: {e}"))?;
     let header = envelope.header();
     if header.t != MessageType::ApprovalResponse as u8 {
-        return Err(
-            "the envelope is not an approval response (wrong message type)".to_string(),
-        );
+        return Err("the envelope is not an approval response (wrong message type)".to_string());
     }
     let rid = header.rid.clone();
 
     let identity = load_identity(dir)?;
     let peers = load_peers_pinned(dir)?;
-    let mut nonces = FileNonceStore::load(&nonce_store_path(dir))
-        .map_err(|e| format!("replay store: {e}"))?;
+    let mut nonces =
+        FileNonceStore::load(&nonce_store_path(dir)).map_err(|e| format!("replay store: {e}"))?;
 
     PendingStore::transaction(dir, |pending| -> Result<ApproveOutcome, String> {
         // The clock is read here, after both the pending-store and
@@ -679,7 +686,32 @@ pub fn verify_enrollment(
         &blob.assertion,
         &challenge,
     )
-    .map_err(|e| format!("the passkey binding assertion failed: {e}"))?;
+    .map_err(|e| {
+        // The challenge covers the nonce, the page's ECDH key, and both
+        // CLI keys, so a mismatch does not by itself establish *which*
+        // input differed: a stale link/tab is the common benign cause,
+        // but substituted key material lands here too (the relay-swap
+        // test reaches this branch with matching link ids). Describe the
+        // failure, list the causes, and give a recovery path that works:
+        // this process exits on error and its nonce dies with it, so the
+        // old link can never produce an acceptable blob again.
+        if e.to_string().contains("challenge mismatch") {
+            format!(
+                "the passkey binding assertion failed: the page's signature does not \
+                 match this enrollment (challenge mismatch). This terminal's link id is \
+                 '{}' — the page must have shown the same id, opened from THIS run's \
+                 link. Likely causes: the page tab was from an earlier 'passlane \
+                 approvals enroll' run (or the blob was pasted into a different \
+                 invocation), or the enrollment used different key material than this \
+                 link carried (a substituted link). Recover by starting fresh: re-run \
+                 the same command (keeping any --page option), open the newly printed \
+                 link, and paste the new blob into that invocation.",
+                &enrollment_nonce.chars().take(8).collect::<String>()
+            )
+        } else {
+            format!("the passkey binding assertion failed: {e}")
+        }
+    })?;
 
     Ok((
         passlane_approval::encoding::hex_encode(&enc_key.0),
@@ -691,7 +723,11 @@ pub fn verify_enrollment(
 /// replaces its pin). The whole load-mutate-save span holds a stable
 /// sidecar lock (`approval_peers.json.lock`), so concurrent enrollment
 /// and removal cannot lose each other's writes.
-pub fn pin_approver(dir: &std::path::Path, pin: PeerPin, page_base: Option<&str>) -> Result<(), String> {
+pub fn pin_approver(
+    dir: &std::path::Path,
+    pin: PeerPin,
+    page_base: Option<&str>,
+) -> Result<(), String> {
     let _guard = PeersLock::take(dir)?;
     let mut peers = load_peers_pinned(dir)?;
     peers.retain(|p| p.label != pin.label);
@@ -782,11 +818,7 @@ impl PeersLock {
 /// ECDSA key standing in for the WebAuthn passkey. Returns the pin to
 /// trust it with and the keys to act it with.
 #[cfg(test)]
-pub(crate) fn mock_page() -> (
-    PeerPin,
-    IdentityKeys,
-    p256::ecdsa::SigningKey,
-) {
+pub(crate) fn mock_page() -> (PeerPin, IdentityKeys, p256::ecdsa::SigningKey) {
     let page = IdentityKeys::generate(&mut OsRng).unwrap();
     let passkey = {
         use rand::RngCore;
@@ -801,9 +833,7 @@ pub(crate) fn mock_page() -> (
     let pin = PeerPin {
         label: "approval-page".into(),
         enc_pub: passlane_approval::encoding::hex_encode(&page.encryption_public()),
-        sig_pub: passlane_approval::encoding::hex_encode(
-            &passkey.verifying_key().to_sec1_bytes(),
-        ),
+        sig_pub: passlane_approval::encoding::hex_encode(&passkey.verifying_key().to_sec1_bytes()),
         paired_at: now_secs(),
         webauthn: Some(passlane_approval::keys::WebauthnPin {
             rp_id: crate::approvals::MOCK_PAGE_RP_ID.into(),
@@ -959,8 +989,15 @@ mod tests {
             pin_approver(dir, pin, None).unwrap();
 
             // -- emit: the ask flow seals a request to the pinned page --
-            let emitted = emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user")
-                .expect("emission succeeds with a pinned approver");
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "GitHub",
+                "uuid-github",
+                "password",
+                "test-user",
+            )
+            .expect("emission succeeds with a pinned approver");
             assert_eq!(emitted.rid.len(), 32);
             assert!(emitted.link.contains("/approve.html#"));
             assert!(emitted.link.ends_with(&emitted.envelope));
@@ -999,8 +1036,7 @@ mod tests {
             ));
 
             // -- the page answers: seal_webauthn + passkey assertion --
-            let answer =
-                mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
+            let answer = mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
 
             // -- approve: verification turns it into a grant --
             let outcome = approve_response(dir, &answer.to_base64url()).unwrap();
@@ -1027,7 +1063,10 @@ mod tests {
                 consume_grant(dir, "default", "uuid-github", "password"),
                 Some(rid.clone())
             );
-            assert_eq!(consume_grant(dir, "default", "uuid-github", "password"), None);
+            assert_eq!(
+                consume_grant(dir, "default", "uuid-github", "password"),
+                None
+            );
 
             // -- presenting the same blob again is refused: the request
             //    was granted and used --
@@ -1044,10 +1083,16 @@ mod tests {
             let (pin, page, passkey) = mock_page();
             pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
-            let emitted =
-                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
-            let answer =
-                mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "GitHub",
+                "uuid-github",
+                "password",
+                "test-user",
+            )
+            .unwrap();
+            let answer = mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
 
             // The response was already consumed by another process (the
             // session agent relayed it once): its nonce is in the shared
@@ -1091,10 +1136,16 @@ mod tests {
             let (pin, page, passkey) = mock_page();
             pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
-            let emitted =
-                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "test-user").unwrap();
-            let answer =
-                mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "GitHub",
+                "uuid-github",
+                "password",
+                "test-user",
+            )
+            .unwrap();
+            let answer = mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow);
 
             assert!(approve_response(dir, &answer.to_base64url()).is_ok());
             // The same blob pasted again: the request is already resolved.
@@ -1111,8 +1162,15 @@ mod tests {
             let (pin, page, passkey) = mock_page();
             pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
-            let emitted =
-                emit_approval_request(dir, "default", "prod-db", "uuid-prod", "password", "test-user").unwrap();
+            let emitted = emit_approval_request(
+                dir,
+                "default",
+                "prod-db",
+                "uuid-prod",
+                "password",
+                "test-user",
+            )
+            .unwrap();
             let answer = mock_page_response(
                 &cli,
                 &page,
@@ -1173,7 +1231,9 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let dir = state.path();
         {
-            let err = emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "t").unwrap_err();
+            let err =
+                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "t")
+                    .unwrap_err();
             assert!(err.contains("approvals enroll"), "{err}");
         }
     }
@@ -1251,7 +1311,10 @@ mod tests {
                 "{err}"
             );
             // Nothing was released.
-            assert_eq!(consume_grant(dir, "default", "uuid-github", "password"), None);
+            assert_eq!(
+                consume_grant(dir, "default", "uuid-github", "password"),
+                None
+            );
         }
     }
 
@@ -1265,17 +1328,13 @@ mod tests {
         {
             let (pin, _page, _passkey) = mock_page();
             pin_approver(dir, pin, Some("https://example.com/passlane/")).unwrap();
-            let emitted = emit_approval_request(
-                dir,
-                "default",
-                "GitHub",
-                "uuid-github",
-                "password",
-                "t",
-            )
-            .unwrap();
+            let emitted =
+                emit_approval_request(dir, "default", "GitHub", "uuid-github", "password", "t")
+                    .unwrap();
             assert!(
-                emitted.link.starts_with("https://example.com/passlane/approve.html#"),
+                emitted
+                    .link
+                    .starts_with("https://example.com/passlane/approve.html#"),
                 "{}",
                 emitted.link
             );
@@ -1312,7 +1371,8 @@ mod tests {
             pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let challenge = [0x5fu8; 32];
-            let emitted = emit_unlock_request(dir, "default", "Main", &challenge, "test-user").unwrap();
+            let emitted =
+                emit_unlock_request(dir, "default", "Main", &challenge, "test-user").unwrap();
 
             let envelope =
                 Envelope::from_base64url(emitted.link.split('#').nth(1).unwrap()).unwrap();
@@ -1348,12 +1408,7 @@ mod tests {
     /// An enrollment blob with a real binding assertion, built the way the
     /// page builds it: ECDH pub + COSE passkey pub + a passkey signature
     /// over SHA-256(nonce ‖ ECDH pub).
-    fn enrollment_blob(
-        nonce_hex: &str,
-        rp_id: &str,
-        origin: &str,
-        cli: &IdentityKeys,
-    ) -> String {
+    fn enrollment_blob(nonce_hex: &str, rp_id: &str, origin: &str, cli: &IdentityKeys) -> String {
         use p256::ecdsa::signature::hazmat::PrehashSigner;
         use sha2::{Digest, Sha256};
 
@@ -1444,7 +1499,13 @@ mod tests {
 
         // A different ceremony nonce (the page answered a stale request).
         let err = verify_enrollment(&blob, &"f".repeat(32), &origin, &cli).unwrap_err();
-        assert!(err.contains("assertion"), "{err}");
+        assert!(
+            err.contains("challenge mismatch") && err.contains("Recover by starting fresh"),
+            "the mismatch failure must describe the failure and a working recovery: {err}"
+        );
+        // ...and it must carry this run's link id so the mismatch is
+        // diagnosable from the terminal alone.
+        assert!(err.contains(&"f".repeat(8)), "{err}");
 
         // A different origin than the page's real one.
         let other = PageOrigin {
@@ -1456,16 +1517,20 @@ mod tests {
         // A relay-swapped link: the page bound the ATTACKER's keys into
         // the challenge, so this genuine CLI must refuse the blob.
         let attacker = IdentityKeys::generate(&mut OsRng).unwrap();
-        let swapped =
-            enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin, &attacker);
+        let swapped = enrollment_blob(ENROLL_NONCE, &origin.rp_id, &origin.origin, &attacker);
         let err = verify_enrollment(&swapped, ENROLL_NONCE, &origin, &cli).unwrap_err();
         assert!(err.contains("assertion"), "{err}");
 
         // Garbage JSON and shape errors.
         assert!(verify_enrollment("not json", ENROLL_NONCE, &origin, &cli).is_err());
         assert!(
-            verify_enrollment(&blob.replace("\"v\":1", "\"v\":2"), ENROLL_NONCE, &origin, &cli)
-                .is_err()
+            verify_enrollment(
+                &blob.replace("\"v\":1", "\"v\":2"),
+                ENROLL_NONCE,
+                &origin,
+                &cli
+            )
+            .is_err()
         );
         let bad_cose = blob.replace("cose_key", "coseKey"); // missing field
         assert!(verify_enrollment(&bad_cose, ENROLL_NONCE, &origin, &cli).is_err());
@@ -1483,10 +1548,9 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("page-enrollment-v1.json");
-        let doc: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&path).expect("enrollment fixture committed"),
-        )
-        .expect("fixture is valid JSON");
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("enrollment fixture committed"))
+                .expect("fixture is valid JSON");
         let cli = {
             let c = &doc["cli"];
             IdentityKeys::from_bytes(
@@ -1508,5 +1572,4 @@ mod tests {
             .expect("the page's enrollment blob verifies with the CLI ceremony");
         assert_eq!(enc_pub, doc["expected"]["enc_pub"].as_str().unwrap());
     }
-
 }

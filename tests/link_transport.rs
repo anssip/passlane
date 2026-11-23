@@ -52,8 +52,7 @@ fn page_fixture_opens_in_rust() {
         .unwrap()
     };
     let pin: PeerPin = serde_json::from_value(doc["sender_pin"].clone()).unwrap();
-    let envelope =
-        Envelope::from_base64url(doc["envelope_base64url"].as_str().unwrap()).unwrap();
+    let envelope = Envelope::from_base64url(doc["envelope_base64url"].as_str().unwrap()).unwrap();
     let now = doc["now"].as_u64().unwrap();
 
     // The rid must be echoed (SPEC §4).
@@ -355,7 +354,10 @@ fn binary_approve_rejects_garbage() {
     let scratch = Scratch::new();
     for garbage in ["", "not-an-envelope", "!!!!", "UExBUA"] {
         let out = scratch.run(&["approve", "--response", garbage]);
-        assert!(!out.status.success(), "garbage must be refused: {garbage:?}");
+        assert!(
+            !out.status.success(),
+            "garbage must be refused: {garbage:?}"
+        );
     }
 }
 
@@ -380,8 +382,9 @@ fn binary_approvals_remove_and_relist() {
     assert!(String::from_utf8_lossy(&list.stdout).contains("No approvers pinned"));
 
     // The pending request is untouched by pin bookkeeping.
-    assert!(String::from_utf8_lossy(&scratch.run(&["approvals", "pending"]).stdout)
-        .contains(&rid[..8]));
+    assert!(
+        String::from_utf8_lossy(&scratch.run(&["approvals", "pending"]).stdout).contains(&rid[..8])
+    );
 }
 
 #[test]

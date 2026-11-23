@@ -248,9 +248,7 @@ impl PendingStore {
             .max_by_key(|r| r.created)?;
         let rid = candidate.rid.clone();
         let once = matches!(candidate.state, RequestState::Granted { once: true, .. });
-        if once
-            && let Some(record) = self.records.iter_mut().find(|r| r.rid == rid)
-        {
+        if once && let Some(record) = self.records.iter_mut().find(|r| r.rid == rid) {
             record.state = RequestState::Consumed;
         }
         Some(rid)
@@ -296,7 +294,10 @@ mod tests {
         assert!(!s.grant("missing", true, 1200));
         assert_eq!(
             s.find("a").unwrap().state,
-            RequestState::Granted { once: true, until: 1200 }
+            RequestState::Granted {
+                once: true,
+                until: 1200
+            }
         );
         assert!(s.deny("a"));
         assert_eq!(s.find("a").unwrap().state, RequestState::Denied);
@@ -307,7 +308,10 @@ mod tests {
         let mut s = store(vec![record(
             "a",
             "GitHub",
-            RequestState::Granted { once: true, until: 1500 },
+            RequestState::Granted {
+                once: true,
+                until: 1500,
+            },
         )]);
         assert_eq!(
             s.take_grant("default", "uuid-GitHub", "password", 1000),
@@ -316,7 +320,10 @@ mod tests {
         // Spent: the record is terminal (a re-pasted response can be
         // answered clearly), and the second reveal finds nothing.
         assert_eq!(s.find("a").unwrap().state, RequestState::Consumed);
-        assert_eq!(s.take_grant("default", "uuid-GitHub", "password", 1001), None);
+        assert_eq!(
+            s.take_grant("default", "uuid-GitHub", "password", 1001),
+            None
+        );
     }
 
     #[test]
@@ -324,7 +331,10 @@ mod tests {
         let mut s = store(vec![record(
             "a",
             "GitHub",
-            RequestState::Granted { once: false, until: 1500 },
+            RequestState::Granted {
+                once: false,
+                until: 1500,
+            },
         )]);
         assert_eq!(
             s.take_grant("default", "uuid-GitHub", "password", 1000),
@@ -334,24 +344,40 @@ mod tests {
             s.take_grant("default", "uuid-GitHub", "password", 1400),
             Some("a".into())
         );
-        assert_eq!(s.take_grant("default", "uuid-GitHub", "password", 1500), None);
+        assert_eq!(
+            s.take_grant("default", "uuid-GitHub", "password", 1500),
+            None
+        );
     }
 
     #[test]
     fn grant_matches_the_entry_uuid_not_the_title() {
         // Two entries share the display title 'GitHub'; a grant for one
         // must not release the other.
-        let mut granted = record("a", "GitHub", RequestState::Granted { once: true, until: 1500 });
+        let mut granted = record(
+            "a",
+            "GitHub",
+            RequestState::Granted {
+                once: true,
+                until: 1500,
+            },
+        );
         granted.entry_id = "uuid-alice".into();
         let mut other = record("b", "GitHub", RequestState::Pending);
         other.entry_id = "uuid-bob".into();
         other.created = 1100;
         let mut s = store(vec![granted, other]);
 
-        assert_eq!(s.take_grant("default", "uuid-alice", "password", 1000), Some("a".into()));
+        assert_eq!(
+            s.take_grant("default", "uuid-alice", "password", 1000),
+            Some("a".into())
+        );
         assert_eq!(s.take_grant("default", "uuid-bob", "password", 1000), None);
         // Titles are display-only: a wrong uuid with the right title fails.
-        assert_eq!(s.take_grant("default", "uuid-carol", "password", 1000), None);
+        assert_eq!(
+            s.take_grant("default", "uuid-carol", "password", 1000),
+            None
+        );
     }
 
     #[test]
@@ -359,9 +385,15 @@ mod tests {
         let mut s = store(vec![record(
             "a",
             "GitHub",
-            RequestState::Granted { once: true, until: 1500 },
+            RequestState::Granted {
+                once: true,
+                until: 1500,
+            },
         )]);
-        assert_eq!(s.take_grant("default", "uuid-GitLab", "password", 1000), None);
+        assert_eq!(
+            s.take_grant("default", "uuid-GitLab", "password", 1000),
+            None
+        );
         assert_eq!(s.take_grant("default", "uuid-GitHub", "code", 1000), None);
         assert_eq!(s.take_grant("other", "uuid-GitHub", "password", 1000), None);
     }
@@ -372,14 +404,31 @@ mod tests {
             record("p", "GitHub", RequestState::Pending),
             record("d", "GitHub", RequestState::Denied),
         ]);
-        assert_eq!(s.take_grant("default", "uuid-GitHub", "password", 1000), None);
+        assert_eq!(
+            s.take_grant("default", "uuid-GitHub", "password", 1000),
+            None
+        );
     }
 
     #[test]
     fn newest_matching_grant_wins() {
-        let mut older = record("old", "GitHub", RequestState::Granted { once: false, until: 1500 });
+        let mut older = record(
+            "old",
+            "GitHub",
+            RequestState::Granted {
+                once: false,
+                until: 1500,
+            },
+        );
         older.created = 900;
-        let mut newer = record("new", "GitHub", RequestState::Granted { once: false, until: 1600 });
+        let mut newer = record(
+            "new",
+            "GitHub",
+            RequestState::Granted {
+                once: false,
+                until: 1600,
+            },
+        );
         newer.created = 1100;
         let mut s = store(vec![older, newer]);
         assert_eq!(
@@ -392,8 +441,14 @@ mod tests {
     fn prune_drops_dead_records_but_keeps_live_timed_grants() {
         let mut expired = record("expired", "a", RequestState::Pending);
         expired.exp = 900;
-        let mut dead_grant =
-            record("dead-grant", "b", RequestState::Granted { once: false, until: 900 });
+        let mut dead_grant = record(
+            "dead-grant",
+            "b",
+            RequestState::Granted {
+                once: false,
+                until: 900,
+            },
+        );
         dead_grant.exp = 900;
         let mut s = store(vec![expired, dead_grant]);
         let mut live = record("live", "c", RequestState::Pending);
@@ -401,7 +456,14 @@ mod tests {
         s.upsert(live);
         // A timed grant whose reuse window outlives the envelope expiry
         // must survive pruning until the window closes.
-        let mut survivor = record("timed", "d", RequestState::Granted { once: false, until: 2200 });
+        let mut survivor = record(
+            "timed",
+            "d",
+            RequestState::Granted {
+                once: false,
+                until: 2200,
+            },
+        );
         survivor.exp = 900;
         s.upsert(survivor);
 

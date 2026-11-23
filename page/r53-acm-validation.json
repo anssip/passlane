@@ -1,0 +1,18 @@
+{
+  "Comment": "passlane approval page",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_49c44aff7de1476a51ffad07dbe35568.approve.anssipiirainen.com.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "_5bc2ae85679092ed28ebe40942197658.wzccmgtwzk.acm-validations.aws."
+          }
+        ]
+      }
+    }
+  ]
+}

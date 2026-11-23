@@ -1,11 +1,11 @@
-use crate::actions::{copy_to_clipboard_timed, unlock, Action, ItemType};
+use crate::actions::{Action, ItemType, copy_to_clipboard_timed, unlock};
 use crate::completion_cache;
+use crate::ui;
+use arboard::Clipboard;
+use clap::ArgMatches;
+use passlane_core::generator;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::vault_trait::Vault;
-use crate::ui;
-use passlane_core::generator;
-use clap::ArgMatches;
-use arboard::Clipboard;
 
 pub struct AddAction {
     pub generate: bool,

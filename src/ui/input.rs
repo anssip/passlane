@@ -8,13 +8,13 @@ use rustyline::validate::Validator;
 use rustyline::{Config, Editor, Result as RustylineResult};
 use rustyline_derive::Helper;
 
-use passlane_core::vault::entities::{
-    parse_tags, Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS,
-    Totp,
-};
 use chrono::{DateTime, NaiveDate, Utc};
 use inquire::{Confirm, CustomType, Password, Select, Text};
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use passlane_core::vault::entities::{
+    Address, Credential, Expiry, Note, PaymentCard, RESERVED_CUSTOM_ATTRIBUTE_KEYS, Totp,
+    parse_tags,
+};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 #[derive(Helper)]
 struct MultilineHelper {
@@ -145,11 +145,7 @@ pub fn ask_with_initial_optional(
     if !optional && result.is_empty() {
         ask_with_initial_optional(question, default_answer, help_message, optional)
     } else {
-        if result == "" {
-            None
-        } else {
-            Some(result)
-        }
+        if result == "" { None } else { Some(result) }
     }
 }
 
@@ -337,8 +333,7 @@ fn ask_custom_attributes(current: Option<&[(String, String)]>) -> Vec<(String, S
                 attributes.push((key, value));
             }
             "Remove attribute" => {
-                let keys: Vec<String> =
-                    attributes.iter().map(|(key, _)| key.clone()).collect();
+                let keys: Vec<String> = attributes.iter().map(|(key, _)| key.clone()).collect();
                 match Select::new("Which attribute should be removed?", keys).prompt() {
                     Ok(key) => attributes.retain(|(k, _)| k != &key),
                     Err(_) => println!("No attribute removed"),
@@ -551,7 +546,9 @@ pub fn ask_payment_info() -> PaymentCard {
     let cvv = ask_with_initial(
         "Enter card cvv",
         None,
-        Some("Card Verification Value: 3 or 4 digits that are usually located on the back of the card in the signature panel"),
+        Some(
+            "Card Verification Value: 3 or 4 digits that are usually located on the back of the card in the signature panel",
+        ),
     );
     let address = ask_address();
 
@@ -635,7 +632,9 @@ pub(crate) fn ask_totp_info() -> Totp {
         None,
     );
 
-    println!("Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?");
+    println!(
+        "Add TOTP using settings settings (number of digits: 6, algo: SHA1, period: 30 seconds), or proceed to specify algorithm and other details (y/n)?"
+    );
     let proceed = ask_with_initial(
         "Press y (yes) to add with defaults, n (no) to specify details.",
         Some("y"),
@@ -799,7 +798,9 @@ pub fn ask_vault_name() -> String {
     ask_with_initial(
         "Enter a name for the vault",
         Some("default"),
-        Some("A short name like 'personal', 'work' or 'family'. Used to pick the vault: --vault <name>."),
+        Some(
+            "A short name like 'personal', 'work' or 'family'. Used to pick the vault: --vault <name>.",
+        ),
     )
 }
 

@@ -36,10 +36,7 @@ impl ApprovalsAction {
             Some(("list", _)) => Subcommand::List,
             Some(("pending", _)) => Subcommand::Pending,
             Some(("remove", sub)) => Subcommand::Remove {
-                label: sub
-                    .get_one::<String>("LABEL")
-                    .cloned()
-                    .unwrap_or_default(),
+                label: sub.get_one::<String>("LABEL").cloned().unwrap_or_default(),
             },
             _ => Subcommand::List,
         };
@@ -57,22 +54,26 @@ impl ApprovalsAction {
         //    so the page can check request signatures (fragment-only,
         //    like every link).
         let nonce = approvals::generate_enrollment_nonce();
-        let identity = approvals::load_identity(&approvals::state_dir())
-            .map_err(|e| Error::new(&e))?;
+        let identity =
+            approvals::load_identity(&approvals::state_dir()).map_err(|e| Error::new(&e))?;
         let cli_pub = passlane_approval::encoding::hex_encode(&identity.encryption_public());
-        let cli_sig = passlane_approval::encoding::hex_encode(&identity.verifying_key().to_sec1_bytes());
+        let cli_sig =
+            passlane_approval::encoding::hex_encode(&identity.verifying_key().to_sec1_bytes());
         let link = approvals::enroll_link(&page, &nonce, &cli_pub, &cli_sig);
         println!("Open this link on the approval page (scan or paste it):");
         println!("{link}");
+        println!(
+            "Link id: {} — the page must show the same id before you confirm anything.",
+            &nonce[..8]
+        );
         print_qr(&link);
 
         // 2. The page enrolls: ECDH key + passkey, then the binding
         //    assertion over SHA-256(nonce ‖ ECDH public key).
-        let blob = inquire::Text::new(
-            "Paste the enrollment blob the page produced (one line of JSON):",
-        )
-        .prompt()
-        .map_err(|_| Error::new("enrollment aborted: no enrollment blob was pasted"))?;
+        let blob =
+            inquire::Text::new("Paste the enrollment blob the page produced (one line of JSON):")
+                .prompt()
+                .map_err(|_| Error::new("enrollment aborted: no enrollment blob was pasted"))?;
 
         let label = inquire::Text::new("Label for this approver:")
             .with_default(&origin.rp_id)
@@ -82,9 +83,8 @@ impl ApprovalsAction {
         // 3. Verify the ceremony before pinning anything. The challenge is
         //    recomputed from THIS CLI's identity keys — never from the
         //    link — so relay-swapped key material cannot pass.
-        let (enc_pub, sig_pub) =
-            approvals::verify_enrollment(&blob, &nonce, &origin, &identity)
-                .map_err(|e| Error::new(&e))?;
+        let (enc_pub, sig_pub) = approvals::verify_enrollment(&blob, &nonce, &origin, &identity)
+            .map_err(|e| Error::new(&e))?;
 
         // 4. The human check (SPEC §5 adapted): both sides display a code
         //    over BOTH parties' keys; the pin is persisted only when the
@@ -125,8 +125,13 @@ impl ApprovalsAction {
                 origin: origin.origin.clone(),
             }),
         };
-        let enc_kid = passlane_approval::keys::kid(b"enc", &pin.enc_pub_bytes().map_err(|e| Error::new(&e.to_string()))?);
-        approvals::pin_approver(&approvals::state_dir(), pin, Some(&page)).map_err(|e| Error::new(&e))?;
+        let enc_kid = passlane_approval::keys::kid(
+            b"enc",
+            &pin.enc_pub_bytes()
+                .map_err(|e| Error::new(&e.to_string()))?,
+        );
+        approvals::pin_approver(&approvals::state_dir(), pin, Some(&page))
+            .map_err(|e| Error::new(&e))?;
 
         Ok(format!(
             "Pinned approver '{label}' ({}). Approval requests will now be sealed to it; run 'passlane approvals list' to see the pin.",
@@ -135,7 +140,8 @@ impl ApprovalsAction {
     }
 
     fn run_list() -> Result<String, Error> {
-        let peers = approvals::load_peers_pinned(&approvals::state_dir()).map_err(|e| Error::new(&e))?;
+        let peers =
+            approvals::load_peers_pinned(&approvals::state_dir()).map_err(|e| Error::new(&e))?;
         if peers.is_empty() {
             return Ok(
                 "No approvers pinned. Run 'passlane approvals enroll' to pin the approval page."
@@ -149,16 +155,11 @@ impl ApprovalsAction {
                 .as_ref()
                 .map(|w| format!(" passkey on {}", w.rp_id))
                 .unwrap_or_default();
-            let paired = chrono::DateTime::from_timestamp(
-                i64::try_from(peer.paired_at).unwrap_or(0),
-                0,
-            )
-            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-            .unwrap_or_else(|| peer.paired_at.to_string());
-            out.push_str(&format!(
-                "  {} (paired {paired},{webauthn})\n",
-                peer.label
-            ));
+            let paired =
+                chrono::DateTime::from_timestamp(i64::try_from(peer.paired_at).unwrap_or(0), 0)
+                    .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_else(|| peer.paired_at.to_string());
+            out.push_str(&format!("  {} (paired {paired},{webauthn})\n", peer.label));
         }
         Ok(out.trim_end().to_string())
     }
@@ -195,7 +196,10 @@ impl ApprovalsAction {
             let target = if record.entry.is_empty() {
                 format!("unlock vault '{}'", record.vault)
             } else {
-                format!("reveal '{}' of '{}' (vault {})", record.field, record.entry, record.vault)
+                format!(
+                    "reveal '{}' of '{}' (vault {})",
+                    record.field, record.entry, record.vault
+                )
             };
             out.push_str(&format!("  {} … {target} — {state}\n", &record.rid[..8]));
         }
@@ -203,7 +207,9 @@ impl ApprovalsAction {
     }
 
     fn run_remove(label: &str) -> Result<String, Error> {
-        match approvals::unpin_approver(&approvals::state_dir(), label).map_err(|e| Error::new(&e))? {
+        match approvals::unpin_approver(&approvals::state_dir(), label)
+            .map_err(|e| Error::new(&e))?
+        {
             true => Ok(format!("Removed approver '{label}'.")),
             false => Err(Error::new(&format!(
                 "No pinned approver labeled '{label}' (see 'passlane approvals list')"

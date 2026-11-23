@@ -1,6 +1,6 @@
 use clap::ArgMatches;
-use comfy_table::presets::ASCII_MARKDOWN;
 use comfy_table::Table;
+use comfy_table::presets::ASCII_MARKDOWN;
 
 use crate::actions::Action;
 use crate::completion_cache;
@@ -10,9 +10,9 @@ use crate::ui::input::{
     ask_master_password, ask_new_master_password, ask_open_existing_vault, ask_remove_vault,
     ask_store_hwkey, ask_store_master_password, ask_vault_name, ask_vault_path, newline,
 };
+use crate::vault_registry::{self, VaultConfig};
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
-use crate::vault_registry::{self, VaultConfig};
 
 pub struct VaultAction {
     pub command: VaultCommand,
@@ -20,22 +20,11 @@ pub struct VaultAction {
 
 pub enum VaultCommand {
     List,
-    Add {
-        name: Option<String>,
-    },
-    Use {
-        name: String,
-    },
-    Remove {
-        name: String,
-    },
-    Rename {
-        old_name: String,
-        new_name: String,
-    },
-    Info {
-        name: Option<String>,
-    },
+    Add { name: Option<String> },
+    Use { name: String },
+    Remove { name: String },
+    Rename { old_name: String, new_name: String },
+    Info { name: Option<String> },
 }
 
 impl VaultAction {
@@ -58,8 +47,14 @@ impl VaultAction {
             },
             Some(("rename", sub)) => VaultAction {
                 command: VaultCommand::Rename {
-                    old_name: sub.get_one::<String>("OLD_NAME").cloned().unwrap_or_default(),
-                    new_name: sub.get_one::<String>("NEW_NAME").cloned().unwrap_or_default(),
+                    old_name: sub
+                        .get_one::<String>("OLD_NAME")
+                        .cloned()
+                        .unwrap_or_default(),
+                    new_name: sub
+                        .get_one::<String>("NEW_NAME")
+                        .cloned()
+                        .unwrap_or_default(),
                 },
             },
             Some(("info", sub)) => VaultAction {
@@ -168,9 +163,8 @@ impl VaultAction {
 
         let mut warning = String::new();
         if let Some(password) = &password {
-            let result = keychain::save_master_password(new_name, password).and_then(|()| {
-                keychain::delete_master_password_if_stored(old_name).map(|_| ())
-            });
+            let result = keychain::save_master_password(new_name, password)
+                .and_then(|()| keychain::delete_master_password_if_stored(old_name).map(|_| ()));
             if let Err(e) = result {
                 eprintln!(
                     "Warning: could not move the stored master password of vault '{}' to its new name ({}). \
@@ -322,7 +316,12 @@ pub fn setup_vault(name_arg: Option<String>) -> Result<String, Error> {
             hwkey_config = Some(config);
         }
         println!("Verifying that the vault opens with the given password and factors...");
-        KeepassVault::open(&password, &path, keyfile.clone(), challenge_response.as_ref())?;
+        KeepassVault::open(
+            &password,
+            &path,
+            keyfile.clone(),
+            challenge_response.as_ref(),
+        )?;
     } else {
         let (hwkey_key, config) = if ask_store_hwkey() {
             let (key, config) = crate::hwkey::resolve_new_key(None, None)?;
