@@ -198,6 +198,85 @@ pub(crate) fn save_only_key(
     responder_key(&config.name, source, Opening::AlreadyOpen)
 }
 
+/// A session-held answer, wrapped for the unlock chain: it answers the
+/// challenge it was approved for (the file's current seed) and hands
+/// every other challenge — the fresh seed a save issues — to the link
+/// transport, so a save after a session-backed open still asks the
+/// holder instead of failing on a stale answer.
+pub(crate) struct HeldAnswer {
+    seed: [u8; CHALLENGE_LEN],
+    answer: Zeroizing<Vec<u8>>,
+    transport: Arc<dyn ResponseSource>,
+}
+
+// HeldAnswer is constructed where its pieces come together
+// (`held_answer_key`); no `new` needed.
+
+impl ResponseSource for HeldAnswer {
+    fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
+        if request.challenge == self.seed {
+            return Ok(Answer {
+                response: self.answer.clone(),
+                origin: AnswerOrigin::SessionAgent,
+            });
+        }
+        self.transport.respond(request)
+    }
+}
+
+/// The phone-held key of a vault as the link transport: answers come from
+/// the pinned holder — pasted at this terminal, or held by the session
+/// agent after the owner approved from elsewhere. Building the key asks
+/// nothing; it resolves the holder and the vault's challenge here, and
+/// answers (or refuses with guidance) only when keepass-ng issues the
+/// challenge.
+pub(crate) fn transport_key(config: &VaultConfig) -> Result<ChallengeResponseKey, Error> {
+    let source = transport_source(config)?;
+    open_key(config, source)
+}
+
+/// The vault's link transport as a response source: the one place the
+/// holder, the approvals state and the agent's held answers come
+/// together.
+pub(crate) fn transport_source(config: &VaultConfig) -> Result<Arc<dyn ResponseSource>, Error> {
+    let dir = crate::approvals::state_dir();
+    let holder = crate::phone_key::transport::holder_pin(
+        &dir,
+        &config
+            .phone_key
+            .as_ref()
+            .expect("transport_source is for a phone-gated vault")
+            .holder_kid,
+    )?;
+    Ok(Arc::new(crate::phone_key::transport::LinkTransport::new(
+        &dir,
+        holder,
+        crate::agent::requester(),
+        Arc::new(crate::session_agent::AgentAnswerStore),
+    )))
+}
+
+/// The challenge-response key for opening a vault with a session-held
+/// answer: the answer serves its own challenge, and every other
+/// challenge — the fresh seed a save issues — goes to the transport, so a
+/// session-backed open still asks the holder before saving.
+pub(crate) fn held_answer_key(
+    config: &VaultConfig,
+    seed: [u8; CHALLENGE_LEN],
+    answer: Zeroizing<Vec<u8>>,
+    transport: Arc<dyn ResponseSource>,
+) -> ChallengeResponseKey {
+    responder_key(
+        &config.name,
+        Arc::new(HeldAnswer {
+            seed,
+            answer,
+            transport,
+        }),
+        Opening::ExpectSeed(seed),
+    )
+}
+
 /// The challenge-response key for opening a vault with one known answer.
 pub(crate) fn fixed_key(config: &VaultConfig, fixed: FixedAnswer) -> ChallengeResponseKey {
     let challenge = fixed.challenge;

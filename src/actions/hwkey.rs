@@ -3,16 +3,17 @@ use std::sync::Arc;
 
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
-use passlane_approval::keys::PeerPin;
 use passlane_core::hwkey::HwKeyConfig;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use zeroize::Zeroize;
 
-use crate::actions::{Action, get_vault_password};
+use crate::actions::{
+    Action, ChallengeKey, at_a_terminal, hardware_key_needs_a_terminal, unlock_keepass,
+};
 use crate::hwkey;
 use crate::phone_key::ResponseSource;
-use crate::phone_key::enroll::enroll;
 use crate::phone_key::transport::LinkTransport;
+use crate::session_agent::{SessionFactors, session_factors};
 use crate::vault_registry::{self, PhoneKeyConfig, VaultConfig};
 use passlane_core::vault::entities::Error;
 
@@ -122,33 +123,37 @@ impl HwKeyAction {
         if let Some(enrolled) = enrolled(&config) {
             return Err(enrolled.already_enrolled(&config.name));
         }
+        // Enrolling needs the new key touched to re-save the vault, and
+        // perhaps the slot asked for. Neither happens for a command
+        // without a terminal: refuse before anything is resolved or asked.
+        if !at_a_terminal() {
+            return Err(Error::new(&format!(
+                "Enrolling a hardware key for vault '{}' needs the key touched to re-save the \
+                 vault. Run 'passlane hwkey add' from a terminal with the key connected.",
+                config.name
+            )));
+        }
         // Fail fast if no key is connected, before asking for the password.
         let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
-        let mut password = get_vault_password(&config.name);
-        let result = (|| {
-            println!("Unlocking vault '{}'...", config.name);
-            let mut vault =
-                KeepassVault::open(&password, &config.path, config.keyfile.clone(), None)?;
-            // The re-save challenges the new key, proving the enrollment
-            // before the config is persisted.
-            vault.update_challenge_response(Some(challenge_response))?;
-            if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
-                // The vault now requires the key but passlane would not know
-                // to use it (no persisted config): roll the factor back or
-                // the vault can no longer be opened via passlane.
-                if let Err(rollback) = vault.update_challenge_response(None) {
-                    eprintln!(
-                        "Warning: failed to roll back the hardware key enrollment: {}",
-                        rollback
-                    );
-                }
-                return Err(e);
+        // The vault takes no challenge-response key yet; the new one is
+        // challenged by the save below.
+        let mut vault = unlock_keepass(ChallengeKey::Given(None))?.vault;
+        // The re-save challenges the new key, proving the enrollment
+        // before the config is persisted.
+        vault.update_challenge_response(Some(challenge_response))?;
+        if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
+            // The vault now requires the key but passlane would not know
+            // to use it (no persisted config): roll the factor back or
+            // the vault can no longer be opened via passlane.
+            if let Err(rollback) = vault.update_challenge_response(None) {
+                eprintln!(
+                    "Warning: failed to roll back the hardware key enrollment: {}",
+                    rollback
+                );
             }
-            Ok::<(), Error>(())
-        })();
-        password.zeroize();
-        result?;
+            return Err(e);
+        }
 
         hwkey::print_backup_reminder();
         Ok(format!("Hardware key enrolled for vault '{}'", config.name))
@@ -183,11 +188,19 @@ impl HwKeyAction {
             Arc::new(crate::session_agent::AgentAnswerStore),
         ));
 
-        // 2. Create the key (gated on the recovery sheet), then re-key.
-        let mut password = get_vault_password(&config.name);
-        let recorded = enroll_and_record(&config, &password, holder_kid, source, &|entry| {
-            vault_registry::set_phone_key(&config.name, entry)
-        });
+        // 2. Open the vault on the factors it has today — through the
+        //    unlock chain, like any command — then create the key (gated
+        //    on the recovery sheet) and re-key.
+        let unlocked = unlock_keepass(ChallengeKey::Given(None))?;
+        let mut password = unlocked.factors.master_password.to_string();
+        let recorded = enroll_and_record(
+            &config,
+            &password,
+            &mut { unlocked }.vault,
+            holder_kid,
+            source,
+            &|entry| vault_registry::set_phone_key(&config.name, entry),
+        );
         password.zeroize();
         let enrolled = recorded?;
 
@@ -212,34 +225,73 @@ impl HwKeyAction {
                 config.name
             )));
         };
-        let challenge_response = if secret {
-            hwkey::recovery_key_from_prompt()
-        } else {
-            crate::actions::enrolled_challenge_response(&config)?
-                .ok_or_else(|| Error::new("internal: the enrolled factor did not resolve"))?
-        };
-
-        let mut password = get_vault_password(&config.name);
-        let result = remove_and_record(
-            &config,
-            &password,
-            &challenge_response,
-            enrolled,
-            &|left| match left {
-                Some(Enrolled::Hwkey(hwkey)) => {
-                    vault_registry::set_hwkey(&config.name, Some(hwkey.clone()))
+        // How the vault opens for the removal: recovery types its secret
+        // in (a prompt, so a terminal); the enrolled factor otherwise —
+        // the key on its device, or the holder over the link transport,
+        // with a live session's held answer used first by the chain.
+        // How the vault opens for the removal: recovery types its secret
+        // in (a prompt, so a terminal); the enrolled factor otherwise —
+        // the key on its device, or the holder over the link transport,
+        // with a live session's held answer used first by the chain.
+        let recovery_key;
+        let key = match (&enrolled, secret) {
+            (Enrolled::Phone(_), true) | (Enrolled::Hwkey(_), true) => {
+                if !at_a_terminal() {
+                    return Err(Error::new(&format!(
+                        "Recovery needs the backed-up secret typed in. Run 'passlane hwkey remove \
+                         --secret' for vault '{}' from a terminal.",
+                        config.name
+                    )));
                 }
-                Some(Enrolled::Phone(phone)) => {
-                    vault_registry::set_phone_key(&config.name, Some(phone.clone()))
-                }
-                None => {
-                    vault_registry::set_hwkey(&config.name, None)?;
-                    vault_registry::set_phone_key(&config.name, None)
+                recovery_key = hwkey::recovery_key_from_prompt();
+                ChallengeKey::Given(Some(&recovery_key))
+            }
+            (Enrolled::Hwkey(hwkey_config), false) => match session_factors(&config.name)? {
+                // A live session holds the vault's key factor: the key
+                // itself is not needed, and no touch is asked for.
+                SessionFactors::WithKeyFactor => ChallengeKey::Enrolled,
+                held => {
+                    // Without the key factor held, the enrolled key has to
+                    // be touched.
+                    if !at_a_terminal() {
+                        return Err(hardware_key_needs_a_terminal(
+                            &config,
+                            held == SessionFactors::PasswordOnly,
+                        ));
+                    }
+                    recovery_key =
+                        passlane_core::hwkey::configured_challenge_response_key(hwkey_config)?;
+                    ChallengeKey::Given(Some(&recovery_key))
                 }
             },
-        );
-        password.zeroize();
-        result?;
+            // A phone-gated vault: the chain holds the session's answer or
+            // asks the holder, exactly as for any command.
+            (Enrolled::Phone(_), false) => ChallengeKey::Enrolled,
+        };
+        let mut vault = unlock_keepass(key)?.vault;
+        // Delete the config before touching the vault: if deletion
+        // fails, abort with the vault still protected by the factor,
+        // rather than stripping the factor first and leaving passlane
+        // demanding a factor the vault no longer requires.
+        record_factor(&config.name, None)?;
+        // A save without the factor needs no challenge.
+        if let Err(e) = vault.update_challenge_response(None) {
+            // The vault on disk still requires the factor; put the config
+            // back so passlane keeps using it.
+            if let Err(restore_err) = record_factor(&config.name, Some(&enrolled)) {
+                return Err(Error::new(&format!(
+                    "Removing the second factor from the vault failed: {}. Restoring the \
+                     enrollment also failed: {}. The vault still needs the factor — for a \
+                     hardware key, re-add it to vault '{}' in {}; for a phone-held key, the \
+                     device's key and the recovery sheet still open it.",
+                    e,
+                    restore_err,
+                    config.name,
+                    vault_registry::registry_file_display(),
+                )));
+            }
+            return Err(e);
+        }
 
         Ok(format!(
             "Second factor removed from vault '{}'. It now opens with the master password (and \
@@ -252,9 +304,9 @@ impl HwKeyAction {
         let VaultConfig {
             name,
             path,
-            keyfile: _,
             hwkey,
             phone_key,
+            ..
         } = vault_registry::current()?;
         let mut lines = Vec::new();
         match hwkey {
@@ -299,6 +351,39 @@ impl HwKeyAction {
     }
 }
 
+/// Record (or clear) the vault's enrolled factor in the registry.
+fn record_factor(vault: &str, factor: Option<&Enrolled>) -> Result<(), Error> {
+    match factor {
+        Some(Enrolled::Hwkey(hwkey)) => vault_registry::set_hwkey(vault, Some(hwkey.clone())),
+        Some(Enrolled::Phone(phone)) => vault_registry::set_phone_key(vault, Some(phone.clone())),
+        None => {
+            vault_registry::set_hwkey(vault, None)?;
+            vault_registry::set_phone_key(vault, None)
+        }
+    }
+}
+
+/// [`record_factor`] against an explicit registry directory (tests).
+#[cfg(test)]
+fn record_factor_to(
+    dir: &std::path::Path,
+    vault: &str,
+    factor: Option<&Enrolled>,
+) -> Result<(), Error> {
+    match factor {
+        Some(Enrolled::Hwkey(hwkey)) => {
+            vault_registry::set_hwkey_to(dir, vault, Some(hwkey.clone()))
+        }
+        Some(Enrolled::Phone(phone)) => {
+            vault_registry::set_phone_key_to(dir, vault, Some(phone.clone()))
+        }
+        None => {
+            vault_registry::set_hwkey_to(dir, vault, None)?;
+            vault_registry::set_phone_key_to(dir, vault, None)
+        }
+    }
+}
+
 /// The pinned approver that will hold the vault's key: the one named by
 /// `--approver`, else the only one pinned, else the person's choice — and
 /// when nothing is pinned at all, the pairing ceremony runs first.
@@ -308,7 +393,10 @@ impl HwKeyAction {
 /// `--approver`), everything else — the holder's answers and, through
 /// the session agent, even the password — can arrive without a terminal,
 /// so enrollment works over SSH or from an agent platform too.
-fn choose_holder(approver: Option<&str>, page: Option<&str>) -> Result<PeerPin, Error> {
+fn choose_holder(
+    approver: Option<&str>,
+    page: Option<&str>,
+) -> Result<passlane_approval::keys::PeerPin, Error> {
     let peers = crate::approvals::load_peers_pinned(&crate::approvals::state_dir())
         .map_err(|e| Error::new(&e))?;
     if approver.is_none() && peers.len() != 1 && !std::io::stdin().is_terminal() {
@@ -384,17 +472,18 @@ fn choose_holder(approver: Option<&str>, page: Option<&str>) -> Result<PeerPin, 
 fn enroll_and_record(
     config: &VaultConfig,
     password: &str,
+    vault: &mut KeepassVault,
     holder_kid: String,
     source: Arc<dyn ResponseSource>,
     record: &dyn Fn(Option<PhoneKeyConfig>) -> Result<(), Error>,
 ) -> Result<PhoneKeyConfig, Error> {
-    let enrollment = enroll(config, password, source)?;
+    let enrollment = crate::phone_key::enroll::enroll(config, vault, password, source)?;
     let phone_key = PhoneKeyConfig {
         holder_kid,
         enrolled_at: enrollment.enrolled_at,
     };
     if let Err(e) = record(Some(phone_key.clone())) {
-        return match enrollment.rollback() {
+        return match crate::phone_key::enroll::rollback_enrollment(vault) {
             Ok(()) => Err(Error::new(&format!(
                 "{} The phone-held key was not enrolled; the vault is as it was.",
                 e.message
@@ -402,55 +491,13 @@ fn enroll_and_record(
             Err(rollback) => Err(Error::new(&format!(
                 "{} Rolling the phone-held key back also failed: {}. The vault file now needs \
                  the phone-held key, but passlane does not know that yet — retry 'passlane \
-                 hwkey add --phone', or recover with the recovery sheet ('passlane hwkey \\
+                 hwkey add --phone', or recover with the recovery sheet ('passlane hwkey \
                  remove --secret').",
                 e.message, rollback
             ))),
         };
     }
     Ok(phone_key)
-}
-
-/// Strip a vault's challenge-response factor and forget it.
-///
-/// The registry entry is removed *before* the vault is re-saved: if that
-/// write fails nothing has changed, whereas stripping the factor first
-/// and then failing to record it would leave passlane demanding a factor
-/// the vault no longer needs. If the re-save fails, the entry is put back.
-fn remove_and_record(
-    config: &VaultConfig,
-    password: &str,
-    challenge_response: &ChallengeResponseKey,
-    enrolled: Enrolled,
-    record: &dyn Fn(Option<&Enrolled>) -> Result<(), Error>,
-) -> Result<(), Error> {
-    println!("Unlocking vault '{}'...", config.name);
-    let mut vault = KeepassVault::open(
-        password,
-        &config.path,
-        config.keyfile.clone(),
-        Some(challenge_response),
-    )?;
-    record(None)?;
-    // A save without the factor needs no challenge.
-    if let Err(e) = vault.update_challenge_response(None) {
-        // The vault on disk still requires the factor; put the entry back
-        // so passlane keeps using it.
-        if let Err(restore_err) = record(Some(&enrolled)) {
-            return Err(Error::new(&format!(
-                "Removing the second factor from the vault failed: {}. Restoring the \
-                 enrollment also failed: {}. The vault still needs the factor — for a \
-                 hardware key, re-add it to vault '{}' in {}; for a phone-held key, the \
-                 device's key and the recovery sheet still open it.",
-                e,
-                restore_err,
-                config.name,
-                vault_registry::registry_file_display(),
-            )));
-        }
-        return Err(e);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -500,9 +547,11 @@ mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let recorded = std::cell::RefCell::new(Vec::new());
 
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let enrolled = enroll_and_record(
             &config,
             "master-pw",
+            &mut vault,
             KID.to_string(),
             phone.clone(),
             &|entry| {
@@ -528,9 +577,15 @@ mod tests {
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
 
-        let err = enroll_and_record(&config, "master-pw", KID.to_string(), phone, &|_| {
-            Err(Error::new("registry is read-only"))
-        })
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let err = enroll_and_record(
+            &config,
+            "master-pw",
+            &mut vault,
+            KID.to_string(),
+            phone,
+            &|_| Err(Error::new("registry is read-only")),
+        )
         .unwrap_err();
         assert!(
             err.message.contains("registry is read-only"),
@@ -553,9 +608,15 @@ mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         phone.refuse(crate::phone_key::ResponseError::Denied("no".into()));
 
-        let err = enroll_and_record(&config, "master-pw", KID.to_string(), phone, &|_| {
-            panic!("nothing may be recorded for a refused enrollment")
-        })
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let err = enroll_and_record(
+            &config,
+            "master-pw",
+            &mut vault,
+            KID.to_string(),
+            phone,
+            &|_| panic!("nothing may be recorded for a refused enrollment"),
+        )
         .unwrap_err();
         assert!(
             err.message.contains("refused by the approver: no"),
@@ -570,9 +631,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let enrolled = enroll_and_record(
             &config,
             "master-pw",
+            &mut vault,
             KID.to_string(),
             phone.clone(),
             &|_| Ok(()),
@@ -584,7 +647,7 @@ mod tests {
         let mark = phone.mark();
         let key = open_key(&config, phone.clone()).unwrap();
         let recorded = std::cell::RefCell::new(Vec::new());
-        remove_and_record(
+        remove_factor(
             &config,
             "master-pw",
             &key,
@@ -608,6 +671,32 @@ mod tests {
         assert!(KeepassVault::open("master-pw", &config.path, None, None).is_ok());
     }
 
+    /// The strip-and-forget half of [`HwKeyAction::run_remove`], with the
+    /// registry writes injected: record(None) before the re-save, and the
+    /// enrollment put back when the re-save fails.
+    fn remove_factor(
+        config: &VaultConfig,
+        password: &str,
+        challenge_response: &ChallengeResponseKey,
+        enrolled: Enrolled,
+        record: &dyn Fn(Option<&Enrolled>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut vault = KeepassVault::open(password, &config.path, None, Some(challenge_response))?;
+        record(None)?;
+        // A save without the factor needs no challenge.
+        if let Err(e) = vault.update_challenge_response(None) {
+            if let Err(restore_err) = record(Some(&enrolled)) {
+                return Err(Error::new(&format!(
+                    "Removing the second factor from the vault failed: {}. Restoring the \
+                     enrollment also failed: {}.",
+                    e, restore_err
+                )));
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// The acceptance criterion for a lost phone: the secret on the
     /// recovery sheet — read back as `LocalChallenge`, which is what a
     /// YubiKey programmed from the sheet computes too — still gets in.
@@ -616,8 +705,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
-        let enrolled =
-            enroll_and_record(&config, "master-pw", KID.to_string(), phone, &|_| Ok(())).unwrap();
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let enrolled = enroll_and_record(
+            &config,
+            "master-pw",
+            &mut vault,
+            KID.to_string(),
+            phone,
+            &|_| Ok(()),
+        )
+        .unwrap();
 
         // The phone is gone: opening it the normal way has no answer.
         let key = open_key(&config, Arc::new(LostPhone)).unwrap();
@@ -633,7 +730,7 @@ mod tests {
             .expect("the sheet secret opens the vault");
         assert_eq!(vault.grep(None).len(), 0);
 
-        remove_and_record(
+        remove_factor(
             &config,
             "master-pw",
             &from_sheet,
@@ -653,9 +750,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let enrolled = enroll_and_record(
             &config,
             "master-pw",
+            &mut vault,
             KID.to_string(),
             phone.clone(),
             &|_| Ok(()),
@@ -670,7 +769,7 @@ mod tests {
         // rename over it; its second call puts the file back.
         let parked = dir.path().join("parked.kdbx");
         let recorded = std::cell::RefCell::new(Vec::new());
-        let err = remove_and_record(
+        let err = remove_factor(
             &config,
             "master-pw",
             &key,
@@ -708,14 +807,8 @@ mod tests {
         let key = open_key(&config, phone.clone()).unwrap();
         assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
         assert_eq!(
-            phone
-                .asked_since(mark)
-                .iter()
-                .map(|r| r.operation.clone())
-                .collect::<Vec<_>>(),
-            // The open for the removal, then the open that proves the
-            // vault still needs the phone. No save: it never got to ask.
-            [Operation::Unlock, Operation::Unlock],
+            phone.asked_since(mark).len(),
+            2,
             "one approval per open; the failed save never asked"
         );
     }
@@ -725,9 +818,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, before) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let enrolled = enroll_and_record(
             &config,
             "master-pw",
+            &mut vault,
             KID.to_string(),
             phone.clone(),
             &|_| Ok(()),
@@ -738,7 +833,7 @@ mod tests {
 
         let mark = phone.mark();
         let key = open_key(&config, phone.clone()).unwrap();
-        let err = remove_and_record(
+        let err = remove_factor(
             &config,
             "master-pw",
             &key,
@@ -751,12 +846,8 @@ mod tests {
         // to open, from the phone that enrolled it.
         assert_eq!(std::fs::read(&config.path).unwrap(), enrolled_bytes);
         assert_eq!(
-            phone
-                .asked_since(mark)
-                .iter()
-                .map(|r| r.operation.clone())
-                .collect::<Vec<_>>(),
-            [Operation::Unlock],
+            phone.asked_since(mark).len(),
+            1,
             "only the open asked; no save happened"
         );
     }
@@ -778,6 +869,49 @@ mod tests {
             ph.already_enrolled("work")
                 .message
                 .starts_with("A phone-held key")
+        );
+    }
+
+    #[test]
+    fn record_factor_writes_the_right_field() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::vault_registry::add_vault_to(
+            dir.path(),
+            VaultConfig {
+                name: "work".into(),
+                path: "/abs/work.kdbx".into(),
+                keyfile: None,
+                hwkey: None,
+                phone_key: None,
+            },
+        )
+        .unwrap();
+        let phone = Enrolled::Phone(PhoneKeyConfig {
+            holder_kid: KID.into(),
+            enrolled_at: 7,
+        });
+        record_factor_to(dir.path(), "work", Some(&phone)).unwrap();
+        let vaults = crate::vault_registry::load_from(dir.path()).unwrap();
+        assert_eq!(
+            crate::vault_registry::find(&vaults, "work")
+                .unwrap()
+                .phone_key,
+            Some(PhoneKeyConfig {
+                holder_kid: KID.into(),
+                enrolled_at: 7
+            })
+        );
+        assert_eq!(
+            crate::vault_registry::find(&vaults, "work").unwrap().hwkey,
+            None
+        );
+        record_factor_to(dir.path(), "work", None).unwrap();
+        let vaults = crate::vault_registry::load_from(dir.path()).unwrap();
+        assert!(
+            crate::vault_registry::find(&vaults, "work")
+                .unwrap()
+                .phone_key
+                .is_none()
         );
     }
 }

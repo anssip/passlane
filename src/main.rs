@@ -425,8 +425,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-    completion_cache::refresh_if_stale();
-
     enum RoutedAction {
         Action(Box<dyn Action>),
         UnlockingAction(Box<dyn UnlockingAction>),
@@ -498,6 +496,9 @@ fn main() {
             RoutedAction::Action(Box::new(CompletionsAction::new(shell, cli())))
         }
         Some(("repl", _)) => {
+            // The REPL opens no vault up front: its cache is refreshed the
+            // way every command's used to be.
+            completion_cache::refresh_if_stale();
             repl::start_repl();
             return;
         }
@@ -510,6 +511,13 @@ fn main() {
             }
         }
     };
+    // A command that opens the vault brings the completion cache up to
+    // date from that vault after the unlock, with no keychain read. Every
+    // other command refreshes a stale cache here, as before (the refresh
+    // is skipped without a terminal and while a session serves the vault).
+    if matches!(action, RoutedAction::Action(_)) {
+        completion_cache::refresh_if_stale();
+    }
     match action {
         RoutedAction::Action(action) => {
             action

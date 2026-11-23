@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use passlane_agent::client::AgentClient;
 use passlane_agent::error::AgentError;
-use passlane_agent::protocol::{ErrorCode, Event, GrantSpec, SecretString};
+use passlane_agent::protocol::{
+    ChallengeResponseMaterial, ErrorCode, Event, GrantInfo, GrantSpec, SecretString,
+};
 use passlane_agent::server::{AgentConfig, AgentServer};
 use passlane_approval::message::Scope;
 use zeroize::Zeroizing;
@@ -92,6 +94,18 @@ impl Drop for RunningAgent {
 fn unlock_grant(pw: &str) -> GrantSpec {
     GrantSpec::Unlock {
         master_password: SecretString::new(pw),
+        challenge_response: None,
+    }
+}
+
+/// An unlock grant that also holds a hardware-key factor: the HMAC-SHA1
+/// secret of a secret-backed challenge-response slot.
+fn keyed_grant(pw: &str, secret: &str) -> GrantSpec {
+    GrantSpec::Unlock {
+        master_password: SecretString::new(pw),
+        challenge_response: Some(ChallengeResponseMaterial::Secret {
+            secret_hex: SecretString::new(secret),
+        }),
     }
 }
 
@@ -118,7 +132,7 @@ fn session_lifecycle_create_list_use_reuse_revoke() {
     let agent = RunningAgent::start();
     let mut client = agent.client();
     let pong = client.ping().unwrap();
-    assert_eq!(pong.version, 1);
+    assert_eq!(pong.version, passlane_agent::protocol::PROTOCOL_VERSION);
     assert_eq!(pong.sessions, 0);
 
     let created = client
@@ -135,15 +149,27 @@ fn session_lifecycle_create_list_use_reuse_revoke() {
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, created.id);
     assert_eq!(list[0].vault, "work");
-    assert_eq!(list[0].grant, passlane_agent::protocol::GrantInfo::Unlock);
+    assert_eq!(
+        list[0].grant,
+        passlane_agent::protocol::GrantInfo::Unlock {
+            challenge_response: false
+        }
+    );
 
     // A timed session is reusable: two fetches, same password.
-    let (pw1, expires1) = client.get_unlock_factors("work").unwrap();
-    assert_eq!(*pw1, "master-pw");
-    assert!(expires1.is_some(), "a timed session reports its expiry");
-    let (pw2, expires2) = client.get_unlock_factors("work").unwrap();
-    assert_eq!(*pw2, "master-pw");
-    assert_eq!(expires2, expires1, "reuse does not change the expiry");
+    let factors1 = client.get_unlock_factors("work").unwrap();
+    assert_eq!(*factors1.master_password, "master-pw");
+    assert_eq!(factors1.challenge_response, None);
+    assert!(
+        factors1.expires_at.is_some(),
+        "a timed session reports its expiry"
+    );
+    let factors2 = client.get_unlock_factors("work").unwrap();
+    assert_eq!(*factors2.master_password, "master-pw");
+    assert_eq!(
+        factors2.expires_at, factors1.expires_at,
+        "reuse does not change the expiry"
+    );
 
     // Revoke: the session is gone.
     assert_eq!(client.revoke_session(&created.id).unwrap(), 1);
@@ -168,10 +194,10 @@ fn once_scoped_unlock_session_is_consumed_by_first_use() {
         .create_session("work", unlock_grant("one-time-pw"), Scope::Once)
         .unwrap();
     let mut user = agent.client();
-    let (pw, expires) = user.get_unlock_factors("work").unwrap();
-    assert_eq!(*pw, "one-time-pw");
+    let factors = user.get_unlock_factors("work").unwrap();
+    assert_eq!(*factors.master_password, "one-time-pw");
     assert_eq!(
-        expires, None,
+        factors.expires_at, None,
         "a consumed once session has no expiry to revalidate"
     );
     match user.get_unlock_factors("work") {
@@ -271,6 +297,90 @@ fn challenge_response_sessions_serve_the_matching_challenge_once_or_timed() {
             ..
         })
     ));
+}
+
+/// passlane#65: an unlock session must carry the vault's hardware-key
+/// factor, or every CLI use of a hardware-key vault still needs the key —
+/// with nobody to touch it in an agent context.
+#[test]
+fn unlock_session_serves_the_challenge_response_factor() {
+    let agent = RunningAgent::start();
+    let mut owner = agent.client();
+    let created = owner
+        .create_session(
+            "keyed",
+            keyed_grant("master-pw", "aabbccddeeff"),
+            Scope::Timed { seconds: 300 },
+        )
+        .unwrap();
+
+    // The listing says the factor is held, without showing it.
+    let list = owner.list_sessions().unwrap();
+    assert_eq!(
+        list[0].id, created.id,
+        "a second session of the same vault replaces none: {:?}",
+        list
+    );
+    assert_eq!(list.len(), 1);
+    assert_eq!(
+        list[0].grant,
+        GrantInfo::Unlock {
+            challenge_response: true
+        }
+    );
+    assert!(!format!("{list:?}").contains("aabbccddeeff"));
+
+    // Both factors come back, on every use of the timed session.
+    let mut user = agent.client();
+    for _ in 0..2 {
+        let factors = user.get_unlock_factors("keyed").unwrap();
+        assert_eq!(*factors.master_password, "master-pw");
+        assert_eq!(
+            factors.challenge_response,
+            Some(ChallengeResponseMaterial::Secret {
+                secret_hex: SecretString::new("aabbccddeeff")
+            })
+        );
+        assert!(factors.expires_at.is_some());
+    }
+
+    // A once session carries the factor too, once.
+    let mut owner = agent.client();
+    owner
+        .create_session("once-keyed", keyed_grant("pw", "112233"), Scope::Once)
+        .unwrap();
+    let factors = user.get_unlock_factors("once-keyed").unwrap();
+    assert_eq!(
+        factors.challenge_response,
+        Some(ChallengeResponseMaterial::Secret {
+            secret_hex: SecretString::new("112233")
+        })
+    );
+    assert!(user.get_unlock_factors("once-keyed").is_err());
+
+    // Revoking drops the factors with the session.
+    user.revoke_session(&created.id).unwrap();
+    assert!(user.get_unlock_factors("keyed").is_err());
+    agent.stop();
+}
+
+#[test]
+fn a_malformed_challenge_response_secret_is_refused_over_the_socket() {
+    let agent = RunningAgent::start();
+    let mut client = agent.client();
+    match client.create_session(
+        "keyed",
+        keyed_grant("master-pw", ""),
+        Scope::Timed { seconds: 300 },
+    ) {
+        Err(AgentError::Server { code, message }) => {
+            assert_eq!(code, ErrorCode::Invalid);
+            assert!(message.contains("secret"), "{message}");
+        }
+        other => panic!("an empty secret must be refused, got {other:?}"),
+    }
+    assert!(client.list_sessions().unwrap().is_empty());
+    agent.stop();
 }
 
 #[test]
@@ -527,8 +637,8 @@ fn concurrent_cli_clients_hammer_the_agent() {
                         Scope::Timed { seconds: 300 },
                     )
                     .expect("create");
-                let (pw, _) = client.get_unlock_factors(&vault).expect("get");
-                assert_eq!(*pw, format!("pw-{c}-{i}"));
+                let factors = client.get_unlock_factors(&vault).expect("get");
+                assert_eq!(*factors.master_password, format!("pw-{c}-{i}"));
                 client.get_unlock_factors(&vault).expect("get again");
                 let list = client.list_sessions().expect("list");
                 assert!(list.iter().any(|s| s.id == created.id));
@@ -649,6 +759,32 @@ fn client_refuses_untrusted_sockets() {
     }
 }
 
+/// A subscribed connection waits for events for as long as the session
+/// lives: the bound on ordinary requests must not cut it short.
+#[test]
+fn an_event_stream_is_not_subject_to_the_request_timeout() {
+    let agent = RunningAgent::start();
+    let mut subscriber = agent.client();
+    subscriber
+        .set_request_timeout(Duration::from_millis(200))
+        .expect("short request timeout");
+    let created = subscriber
+        .create_session("work", unlock_grant("pw"), Scope::Timed { seconds: 600 })
+        .unwrap();
+    let mut events = subscriber.subscribe().unwrap();
+    let waiter = std::thread::spawn(move || events.next_event());
+
+    // Nothing happens for far longer than the request timeout.
+    std::thread::sleep(Duration::from_millis(700));
+    agent.client().revoke_session(&created.id).unwrap();
+
+    match waiter.join().unwrap() {
+        Ok(Event::SessionRevoked { id, .. }) => assert_eq!(id, created.id),
+        other => panic!("the subscriber must still be waiting, got {other:?}"),
+    }
+    agent.stop();
+}
+
 #[test]
 fn stopping_the_agent_closes_open_connections() {
     let agent = RunningAgent::start();
@@ -686,6 +822,9 @@ fn key_material_never_reaches_disk() {
     // a random hex string rather than a spelled-out word.
     let canary_pw = format!("CANARY-pw-{}", uuid::Uuid::new_v4());
     let canary_entry = format!("CANARY-entry-{}", uuid::Uuid::new_v4());
+    let canary_secret = format!("CANARY-secret-{}", uuid::Uuid::new_v4());
+    // The answer has to be 40 hex characters to be accepted, so its
+    // canary is a random hex string rather than a spelled-out word.
     let canary_answer = format!("deadbeef{:032x}", uuid::Uuid::new_v4().as_u128());
     assert_eq!(canary_answer.len(), 40);
     {
@@ -693,7 +832,7 @@ fn key_material_never_reaches_disk() {
         client
             .create_session(
                 "work",
-                unlock_grant(&canary_pw),
+                keyed_grant(&canary_pw, &canary_secret),
                 Scope::Timed { seconds: 300 },
             )
             .unwrap();
@@ -704,8 +843,15 @@ fn key_material_never_reaches_disk() {
                 Scope::Timed { seconds: 300 },
             )
             .unwrap();
-        let (pw, _): (Zeroizing<String>, _) = client.get_unlock_factors("work").unwrap();
-        assert_eq!(*pw, canary_pw);
+        let factors = client.get_unlock_factors("work").unwrap();
+        assert_eq!(*factors.master_password, canary_pw);
+        assert!(
+            matches!(
+                factors.challenge_response,
+                Some(ChallengeResponseMaterial::Secret { ref secret_hex }) if secret_hex.expose() == canary_secret
+            ),
+            "the held factor is the one the session was given"
+        );
         client
             .check_reveal("work", &canary_entry, "password")
             .unwrap();
@@ -738,7 +884,10 @@ fn key_material_never_reaches_disk() {
 
     // No file under either scratch directory contains the canaries.
     for root in [dir.path(), home.path()] {
-        assert_no_canary(root, &[&canary_pw, &canary_entry, &canary_answer]);
+        assert_no_canary(
+            root,
+            &[&canary_pw, &canary_entry, &canary_secret, &canary_answer],
+        );
     }
 }
 

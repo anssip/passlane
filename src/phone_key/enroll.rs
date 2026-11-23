@@ -3,7 +3,8 @@
 //!
 //! The order is the one the issue requires (SPEC §7):
 //!
-//! 1. Open the vault with the factors it has today.
+//! 1. The vault arrives open, with the factors it has today (the caller
+//!    opens it through the unlock chain).
 //! 2. Ask the holder to create a key for the vault (`EnrollKey`). The
 //!    holder answers only once the recovery sheet has been scanned back, so
 //!    this step returning *is* the scan-back confirmation the CLI waits
@@ -17,7 +18,7 @@
 //!    and it runs before anything is persisted.
 //!
 //! The caller records the factor in the registry, and rolls it back
-//! ([`Enrollment::rollback`]) if that fails.
+//! (see [`rollback_enrollment`]) if that fails.
 
 use std::sync::{Arc, Mutex};
 
@@ -31,42 +32,37 @@ use super::{
 };
 use crate::vault_registry::VaultConfig;
 
-/// A successful enrollment. Holds the open vault so the caller can undo
-/// the re-key if the registry cannot be written.
+/// A successful enrollment: the metadata to record. The vault itself
+/// stays with the caller, who re-saves it without the factor when the
+/// enrollment cannot be recorded (see [`rollback_enrollment`]).
 pub(crate) struct Enrollment {
     /// Unix time the vault was re-keyed to the holder's key.
     pub enrolled_at: u64,
-    /// The vault, still open. A rollback re-saves its database without the
-    /// challenge-response factor.
-    vault: KeepassVault,
 }
 
 impl std::fmt::Debug for Enrollment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The vault holds decrypted entries and is never printed.
         f.debug_struct("Enrollment")
             .field("enrolled_at", &self.enrolled_at)
             .finish()
     }
 }
 
-impl Enrollment {
-    /// Strip the challenge-response factor again. For when the enrollment
-    /// cannot be recorded: passlane would otherwise not know to ask the
-    /// phone, and the vault would be unreachable through it.
-    pub(crate) fn rollback(mut self) -> Result<(), Error> {
-        self.vault.update_challenge_response(None)
-    }
+/// Strip a just-enrolled phone-held key again: for when the factor cannot
+/// be recorded — passlane would otherwise not know to ask the holder, and
+/// the vault would be unreachable through it.
+pub(crate) fn rollback_enrollment(vault: &mut KeepassVault) -> Result<(), Error> {
+    vault.update_challenge_response(None)
 }
-
-/// A save's answer: the seed it was for, and the answer itself.
-type SaveAnswer = ([u8; CHALLENGE_LEN], Zeroizing<Vec<u8>>);
 
 /// The holder's answer to the re-key, kept for the open that proves it.
 struct RecordingSource {
     inner: Arc<dyn ResponseSource>,
     last_save: Mutex<Option<SaveAnswer>>,
 }
+
+/// A save's answer: the seed it was for, and the answer itself.
+type SaveAnswer = ([u8; CHALLENGE_LEN], Zeroizing<Vec<u8>>);
 
 impl ResponseSource for RecordingSource {
     fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
@@ -79,9 +75,12 @@ impl ResponseSource for RecordingSource {
 }
 
 /// Enrol `config`'s vault with the key `source`'s holder creates on
-/// request. `password` must open the vault with its current factors.
+/// request. The vault must be open on the factors it has today (no
+/// challenge-response), and `password` is the master password it was
+/// opened with — the proving open of the re-keyed file uses it again.
 pub(crate) fn enroll(
     config: &VaultConfig,
+    vault: &mut KeepassVault,
     password: &str,
     source: Arc<dyn ResponseSource>,
 ) -> Result<Enrollment, Error> {
@@ -92,9 +91,6 @@ pub(crate) fn enroll(
             config.name
         )));
     }
-
-    // 1. The vault as it is today.
-    let mut vault = KeepassVault::open(password, &config.path, config.keyfile.clone(), None)?;
 
     // 2. Create the key, and wait for the recovery sheet to be scanned
     //    back. The challenge is the vault file's current KDF seed: a
@@ -151,7 +147,6 @@ pub(crate) fn enroll(
 
     Ok(Enrollment {
         enrolled_at: crate::approvals::now_secs(),
-        vault,
     })
 }
 
@@ -186,8 +181,8 @@ fn prove_enrollment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phone_key::open_key;
     use crate::phone_key::tests::{MockPhone, config_for, hmac_sha1};
+    use crate::phone_key::{AnswerOrigin, open_key};
     use passlane_approval::message::Operation;
     use passlane_core::vault::vault_trait::PasswordVault;
 
@@ -214,11 +209,12 @@ mod tests {
     #[test]
     fn enrollment_creates_the_key_then_re_keys_and_proves_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (config, before) = plain_vault(dir.path());
+        let (config, _) = plain_vault(dir.path());
         let seed_before = kdf_seed::read_kdf_seed(&config.path).unwrap();
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let phone = Arc::new(MockPhone::new(&SECRET));
 
-        let enrollment = enroll(&config, "master-pw", phone.clone()).unwrap();
+        let enrollment = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap();
         assert!(enrollment.enrolled_at > 0);
 
         // Exactly two asks: create the key (with the scan-back gating its
@@ -242,17 +238,103 @@ mod tests {
         assert_ne!(asked[0].challenge, asked[1].challenge);
 
         // The vault now needs the phone, and opens with it.
-        let bytes = std::fs::read(&config.path).unwrap();
-        assert_ne!(bytes, before, "the vault was re-keyed");
-        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
+        assert!(open_failure(&config.path, None).contains("Incorrect key"));
         let key = open_key(&config, phone.clone()).unwrap();
         assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
     }
 
-    /// Without a terminal the command exits with the link and is re-run
-    /// after the owner approves elsewhere. The approved answer is kept by
-    /// the session agent keyed by the challenge, so the re-run must ask
-    /// with the *same* challenge to find it.
+    #[test]
+    fn a_holder_that_never_confirms_the_sheet_enrolls_nothing() {
+        // The holder refuses at the key-creation step — which is exactly
+        // what a recovery sheet that was never scanned back amounts to.
+        let dir = tempfile::tempdir().unwrap();
+        let (config, before) = plain_vault(dir.path());
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        phone.refuse(ResponseError::Unavailable(
+            "the recovery sheet was not scanned back".into(),
+        ));
+
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let err = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
+        assert!(
+            err.message
+                .contains("the recovery sheet was not scanned back"),
+            "{}",
+            err.message
+        );
+        // The vault was never re-keyed: byte for byte as it was.
+        assert_eq!(std::fs::read(&config.path).unwrap(), before);
+        assert_eq!(phone.asked().len(), 1, "it never got as far as a save");
+    }
+
+    #[test]
+    fn a_refused_re_key_leaves_the_vault_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, before) = plain_vault(dir.path());
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        // Answer the key creation, refuse the save.
+        let refuse_save = RefusingSave {
+            inner: phone.clone(),
+        };
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let err = enroll(&config, &mut vault, "master-pw", Arc::new(refuse_save)).unwrap_err();
+        assert!(
+            err.message
+                .contains("refused by the approver: not this save"),
+            "{}",
+            err.message
+        );
+        assert_eq!(std::fs::read(&config.path).unwrap(), before);
+        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_ok());
+    }
+
+    /// Answers everything but the re-key.
+    struct RefusingSave {
+        inner: Arc<MockPhone>,
+    }
+
+    impl ResponseSource for RefusingSave {
+        fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
+            if request.operation == Operation::Save {
+                self.inner.respond(request)?;
+                return Err(ResponseError::Denied("not this save".into()));
+            }
+            self.inner.respond(request)
+        }
+    }
+
+    #[test]
+    fn rollback_strips_the_factor_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, _) = plain_vault(dir.path());
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", phone).unwrap();
+        assert!(open_failure(&config.path, None).contains("Incorrect key"));
+
+        rollback_enrollment(&mut vault).unwrap();
+        let vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        assert!(vault.grep(None).is_empty());
+    }
+
+    #[test]
+    fn an_enrolled_vault_is_not_enrolled_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = plain_vault(dir.path()).0;
+        config.phone_key = Some(crate::vault_registry::PhoneKeyConfig {
+            holder_kid: "0123456789abcdef".into(),
+            enrolled_at: 1,
+        });
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        let err = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
+        assert!(
+            err.message
+                .contains("already has a challenge-response factor")
+        );
+        assert!(phone.asked().is_empty());
+    }
+
     #[test]
     fn an_exited_enrollment_resumes_on_the_answer_approved_elsewhere() {
         let dir = tempfile::tempdir().unwrap();
@@ -262,7 +344,8 @@ mod tests {
         // Run 1: the answer is "nowhere to be kept" — as when no session
         // agent is running — so nothing is enrolled.
         phone.refuse(ResponseError::Unavailable("no terminal, no agent".into()));
-        enroll(&config, "master-pw", phone.clone()).unwrap_err();
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
         assert_eq!(std::fs::read(&config.path).unwrap(), before);
         let asked_run_1 = phone.asked();
         assert_eq!(asked_run_1.len(), 1);
@@ -278,7 +361,8 @@ mod tests {
             kept,
             inner: phone.clone(),
         };
-        enroll(&config, "master-pw", Arc::new(answering)).unwrap();
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", Arc::new(answering)).unwrap();
         assert_eq!(
             phone.asked()[1..]
                 .iter()
@@ -318,101 +402,11 @@ mod tests {
             if request.challenge == self.kept.challenge {
                 return Ok(Answer {
                     response: self.kept.answer.clone(),
-                    origin: crate::phone_key::AnswerOrigin::SessionAgent,
+                    origin: AnswerOrigin::SessionAgent,
                 });
             }
             self.inner.respond(request)
         }
-    }
-
-    #[test]
-    fn a_holder_that_never_confirms_the_sheet_enrolls_nothing() {
-        // The holder refuses at the key-creation step — which is exactly
-        // what a recovery sheet that was never scanned back amounts to.
-        let dir = tempfile::tempdir().unwrap();
-        let (config, before) = plain_vault(dir.path());
-        let phone = Arc::new(MockPhone::new(&SECRET));
-        phone.refuse(ResponseError::Unavailable(
-            "the recovery sheet was not scanned back".into(),
-        ));
-
-        let err = enroll(&config, "master-pw", phone.clone()).unwrap_err();
-        assert!(
-            err.message
-                .contains("the recovery sheet was not scanned back"),
-            "{}",
-            err.message
-        );
-        // The vault was never re-keyed: byte for byte as it was.
-        assert_eq!(std::fs::read(&config.path).unwrap(), before);
-        assert_eq!(phone.asked().len(), 1, "it never got as far as a save");
-    }
-
-    #[test]
-    fn a_refused_re_key_leaves_the_vault_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let (config, before) = plain_vault(dir.path());
-        let phone = Arc::new(MockPhone::new(&SECRET));
-        // Answer the key creation, refuse the save.
-        let refuse_save = RefusingSave {
-            inner: phone.clone(),
-        };
-        let err = enroll(&config, "master-pw", Arc::new(refuse_save)).unwrap_err();
-        assert!(
-            err.message
-                .contains("refused by the approver: not this save"),
-            "{}",
-            err.message
-        );
-        assert_eq!(std::fs::read(&config.path).unwrap(), before);
-        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_ok());
-    }
-
-    /// Answers everything but the re-key.
-    struct RefusingSave {
-        inner: Arc<MockPhone>,
-    }
-
-    impl ResponseSource for RefusingSave {
-        fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
-            if request.operation == Operation::Save {
-                self.inner.respond(request)?;
-                return Err(ResponseError::Denied("not this save".into()));
-            }
-            self.inner.respond(request)
-        }
-    }
-
-    #[test]
-    fn rollback_strips_the_factor_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let (config, before) = plain_vault(dir.path());
-        let phone = Arc::new(MockPhone::new(&SECRET));
-        let enrollment = enroll(&config, "master-pw", phone).unwrap();
-        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
-
-        enrollment.rollback().unwrap();
-        let vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        assert!(vault.grep(None).is_empty());
-        // Not byte-identical (a save picks fresh seeds) but factor-free.
-        assert_ne!(std::fs::read(&config.path).unwrap(), before);
-    }
-
-    #[test]
-    fn an_enrolled_vault_is_not_enrolled_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = plain_vault(dir.path()).0;
-        config.phone_key = Some(crate::vault_registry::PhoneKeyConfig {
-            holder_kid: "0123456789abcdef".into(),
-            enrolled_at: 1,
-        });
-        let phone = Arc::new(MockPhone::new(&SECRET));
-        let err = enroll(&config, "master-pw", phone.clone()).unwrap_err();
-        assert!(
-            err.message
-                .contains("already has a challenge-response factor")
-        );
-        assert!(phone.asked().is_empty());
     }
 
     #[test]
@@ -424,7 +418,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
-        enroll(&config, "master-pw", phone).unwrap();
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", phone).unwrap();
 
         let secret_hex = passlane_approval::encoding::hex_encode(&SECRET);
         let as_a_yubikey_slot =
@@ -435,7 +430,7 @@ mod tests {
 
         // A different secret does not, and neither does no second factor.
         let wrong = keepass_ng::ChallengeResponseKey::LocalChallenge("00".repeat(20));
-        assert!(KeepassVault::open("master-pw", &config.path, None, Some(&wrong)).is_err());
-        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
+        assert!(open_failure(&config.path, Some(&wrong)).contains("Incorrect key"));
+        assert!(open_failure(&config.path, None).contains("Incorrect key"));
     }
 }

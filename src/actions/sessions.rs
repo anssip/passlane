@@ -62,7 +62,12 @@ fn short_id(id: &str) -> String {
 
 fn render_grant(grant: &GrantInfo) -> String {
     match grant {
-        GrantInfo::Unlock => "unlock".to_string(),
+        GrantInfo::Unlock {
+            challenge_response: false,
+        } => "unlock".to_string(),
+        GrantInfo::Unlock {
+            challenge_response: true,
+        } => "unlock + hwkey".to_string(),
         GrantInfo::Reveal { entry, field, .. } => format!("reveal {entry}/{field}"),
         // The answer itself is never listed; the grant says it exists.
         GrantInfo::ChallengeResponse => "challenge-response".to_string(),
@@ -211,7 +216,18 @@ mod tests {
             info(
                 "11111111-2222-3333-4444-555555555555",
                 "work",
-                GrantInfo::Unlock,
+                GrantInfo::Unlock {
+                    challenge_response: false,
+                },
+                Scope::Timed { seconds: 900 },
+                Some(now_secs() + 900),
+            ),
+            info(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "work",
+                GrantInfo::Unlock {
+                    challenge_response: true,
+                },
                 Scope::Timed { seconds: 900 },
                 Some(now_secs() + 900),
             ),
@@ -229,7 +245,24 @@ mod tests {
         ];
         let table = render_sessions(&sessions);
         assert!(table.contains("11111111"), "short id: {table}");
-        assert!(table.contains("unlock"), "{table}");
+        // A session that also holds the vault's hardware-key factor says
+        // so: with only "unlock" there is no telling whether the key is
+        // still needed for every command.
+        let grants: Vec<&str> = table
+            .lines()
+            .filter(|line| !line.starts_with("|-"))
+            .filter_map(|line| line.split('|').nth(3))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            grants,
+            [
+                "Grant",
+                "unlock",
+                "unlock + hwkey",
+                "reveal github.com/password"
+            ]
+        );
         assert!(table.contains("reveal github.com/password"), "{table}");
         assert!(table.contains("900s"), "{table}");
         assert!(table.contains("once"), "{table}");

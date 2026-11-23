@@ -20,8 +20,14 @@ use passlane_approval::message::Scope;
 
 use crate::error::AgentError;
 
-/// Protocol dialect version (returned by [`Request::Ping`]).
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol dialect version (returned by [`Request::Ping`]). Dialect 2
+/// added the challenge-response material an unlock session may hold
+/// ([`ChallengeResponseMaterial`]); dialect 3 added the single-challenge
+/// answer sessions a phone-held key's approvals become
+/// ([`GrantSpec::ChallengeResponse`]). A client refuses an agent that
+/// speaks another dialect rather than work with silently incomplete
+/// factors.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Hard limit on one frame; every message here is far smaller.
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -46,6 +52,10 @@ pub fn is_hex_of_len(value: &str, len: usize) -> bool {
             .chars()
             .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
 }
+
+/// Sanity limit on a challenge-response secret (an HMAC-SHA1 slot secret
+/// is 40 hex characters).
+pub const MAX_SECRET_LEN: usize = 256;
 
 /// A secret string on the wire. Serializes as a plain JSON string (the
 /// socket is 0600 and local), but is held zeroized in memory and renders
@@ -76,6 +86,8 @@ impl PartialEq for SecretString {
     }
 }
 
+impl Eq for SecretString {}
+
 impl std::fmt::Debug for SecretString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SecretString(***)")
@@ -94,16 +106,40 @@ impl<'de> Deserialize<'de> for SecretString {
     }
 }
 
+/// What an unlock session holds for a vault's challenge-response
+/// (hardware-key) factor, in the form that lets a CLI open the vault
+/// without the key itself. A factor only a physical key can answer
+/// cannot be held, and is simply absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChallengeResponseMaterial {
+    /// A secret-backed key (a recovery secret, a virtual key): the HMAC-SHA1
+    /// secret of its slot, hex-encoded. It answers every challenge —
+    /// including the fresh one a save issues — so a session-backed vault
+    /// stays writable.
+    Secret {
+        /// The slot's HMAC-SHA1 secret, hex.
+        secret_hex: SecretString,
+    },
+}
+
 /// What a session grants, as sent by the client when creating one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GrantSpec {
-    /// Hold a vault's master password (the ssh-agent "key") for CLI
-    /// unlocks until the session expires or is revoked. Never written
-    /// anywhere but memory.
+    /// Hold what a CLI needs to open a vault (the ssh-agent "key") until
+    /// the session expires or is revoked: the master password, plus the
+    /// challenge-response material when the vault has a hardware-key
+    /// factor a session can carry. Never written anywhere but memory.
     Unlock {
         /// The vault's master password.
         master_password: SecretString,
+        /// The vault's challenge-response factor, when it is one a session
+        /// can hold (see [`ChallengeResponseMaterial`]). Absent for
+        /// password-only vaults, and for hardware keys whose secret never
+        /// leaves the device.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        challenge_response: Option<ChallengeResponseMaterial>,
     },
     /// A recorded owner approval ("approve for this session") covering
     /// agent-facing reveals of one entry field. Carries no secret — it
@@ -151,8 +187,10 @@ pub enum Request {
         /// Once / timed, from the approval protocol.
         scope: Scope,
     },
-    /// Fetch the vault's unlock factors held by a live session. A
-    /// `once`-scoped unlock session is consumed by this call.
+    /// Fetch the unlock factors a live session holds for the vault — the
+    /// master password and, when the session carries it, the
+    /// challenge-response material. A `once`-scoped unlock session is
+    /// consumed by this call.
     GetUnlockFactors {
         /// Vault name.
         vault: String,
@@ -233,11 +271,16 @@ pub struct SessionInfo {
 }
 
 /// The secret-free view of what a session grants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GrantInfo {
-    /// Vault unlock factors.
-    Unlock,
+    /// Vault unlock factors. `challenge_response` tells whether the
+    /// session also holds the vault's hardware-key factor: without it, a
+    /// hardware-key vault still needs the key for every use.
+    Unlock {
+        /// Whether the session holds the challenge-response factor.
+        challenge_response: bool,
+    },
     /// Agent-facing reveal of one entry field.
     Reveal {
         /// Entry UUID.
@@ -275,6 +318,9 @@ pub enum Response {
     UnlockFactors {
         /// The held master password.
         master_password: SecretString,
+        /// The held challenge-response material, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        challenge_response: Option<ChallengeResponseMaterial>,
         /// When the serving session expires, unix seconds (`None` when
         /// a `once` session was just consumed). Long-running callers
         /// revalidate against this after subscribing to events, so an
@@ -415,6 +461,7 @@ mod tests {
             vault: "work".into(),
             grant: GrantSpec::Unlock {
                 master_password: SecretString::new("canary-password"),
+                challenge_response: None,
             },
             scope: Scope::Timed { seconds: 300 },
         };
@@ -424,15 +471,84 @@ mod tests {
         match back {
             Request::CreateSession {
                 vault,
-                grant: GrantSpec::Unlock { master_password },
+                grant:
+                    GrantSpec::Unlock {
+                        master_password,
+                        challenge_response,
+                    },
                 scope,
             } => {
                 assert_eq!(vault, "work");
                 assert_eq!(master_password.expose(), "canary-password");
+                assert_eq!(challenge_response, None);
                 assert_eq!(scope, Scope::Timed { seconds: 300 });
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    fn secret_material(secret: &str) -> ChallengeResponseMaterial {
+        ChallengeResponseMaterial::Secret {
+            secret_hex: SecretString::new(secret),
+        }
+    }
+
+    #[test]
+    fn challenge_response_material_travels_with_the_unlock_factors() {
+        let grant = GrantSpec::Unlock {
+            master_password: SecretString::new("master-pw"),
+            challenge_response: Some(secret_material("aabbcc")),
+        };
+        match roundtrip(grant.clone()) {
+            GrantSpec::Unlock {
+                master_password,
+                challenge_response,
+            } => {
+                assert_eq!(master_password.expose(), "master-pw");
+                assert_eq!(challenge_response, Some(secret_material("aabbcc")));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let response = Response::UnlockFactors {
+            master_password: SecretString::new("master-pw"),
+            challenge_response: Some(secret_material("aabbcc")),
+            expires_at: Some(42),
+        };
+        assert_eq!(roundtrip(response.clone()), response);
+
+        // The wire shape: an internally tagged `kind`, and the field left
+        // out entirely for a password-only vault so dialect-1 peers see
+        // the frames they always saw.
+        let json = serde_json::to_value(&grant).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "unlock",
+                "master_password": "master-pw",
+                "challenge_response": {"kind": "secret", "secret_hex": "aabbcc"}
+            })
+        );
+        let plain = GrantSpec::Unlock {
+            master_password: SecretString::new("master-pw"),
+            challenge_response: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"kind": "unlock", "master_password": "master-pw"})
+        );
+    }
+
+    #[test]
+    fn challenge_response_secret_is_redacted_in_debug_output() {
+        let grant = GrantSpec::Unlock {
+            master_password: SecretString::new("master-canary"),
+            challenge_response: Some(secret_material("secret-canary")),
+        };
+        let debug = format!("{grant:?}");
+        assert!(debug.contains("challenge_response"), "{debug}");
+        assert!(!debug.contains("secret-canary"), "{debug}");
+        assert!(!debug.contains("master-canary"), "{debug}");
     }
 
     #[test]

@@ -359,6 +359,7 @@ impl World {
                 &vault_name,
                 GrantSpec::Unlock {
                     master_password: SecretString::new(MASTER_PW),
+                    challenge_response: None,
                 },
                 Scope::Timed { seconds: 900 },
             )
@@ -884,6 +885,7 @@ fn with_no_agent_to_keep_it_the_answer_is_refused_and_still_presentable() {
             &world.vault_name,
             GrantSpec::Unlock {
                 master_password: SecretString::new(MASTER_PW),
+                challenge_response: None,
             },
             Scope::Timed { seconds: 900 },
         )
@@ -919,6 +921,7 @@ fn lock_ends_the_held_answer_and_password() {
             &world.vault_name,
             GrantSpec::Unlock {
                 master_password: SecretString::new(MASTER_PW),
+                challenge_response: None,
             },
             Scope::Timed { seconds: 900 },
         )

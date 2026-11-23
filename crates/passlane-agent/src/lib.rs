@@ -45,6 +45,16 @@ pub const SOCKET_ENV: &str = "PASSLANE_AGENT_SOCK";
 /// The socket file name inside the runtime directory.
 pub const SOCKET_FILENAME: &str = "passlane-agent.sock";
 
+/// The socket path named by `PASSLANE_AGENT_SOCK`, when the variable names
+/// one. A socket named this way is *configured*: a client that cannot
+/// reach it reports that instead of quietly moving on to another unlock
+/// source.
+pub fn configured_socket_path() -> Option<PathBuf> {
+    std::env::var_os(SOCKET_ENV)
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Where the agent's socket lives: `$PASSLANE_AGENT_SOCK`, else
 /// `$XDG_RUNTIME_DIR/passlane-agent.sock` (Linux, per-user and 0700 by
 /// spec), else `$TMPDIR/passlane-agent.sock` (macOS, where TMPDIR is

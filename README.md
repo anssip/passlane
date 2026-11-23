@@ -288,6 +288,13 @@ Timed `agent = ask` approvals work the same way: the ask flow's *Approve for thi
 reusable approval in the agent instead of granting a single use. Sessions expire on their own, die with
 the agent, and are capped at 8 hours no matter what.
 
+Commands that run **without a terminal** — agent daemons, scheduled jobs — are served the same way: the
+agent is asked first, so nothing waits on a keychain dialog, a hardware-key touch or a password prompt.
+Export `PASSLANE_AGENT_SOCK` in that environment (agent platforms often override `TMPDIR`, which the
+default socket lookup relies on); with it set, a socket that cannot be used is reported as an error
+instead of quietly falling through to a prompt nobody can answer. A hardware key whose secret stays in
+the device still needs a touch for every command.
+
 To get help on the available commands:
 
 #### Changing the master password

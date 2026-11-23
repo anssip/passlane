@@ -4,20 +4,24 @@
 //! A session is one granted approval. Its scope comes from the approval
 //! protocol (`passlane_approval::Scope`): `Once` dies on first use,
 //! `Timed { seconds }` is reusable until it expires. The key material a
-//! session may hold (a vault's master password, or a phone-held key's
-//! answer for one vault file version) lives in `zeroize`-protected
-//! buffers that are wiped the moment the session is dropped — by use,
-//! expiry, revocation, lock or shutdown.
+//! session may hold (a vault's master password, the challenge-response
+//! material a session can carry, or a phone-held key's answer for one
+//! vault file version) lives in `zeroize`-protected buffers that are
+//! wiped the moment the session is dropped — by use, expiry, revocation,
+//! lock or shutdown.
 
 use passlane_approval::message::Scope;
 use zeroize::Zeroizing;
 
-use crate::protocol::GrantInfo;
+use crate::protocol::{ChallengeResponseMaterial, GrantInfo};
 
-/// The unlock factors a session holds in memory. Wiped on drop.
+/// The unlock factors a session holds in memory: a vault's master
+/// password and, for a hardware-key vault, the challenge-response
+/// material when the factor is one that can be held. Wiped on drop.
 #[derive(Debug)]
 pub struct KeyMaterial {
     master_password: Zeroizing<String>,
+    challenge_response: Option<ChallengeResponseMaterial>,
 }
 
 impl KeyMaterial {
@@ -25,19 +29,34 @@ impl KeyMaterial {
     pub fn new(master_password: impl Into<String>) -> Self {
         Self {
             master_password: Zeroizing::new(master_password.into()),
+            challenge_response: None,
         }
+    }
+
+    /// Also hold the vault's challenge-response factor.
+    pub fn with_challenge_response(mut self, material: ChallengeResponseMaterial) -> Self {
+        self.challenge_response = Some(material);
+        self
     }
 
     /// The held master password.
     pub fn master_password(&self) -> &str {
         &self.master_password
     }
+
+    /// The held challenge-response material, if any.
+    pub fn challenge_response(&self) -> Option<&ChallengeResponseMaterial> {
+        self.challenge_response.as_ref()
+    }
 }
 
 // Manual Clone so the copy is zeroizing as well.
 impl Clone for KeyMaterial {
     fn clone(&self) -> Self {
-        Self::new(self.master_password.as_str())
+        Self {
+            master_password: Zeroizing::new(self.master_password.to_string()),
+            challenge_response: self.challenge_response.clone(),
+        }
     }
 }
 
@@ -124,6 +143,15 @@ impl Grant {
         matches!(self, Grant::ChallengeResponse(_))
     }
 
+    /// Whether this unlock grant also holds the vault's challenge-response
+    /// factor — the whole factor set a hardware-key vault needs.
+    pub fn holds_challenge_response(&self) -> bool {
+        match self {
+            Grant::Unlock(material) => material.challenge_response.is_some(),
+            Grant::ChallengeResponse(_) | Grant::Reveal { .. } => false,
+        }
+    }
+
     /// Whether this grant covers the given reveal, by UUID and field.
     pub fn covers_reveal(&self, id: &str, field: &str) -> bool {
         matches!(
@@ -135,7 +163,9 @@ impl Grant {
     /// The secret-free view for listings.
     pub fn info(&self) -> GrantInfo {
         match self {
-            Grant::Unlock(_) => GrantInfo::Unlock,
+            Grant::Unlock(material) => GrantInfo::Unlock {
+                challenge_response: material.challenge_response.is_some(),
+            },
             Grant::Reveal { id, entry, field } => GrantInfo::Reveal {
                 id: id.clone(),
                 entry: entry.clone(),
@@ -260,10 +290,16 @@ mod tests {
             "title collision must not grant access"
         );
         assert!(!g.is_unlock());
+        assert!(!g.holds_challenge_response());
 
         let u = Grant::Unlock(KeyMaterial::new("pw"));
         assert!(u.is_unlock());
         assert!(!u.covers_reveal("github.com", "password"));
+        assert!(!u.holds_challenge_response());
+        assert!(
+            Grant::Unlock(KeyMaterial::new("pw").with_challenge_response(secret_material("aabb")))
+                .holds_challenge_response()
+        );
     }
 
     #[test]
@@ -307,16 +343,54 @@ mod tests {
     fn info_never_carries_key_material() {
         let s = Session::new(
             "work",
-            Grant::Unlock(KeyMaterial::new("canary-pw")),
+            Grant::Unlock(
+                KeyMaterial::new("canary-pw")
+                    .with_challenge_response(secret_material("canary-secret")),
+            ),
             Scope::Timed { seconds: 60 },
             1_000,
         );
         let info = s.info();
-        assert_eq!(info.grant, GrantInfo::Unlock);
+        assert_eq!(
+            info.grant,
+            GrantInfo::Unlock {
+                challenge_response: true
+            }
+        );
         let json = serde_json::to_string(&info).unwrap();
         assert!(
             !json.contains("canary"),
             "listing must be secret-free: {json}"
         );
+
+        // A password-only session says so, so a listing tells a hardware-key
+        // vault's owner that the key is still needed for every command.
+        let s = Session::new(
+            "work",
+            Grant::Unlock(KeyMaterial::new("canary-pw")),
+            Scope::Timed { seconds: 60 },
+            1_000,
+        );
+        assert_eq!(
+            s.info().grant,
+            GrantInfo::Unlock {
+                challenge_response: false
+            }
+        );
+    }
+
+    fn secret_material(secret: &str) -> crate::protocol::ChallengeResponseMaterial {
+        crate::protocol::ChallengeResponseMaterial::Secret {
+            secret_hex: crate::protocol::SecretString::new(secret),
+        }
+    }
+
+    #[test]
+    fn cloning_key_material_copies_the_challenge_response_as_a_zeroizing_secret() {
+        let material = KeyMaterial::new("pw").with_challenge_response(secret_material("aabb"));
+        let clone = material.clone();
+        assert_eq!(clone.master_password(), "pw");
+        assert_eq!(clone.challenge_response(), material.challenge_response());
+        assert!(!format!("{clone:?}").contains("aabb"));
     }
 }

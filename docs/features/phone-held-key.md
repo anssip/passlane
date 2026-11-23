@@ -49,7 +49,10 @@ $ passlane show github                     ← re-run: the vault opens
 
 The 20-byte answer is a vault unlock factor. It is verified, used, and
 dropped; it is **never written to disk** (this is test-asserted end to
-end). Two paths deliver it to the command that needs it:
+end). The unlock chain asks for a held answer **before** the keychain —
+a command with no terminal and no keychain opens through one, which is
+the point (#61 finding 4). Two paths deliver it to the command that
+needs it:
 
 - **Interactive terminal**: the response is pasted into the waiting
   command and consumed on the spot.
