@@ -2,7 +2,7 @@
 name = "passlane-core"
 version = "4.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
 description = "Platform-independent passlane core: the KeePass-backed vault, password generator and hardware-key logic"

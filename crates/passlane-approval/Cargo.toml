@@ -2,7 +2,7 @@
 name = "passlane-approval"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
 description = "Message format and crypto for the passlane approval protocol (phone-as-key, agent approvals)"

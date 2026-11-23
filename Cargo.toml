@@ -14,7 +14,7 @@ keepass-ng = { git = "https://github.com/anssip/keepass-ng.git", branch = "chall
 name = "passlane"
 version = "4.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
 description = "A password manager and authenticator for the command line"
