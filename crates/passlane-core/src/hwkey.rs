@@ -1,13 +1,17 @@
 //! Hardware-key logic that does not touch the terminal: the enrolled-key
-//! configuration ([`HwKeyConfig`]) persisted per vault, and resolution of an
-//! enrolled config into a challenge-response key. Interactive flows — slot
-//! prompts, enrollment, recovery-secret entry — live in the CLI crate.
+//! configuration ([`HwKeyConfig`]) persisted per vault, and the user-facing
+//! messages for keys that are missing or ambiguous. The factor that answers
+//! a vault's challenges is [`crate::challenge::ChallengeFactor`], which an
+//! enrolled config resolves into. Interactive flows — slot prompts,
+//! enrollment, recovery-secret entry — live in the CLI crate.
 
 #[cfg(feature = "usb")]
 use keepass_ng::ChallengeResponseKey;
 use keepass_ng::{ChallengeResponseKeyError, DatabaseKeyError};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "usb")]
+use crate::challenge::ChallengeFactor;
 use crate::vault::entities::Error;
 
 /// Enrolled hardware-key configuration for a vault: which HMAC-SHA1
@@ -65,20 +69,18 @@ impl HwKeyConfig {
 }
 
 /// Build the challenge-response key from an enrolled config, resolving the
-/// connected device.
+/// connected device. This is the keepass-ng key form of
+/// `ChallengeFactor::yubikey(config.slot, config.serial)`, for callers
+/// that want to hand keepass-ng's own key type to the vault.
 #[cfg(feature = "usb")]
 pub fn configured_challenge_response_key(
     config: &HwKeyConfig,
 ) -> Result<ChallengeResponseKey, Error> {
-    let device = ChallengeResponseKey::get_yubikey(config.serial).map_err(friendly_device_error)?;
-    Ok(ChallengeResponseKey::YubikeyChallenge(
-        device,
-        config.slot.to_string(),
-    ))
+    ChallengeFactor::yubikey(config.slot, config.serial)?.challenge_response_key()
 }
 
 /// Map keepass-ng's device errors to user-facing messages. Shared by
-/// [`configured_challenge_response_key`] and the CLI's enrollment flow.
+/// [`crate::challenge::ChallengeFactor`] and the CLI's enrollment flow.
 pub fn friendly_device_error(e: DatabaseKeyError) -> Error {
     let message = match e {
         DatabaseKeyError::ChallengeResponse(ChallengeResponseKeyError::NoKeys) => {
@@ -149,5 +151,53 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_keys() {
         assert!(HwKeyConfig::parse("slot=1\nfoo=bar").is_err());
+    }
+
+    fn device_message(e: ChallengeResponseKeyError) -> String {
+        friendly_device_error(DatabaseKeyError::ChallengeResponse(e)).message
+    }
+
+    #[test]
+    fn missing_and_ambiguous_keys_get_actionable_messages() {
+        assert_eq!(
+            device_message(ChallengeResponseKeyError::NoKeys),
+            "No hardware key detected. Insert the key and try again."
+        );
+        assert_eq!(
+            device_message(ChallengeResponseKeyError::KeyNotFound(42)),
+            "Hardware key (serial 42) is not connected. Insert the key and try again."
+        );
+        let ambiguous = device_message(ChallengeResponseKeyError::AmbiguousKeys);
+        assert!(
+            ambiguous.contains("'--serial <serial>'"),
+            "the fix must be named: {}",
+            ambiguous
+        );
+    }
+
+    #[test]
+    fn an_invalid_slot_names_the_slot_and_the_valid_ones() {
+        assert_eq!(
+            device_message(ChallengeResponseKeyError::InvalidSlot("7".to_string())),
+            "Invalid hardware key slot '7': must be 1 or 2"
+        );
+    }
+
+    #[test]
+    fn other_key_errors_keep_their_own_message() {
+        let message = device_message(ChallengeResponseKeyError::NotPerformed);
+        assert_eq!(message, ChallengeResponseKeyError::NotPerformed.to_string());
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn an_enrolled_config_with_an_invalid_slot_is_rejected_up_front() {
+        // Before any USB device is looked for, so this needs no key.
+        let err = configured_challenge_response_key(&HwKeyConfig {
+            slot: 7,
+            serial: Some(1),
+        })
+        .expect_err("the slot must be rejected");
+        assert_eq!(err.message, "Invalid hardware key slot '7': must be 1 or 2");
     }
 }

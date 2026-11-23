@@ -2,6 +2,7 @@ use crate::actions::Action;
 use crate::keychain;
 use crate::ui::input::{ask_master_password, ask_new_master_password};
 use crate::vault_registry;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 
@@ -20,18 +21,19 @@ impl Action for ChangePasswordAction {
             "Please enter current master password of vault '{}'",
             config.name
         )));
-        let challenge_response = match config.hwkey {
-            Some(ref hwkey_config) => Some(
-                passlane_core::hwkey::configured_challenge_response_key(hwkey_config)?,
-            ),
+        let challenge_factor = match config.hwkey {
+            Some(ref hwkey_config) => Some(ChallengeFactor::yubikey(
+                hwkey_config.slot,
+                hwkey_config.serial,
+            )?),
             None => None,
         };
 
-        let mut vault = KeepassVault::open(
+        let mut vault = KeepassVault::open_with_challenge_factor(
             &current_pwd,
             &config.path,
             config.keyfile,
-            challenge_response.as_ref(),
+            challenge_factor.as_ref(),
         )?;
 
         let new_pwd = ask_new_master_password();

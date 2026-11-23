@@ -36,7 +36,7 @@ impl Action for UnlockAction {
                 // handed over; say so, or the session looks like more than
                 // it is the first time a command still asks for the key.
                 let challenge_response = crate::session_agent::challenge_response_material(
-                    unlocked.factors.challenge_response.as_ref(),
+                    unlocked.factors.challenge_factor.as_ref(),
                 );
                 let key_note = match (&config.hwkey, &challenge_response) {
                     (None, _) => "the unlock factors",

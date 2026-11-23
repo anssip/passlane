@@ -38,6 +38,15 @@ RUST_LOG=debug cargo run
 cargo test <test_name>
 ```
 
+### Mobile (no-USB) build check
+`passlane-core` without its `usb` feature is what the iOS app consumes: libusb does not exist there, so virtual challenge-response keys are in and the USB backend is out. Check that configuration with (needs Xcode; install the targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`):
+```bash
+cargo build -p passlane-core --no-default-features --target aarch64-apple-ios
+cargo build -p passlane-core --no-default-features --target aarch64-apple-ios-sim
+cargo test -p passlane-core --no-default-features
+```
+CI runs all three; code in `passlane-core` that needs a YubiKey must sit behind `#[cfg(feature = "usb")]`, imports included.
+
 ## Development Workflow
 
 - All new features from GitHub issues are implemented on a new branch and merged via a pull request on GitHub — never committed directly to master.
@@ -55,7 +64,7 @@ The codebase uses an action-based pattern where all user commands are implemente
 
 ### Workspace Layout
 
-The repo is a cargo workspace: the root package is the `passlane` CLI, and `crates/*` holds shared library crates (`passlane-core`, `passlane-approval`). `passlane-core` carries the platform-independent logic (KeePass vault, password generator, pure hardware-key config) so the CLI and the iOS app share a single kdbx implementation; its `usb` cargo feature (enabled by the CLI) gates real YubiKey support, keeping libusb out of mobile builds.
+The repo is a cargo workspace: the root package is the `passlane` CLI, and `crates/*` holds shared library crates (`passlane-core`, `passlane-approval`). `passlane-core` carries the platform-independent logic (KeePass vault, password generator, pure hardware-key config) so the CLI and the iOS app share a single kdbx implementation; its `usb` cargo feature (off by default, enabled by the CLI) gates real YubiKey support, keeping libusb out of mobile builds.
 
 ```
 crates/passlane-core/    # Platform-independent core (lib crate), consumed by the CLI
@@ -64,7 +73,8 @@ crates/passlane-core/    # Platform-independent core (lib crate), consumed by th
 │   ├── keepass_vault.rs # Keepass implementation (only implementation currently)
 │   └── entities.rs      # Data models: Credential, PaymentCard, Note, Totp, Error
 ├── src/generator.rs     # Password generation/validation
-└── src/hwkey.rs         # HwKeyConfig parsing, challenge-response key resolution (pure parts)
+├── src/challenge.rs     # ChallengeFactor: virtual keys (everywhere) and YubiKey (usb feature)
+└── src/hwkey.rs         # HwKeyConfig parsing, user-facing device-error messages
 
 src/                     # The passlane CLI package
 ├── main.rs              # CLI definition using clap, command routing to actions
@@ -93,6 +103,17 @@ src/                     # The passlane CLI package
 ### Multiple Vaults
 
 Passlane manages any number of **named vaults**; each is one kdbx file plus optional keyfile and hardware-key factors, and any vault can hold all entry types (credentials, payment cards, notes, TOTP). Vault configurations live in `~/.passlane/vaults.json`; the vault used by default is the **active vault**, recorded in `~/.passlane/.active_vault`. Every command accepts a global `--vault <NAME>` flag (or `PASSLANE_VAULT` env var) to target another vault; `main.rs` resolves the target before dispatch and stores it in the process-global current vault (`vault_registry::current()`), which `unlock()` and friends read. `unlock -o`/`passwd -o` are legacy aliases for `--vault totp` (the migrated TOTP vault). On first run after upgrading, the pre-multi-vault dot-file config is migrated automatically (main vault → `default`, TOTP vault → `totp`).
+
+### Challenge-Response Factors
+
+A vault's composite key can include a challenge-response factor (HMAC-SHA1 over the vault's challenge), represented by `passlane_core::challenge::ChallengeFactor`:
+
+- `Virtual { secret_hex }` — the 20-byte HMAC-SHA1 secret as 40 hex characters, answered locally with no device and no touch. It is both the **virtual key** that is the mobile path and the **recovery secret** of a lost hardware key (`hwkey remove --secret`): the same key material. Build it with `ChallengeFactor::from_secret_hex`, which validates the secret.
+- `Yubikey { slot, serial }` — a connected key's HMAC-SHA1 slot; it exists only with the `usb` cargo feature and every open and save waits for a touch. Build it with `ChallengeFactor::yubikey`, which checks that the key is connected.
+
+Both map onto keepass-ng's `ChallengeResponseKey` and protect one vault format, so a vault enrolled with a virtual key opens with a `LocalChallenge` and vice versa. A **new** virtual key is always a 20-byte key in hex: `from_secret_hex` validates it, and so do `new_with_challenge_factor` and `update_challenge_factor` — keepass-ng alone would accept any hex string, an empty one included. Opening is never stricter than the file format: a vault that another tool protected with a secret of another length still opens and re-saves, and `from_existing_secret_hex` builds the factor for it (`hwkey remove --secret` tries it with a note when the secret is not 40 characters). `KeepassVault::open_with_challenge_factor`, `new_with_challenge_factor` and `update_challenge_factor` take the factor (and re-challenge it on every save); `open`, `new` and `update_challenge_response` still accept keepass-ng's own key type. Only a YubiKey gets the "Touch your hardware key" notice. The vault registry (`vaults.json`) records physical keys only (`hwkey: {slot, serial}`) and never a secret.
+
+Never match keepass-ng's `ChallengeResponseKey` in `passlane-core` without a wildcard fallback arm: its YubiKey variant exists whenever *any* crate in the build enables keepass-ng's USB feature, which need not be core's `usb`, so an exhaustive match with a cfg-gated arm does not compile in that combination (see `ChallengeFactor::try_from`; CI builds it).
 
 ### Configuration Files
 

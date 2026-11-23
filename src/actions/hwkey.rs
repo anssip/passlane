@@ -1,5 +1,6 @@
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
+use passlane_core::challenge::ChallengeFactor;
 
 use crate::actions::{
     Action, ChallengeKey, at_a_terminal, hardware_key_needs_a_terminal, unlock_keepass,
@@ -14,8 +15,8 @@ use passlane_core::vault::entities::Error;
 enum Opening {
     /// A live session holding the vault's key factor.
     Session,
-    /// This key: the recovery secret, or the enrolled key on its device.
-    Key(ChallengeResponseKey),
+    /// This factor: the recovery secret, or the enrolled key on its device.
+    Key(ChallengeFactor),
 }
 
 /// How `hwkey remove` opens the vault. Recovery types the backed-up secret
@@ -36,7 +37,7 @@ fn removal_opening(
                 config.name
             )));
         }
-        return Ok(Opening::Key(hwkey::recovery_key_from_prompt()));
+        return Ok(Opening::Key(hwkey::recovery_key_from_prompt()?));
     }
     match session_factors(&config.name)? {
         SessionFactors::WithKeyFactor => Ok(Opening::Session),
@@ -49,9 +50,10 @@ fn removal_opening(
                     held == SessionFactors::PasswordOnly,
                 ));
             }
-            Ok(Opening::Key(
-                passlane_core::hwkey::configured_challenge_response_key(enrolled)?,
-            ))
+            Ok(Opening::Key(ChallengeFactor::yubikey(
+                enrolled.slot,
+                enrolled.serial,
+            )?))
         }
     }
 }
@@ -124,19 +126,19 @@ impl HwKeyAction {
             )));
         }
         // Fail fast if no key is connected, before asking for the password.
-        let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
+        let (challenge_factor, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
-        // The vault takes no challenge-response key yet; the new one is
+        // The vault takes no challenge-response factor yet; the new one is
         // challenged by the save below.
         let mut vault = unlock_keepass(ChallengeKey::Given(None))?.vault;
         // The re-save challenges the new key, proving the enrollment
         // before the config is persisted.
-        vault.update_challenge_response(Some(challenge_response))?;
+        vault.update_challenge_factor(Some(challenge_factor))?;
         if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
             // The vault now requires the key but passlane would not know
             // to use it (no persisted config): roll the factor back or
             // the vault can no longer be opened via passlane.
-            if let Err(rollback) = vault.update_challenge_response(None) {
+            if let Err(rollback) = vault.update_challenge_factor(None) {
                 eprintln!(
                     "Warning: failed to roll back the hardware key enrollment: {}",
                     rollback
@@ -157,6 +159,9 @@ impl HwKeyAction {
                 config.name
             ))
         })?;
+        // With --secret the lost key's backed-up slot secret stands in for
+        // it; otherwise the enrolled key — a live session or the connected
+        // device — answers the challenges.
         let opening = removal_opening(&config, &enrolled, secret)?;
         let key = match &opening {
             Opening::Session => ChallengeKey::Enrolled,
@@ -168,7 +173,7 @@ impl HwKeyAction {
         // rather than stripping the factor first and leaving passlane
         // demanding a key the vault no longer requires.
         vault_registry::set_hwkey(&config.name, None)?;
-        if let Err(e) = vault.update_challenge_response(None) {
+        if let Err(e) = vault.update_challenge_factor(None) {
             // The vault on disk still requires the key; put the config
             // back so passlane keeps using it.
             if let Err(restore_err) =
