@@ -12,6 +12,7 @@
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use passlane_approval::message::Scope;
 use zeroize::Zeroizing;
@@ -22,11 +23,19 @@ use crate::protocol::{
     decode, read_frame, write_frame,
 };
 
+/// How long a client waits for the agent's answer to one request. The
+/// agent is local and answers at once; silence means it is wedged, and a
+/// command must not wait on it for good. Subscribed event streams are not
+/// subject to it — they wait for events by design.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A connection to a running agent.
 pub struct AgentClient {
     #[cfg(unix)]
     stream: UnixStream,
     path: PathBuf,
+    #[cfg(unix)]
+    request_timeout: Duration,
 }
 
 /// What [`AgentClient::ping`] learned about the agent.
@@ -123,9 +132,13 @@ impl AgentClient {
                 // The connection is established; make sure the path we
                 // connected to is still the one we validated.
                 socket_is_trusted(path)?;
+                // A trusted socket whose listener never answers must not
+                // hold the command for good.
+                stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
                 Ok(AgentClient {
                     stream,
                     path: path.to_path_buf(),
+                    request_timeout: REQUEST_TIMEOUT,
                 })
             }
             Err(e)
@@ -140,9 +153,25 @@ impl AgentClient {
         }
     }
 
+    /// How long to wait for the agent's answer to one request (see
+    /// [`REQUEST_TIMEOUT`]).
+    pub fn set_request_timeout(&mut self, timeout: Duration) -> Result<(), AgentError> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        self.request_timeout = timeout;
+        Ok(())
+    }
+
     fn call(&mut self, request: Request) -> Result<Response, AgentError> {
         write_frame(&mut self.stream, &request)?;
-        let frame = read_frame(&mut self.stream)?;
+        let frame = match read_frame(&mut self.stream) {
+            Ok(frame) => frame,
+            // The read gave up at its deadline: the agent took the request
+            // and never answered.
+            Err(AgentError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Err(AgentError::TimedOut(self.request_timeout));
+            }
+            Err(e) => return Err(e),
+        };
         match decode(&frame)? {
             Response::Error { code, message } => Err(AgentError::Server { code, message }),
             response => Ok(response),
@@ -310,9 +339,14 @@ impl AgentClient {
     /// notifications); no further requests can be sent on it.
     pub fn subscribe(mut self) -> Result<EventStream, AgentError> {
         match self.call(Request::Subscribe)? {
-            Response::Subscribed => Ok(EventStream {
-                stream: self.stream,
-            }),
+            Response::Subscribed => {
+                // From here on the stream only carries events, whenever
+                // they come: it must not time out.
+                self.stream.set_read_timeout(None)?;
+                Ok(EventStream {
+                    stream: self.stream,
+                })
+            }
             other => Err(AgentError::Protocol(format!(
                 "unexpected answer: {other:?}"
             ))),
@@ -429,6 +463,10 @@ impl AgentClient {
         unsupported!()
     }
     /// Unsupported on this platform (see [`AgentClient::connect`]).
+    pub fn set_request_timeout(&mut self, _timeout: Duration) -> Result<(), AgentError> {
+        unsupported!()
+    }
+    /// Unsupported on this platform (see [`AgentClient::connect`]).
     pub fn create_session(
         &mut self,
         _vault: &str,
@@ -493,6 +531,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+    use std::time::Instant;
 
     /// An agent that answers `ping` with the given dialect and nothing
     /// else: enough to test what a client does before trusting it.
@@ -534,6 +573,43 @@ mod tests {
         let (_dir, path) = scripted_agent(PROTOCOL_VERSION);
         let mut client = AgentClient::connect(&path).unwrap();
         assert_eq!(client.check_version().unwrap().version, PROTOCOL_VERSION);
+    }
+
+    /// A request timeout that keeps the test short.
+    const SHORT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    /// A trusted socket whose listener accepts and then says nothing:
+    /// an agent that is wedged.
+    fn silent_agent() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || {
+            // Hold the connection open without ever answering.
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            std::thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        });
+        (dir, path)
+    }
+
+    #[test]
+    fn a_client_gives_up_on_an_agent_that_never_answers() {
+        let (_dir, path) = silent_agent();
+        let mut client = AgentClient::connect(&path).unwrap();
+        client.set_request_timeout(SHORT_TIMEOUT).unwrap();
+        let started = Instant::now();
+        match client.check_version() {
+            Err(AgentError::TimedOut(timeout)) => assert_eq!(timeout, SHORT_TIMEOUT),
+            other => panic!("expected TimedOut, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < SHORT_TIMEOUT + Duration::from_secs(2),
+            "the wait must end at the bound"
+        );
     }
 
     #[test]

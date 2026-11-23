@@ -658,6 +658,32 @@ fn client_refuses_untrusted_sockets() {
     }
 }
 
+/// A subscribed connection waits for events for as long as the session
+/// lives: the bound on ordinary requests must not cut it short.
+#[test]
+fn an_event_stream_is_not_subject_to_the_request_timeout() {
+    let agent = RunningAgent::start();
+    let mut subscriber = agent.client();
+    subscriber
+        .set_request_timeout(Duration::from_millis(200))
+        .expect("short request timeout");
+    let created = subscriber
+        .create_session("work", unlock_grant("pw"), Scope::Timed { seconds: 600 })
+        .unwrap();
+    let mut events = subscriber.subscribe().unwrap();
+    let waiter = std::thread::spawn(move || events.next_event());
+
+    // Nothing happens for far longer than the request timeout.
+    std::thread::sleep(Duration::from_millis(700));
+    agent.client().revoke_session(&created.id).unwrap();
+
+    match waiter.join().unwrap() {
+        Ok(Event::SessionRevoked { id, .. }) => assert_eq!(id, created.id),
+        other => panic!("the subscriber must still be waiting, got {other:?}"),
+    }
+    agent.stop();
+}
+
 #[test]
 fn stopping_the_agent_closes_open_connections() {
     let agent = RunningAgent::start();

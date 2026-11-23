@@ -98,6 +98,9 @@ pub fn to_error(e: AgentError) -> Error {
              match the running agent."
                 .to_string(),
         ),
+        AgentError::TimedOut(_) => {
+            Some("Restart passlane-agent and run the command again.".to_string())
+        }
         AgentError::Protocol(_) | AgentError::Io(_) => Some(format!(
             "Check {SOCKET_ENV}: it must name the socket of a running passlane-agent started \
              by your user, in a private directory."
@@ -128,6 +131,39 @@ pub fn unlock_factors(vault: &str) -> Result<Option<UnlockFactors>, AgentError> 
         }) => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// What a live session-agent session holds for a vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFactors {
+    /// No session for this vault.
+    None,
+    /// The master password only.
+    PasswordOnly,
+    /// The master password and the vault's challenge-response factor: a
+    /// hardware-key vault then opens with no key present.
+    WithKeyFactor,
+}
+
+/// What a live session holds for the vault. An agent that cannot be used
+/// is reported: a session that may exist must not pass for absent.
+pub fn session_factors(vault: &str) -> Result<SessionFactors, Error> {
+    unlock_factors(vault)
+        .map(|held| match held {
+            None => SessionFactors::None,
+            Some(factors) if factors.challenge_response.is_none() => SessionFactors::PasswordOnly,
+            Some(_) => SessionFactors::WithKeyFactor,
+        })
+        .map_err(to_error)
+}
+
+/// Whether a live session holds the vault's unlock factors, so the vault
+/// can be used with no keychain and no prompt. An agent that cannot be
+/// reached counts as "no": callers only use this to skip something.
+pub fn holds_unlock_session(vault: &str) -> bool {
+    session_factors(vault)
+        .map(|held| held != SessionFactors::None)
+        .unwrap_or(false)
 }
 
 /// What a session can hold of the challenge-response key a vault was
@@ -336,13 +372,20 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use passlane_agent::server::{AgentConfig, AgentServer};
     use passlane_approval::policy::Policy;
-    use std::path::Path;
-    use std::sync::Mutex;
+
+    // The agent's server is Unix-only, and so are the tests that need a
+    // socket to talk to; everything else here runs everywhere.
+    #[cfg(unix)]
+    use {
+        passlane_agent::server::{AgentConfig, AgentServer},
+        std::path::Path,
+        std::sync::Mutex,
+    };
 
     /// The socket the CLI talks to is process-global (an environment
-    /// variable); this is the only test in the binary that sets it.
+    /// variable); the socket tests below are the only ones that set it.
+    #[cfg(unix)]
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// The ask flow's held duration must track the approval protocol's
@@ -409,6 +452,14 @@ mod tests {
             mismatch.message
         );
 
+        let wedged = to_error(AgentError::TimedOut(std::time::Duration::from_secs(5)));
+        assert!(
+            wedged.message.contains("did not answer within 5s")
+                && wedged.message.contains("Restart passlane-agent"),
+            "{}",
+            wedged.message
+        );
+
         let untrusted = to_error(AgentError::Protocol("untrusted socket".into()));
         assert!(
             untrusted.message.contains("Check PASSLANE_AGENT_SOCK"),
@@ -454,8 +505,10 @@ mod tests {
 
     /// Points the CLI at a socket for as long as it lives and puts
     /// `PASSLANE_AGENT_SOCK` back afterwards — on a failing assertion too.
+    #[cfg(unix)]
     struct SocketEnv(Option<std::ffi::OsString>);
 
+    #[cfg(unix)]
     impl SocketEnv {
         fn point_at(socket: &Path) -> Self {
             let saved = std::env::var_os(SOCKET_ENV);
@@ -467,6 +520,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for SocketEnv {
         fn drop(&mut self) {
             // SAFETY: see `point_at`.
@@ -479,6 +533,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_backed_access_is_live_exactly_while_the_session_is() {
         let _guard = ENV_MUTEX
@@ -528,6 +583,7 @@ mod tests {
         served.join().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn locking_reports_an_agent_it_cannot_trust_but_not_one_that_is_not_there() {
         let _guard = ENV_MUTEX

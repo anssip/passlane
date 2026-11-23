@@ -557,13 +557,19 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
             Ok(mut sessions) => {
                 let now = now_secs();
                 // A timed session is reusable until expiry; a once
-                // session is consumed by this call.
-                let timed = sessions.values().find(|s| {
-                    s.vault == vault
-                        && s.grant.is_unlock()
-                        && !s.expired(now)
-                        && matches!(s.scope, Scope::Timed { .. })
-                });
+                // session is consumed by this call. Of several live
+                // sessions for one vault, the one holding the whole factor
+                // set is preferred: map order must not decide whether a
+                // hardware-key vault can be opened unattended.
+                let timed = sessions
+                    .values()
+                    .filter(|s| {
+                        s.vault == vault
+                            && s.grant.is_unlock()
+                            && !s.expired(now)
+                            && matches!(s.scope, Scope::Timed { .. })
+                    })
+                    .max_by_key(|s| s.grant.holds_challenge_response());
                 if let Some(session) = timed {
                     if let Grant::Unlock(material) = &session.grant {
                         return Response::UnlockFactors {
@@ -578,9 +584,10 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                 }
                 let once_id = sessions
                     .values()
-                    .find(|s| {
+                    .filter(|s| {
                         s.vault == vault && s.grant.is_unlock() && matches!(s.scope, Scope::Once)
                     })
+                    .max_by_key(|s| s.grant.holds_challenge_response())
                     .map(|s| s.id.clone());
                 match once_id.and_then(|id| sessions.remove(&id)) {
                     // The removed session's key material wipes on drop;
@@ -828,6 +835,76 @@ mod tests {
                 assert_eq!(list[0].id, created);
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A vault can have a password-only session and one holding its key
+    /// factor live at once (say, one created before the factor could be
+    /// handed over). Whichever came first, the complete one is served.
+    #[test]
+    fn the_session_holding_the_key_factor_is_preferred() {
+        for keyed_first in [true, false] {
+            let shared = shared(60);
+            let grants = if keyed_first {
+                [keyed_grant("pw", "aabb"), unlock_grant("pw")]
+            } else {
+                [unlock_grant("pw"), keyed_grant("pw", "aabb")]
+            };
+            for grant in grants {
+                assert!(matches!(
+                    dispatch(
+                        &shared,
+                        Request::CreateSession {
+                            vault: "keyed".into(),
+                            grant,
+                            scope: Scope::Timed { seconds: 60 },
+                        }
+                    ),
+                    Response::SessionCreated { .. }
+                ));
+            }
+            match dispatch(
+                &shared,
+                Request::GetUnlockFactors {
+                    vault: "keyed".into(),
+                },
+            ) {
+                Response::UnlockFactors {
+                    challenge_response, ..
+                } => assert!(
+                    challenge_response.is_some(),
+                    "keyed created first: {keyed_first}"
+                ),
+                other => panic!("{other:?}"),
+            }
+            // The same for once sessions.
+            for grant in [unlock_grant("pw"), keyed_grant("pw", "aabb")] {
+                assert!(matches!(
+                    dispatch(
+                        &shared,
+                        Request::CreateSession {
+                            vault: "once-keyed".into(),
+                            grant,
+                            scope: Scope::Once,
+                        }
+                    ),
+                    Response::SessionCreated { .. }
+                ));
+            }
+            match dispatch(
+                &shared,
+                Request::GetUnlockFactors {
+                    vault: "once-keyed".into(),
+                },
+            ) {
+                Response::UnlockFactors {
+                    challenge_response, ..
+                } => assert!(
+                    challenge_response.is_some(),
+                    "keyed created first: {keyed_first}"
+                ),
+                other => panic!("{other:?}"),
+            }
         }
     }
 

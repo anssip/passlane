@@ -16,7 +16,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use keepass_ng::ChallengeResponseKey;
 use passlane_agent::client::AgentClient;
@@ -73,33 +73,46 @@ impl Fixture {
         AgentClient::connect(&self.socket).expect("the agent is running")
     }
 
-    /// Register a vault in the scratch registry and create its file, with
-    /// one `agent=allow` credential.
+    /// Create a vault file with one `agent=allow` credential and register
+    /// it in the scratch registry (the first one becomes the active vault;
+    /// every test addresses its vaults by name anyway).
     fn add_vault(&self, name: &str, with_hardware_key: bool) {
-        let path = self.home.path().join(format!("{name}.kdbx"));
-        let path = path.to_str().unwrap();
+        let file = self.home.path().join(format!("{name}.kdbx"));
+        let file = file.to_str().unwrap();
         let factor = with_hardware_key.then(local_challenge);
         let mut vault =
-            KeepassVault::new(path, PASSWORD, None, factor.as_ref()).expect("create the vault");
+            KeepassVault::new(file, PASSWORD, None, factor.as_ref()).expect("create the vault");
         vault
             .save_one_credential(
                 Credential::new(None, ENTRY_PASSWORD, "github.com", "alice", None, None)
                     .with_custom_attributes(&[("agent".to_string(), "allow".to_string())]),
             )
             .expect("seed the vault");
-        let hwkey = if with_hardware_key {
-            r#","hwkey":{"slot":1}"#
-        } else {
-            ""
-        };
+
         let registry = self.home.path().join(".passlane");
         std::fs::create_dir_all(&registry).unwrap();
+        let registry_file = registry.join("vaults.json");
+        let mut vaults: Vec<serde_json::Value> = match std::fs::read_to_string(&registry_file) {
+            Ok(text) => serde_json::from_str::<serde_json::Value>(&text).unwrap()["vaults"]
+                .as_array()
+                .expect("a registry has a vaults array")
+                .clone(),
+            Err(_) => Vec::new(),
+        };
+        let mut entry = serde_json::json!({"name": name, "path": file});
+        if with_hardware_key {
+            entry["hwkey"] = serde_json::json!({"slot": 1});
+        }
+        vaults.push(entry);
         std::fs::write(
-            registry.join("vaults.json"),
-            format!(r#"{{"version":1,"vaults":[{{"name":"{name}","path":"{path}"{hwkey}}}]}}"#),
+            &registry_file,
+            serde_json::json!({"version": 1, "vaults": vaults}).to_string(),
         )
         .unwrap();
-        std::fs::write(registry.join(".active_vault"), name).unwrap();
+        let active = registry.join(".active_vault");
+        if !active.exists() {
+            std::fs::write(active, name).unwrap();
+        }
     }
 
     /// What `passlane unlock --session` hands the agent: the vault's master
@@ -360,6 +373,43 @@ fn a_locked_vault_fails_with_guidance_instead_of_prompting() {
 }
 
 #[test]
+fn a_stale_completion_cache_is_refreshed_from_the_vault_a_command_opens() {
+    let fixture = Fixture::start();
+    fixture.add_vault("plain", false);
+    fixture.create_unlock_session("plain", false);
+    let cache = fixture
+        .home
+        .path()
+        .join(".passlane")
+        .join(".completion_cache.plain");
+    std::fs::write(&cache, "stale.example:nobody\n").unwrap();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cache)
+        .unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60))
+        .unwrap();
+    drop(file);
+
+    // A command that does not open the vault does not read the keychain
+    // for the cache when nobody could answer for it: the stale file stays.
+    let (output, _) = fixture.passlane(&["sessions", "list"]);
+    assert!(output.status.success(), "{:?}", stderr_of(&output));
+    assert_eq!(
+        std::fs::read_to_string(&cache).unwrap(),
+        "stale.example:nobody\n"
+    );
+
+    // A command that does open the vault brings the cache up to date from
+    // it — no keychain involved.
+    let (output, _) = show_entry(&fixture, "plain");
+    assert!(output.status.success(), "{:?}", stderr_of(&output));
+    let cache = std::fs::read_to_string(&cache).unwrap();
+    assert!(cache.contains("github.com:alice"), "{cache}");
+    assert!(!cache.contains("stale.example"), "{cache}");
+}
+
+#[test]
 fn a_revoked_session_no_longer_opens_the_vault() {
     let fixture = Fixture::start();
     fixture.add_vault("plain", false);
@@ -435,6 +485,119 @@ fn an_untrusted_socket_is_refused_before_anything_is_sent() {
     assert!(stderr.contains("untrusted"), "{stderr}");
     assert!(stderr.contains("PASSLANE_AGENT_SOCK"), "{stderr}");
     assert_eq!(stdout_of(&output), "");
+}
+
+/// A trusted socket whose listener accepts connections and never answers
+/// them: an agent that is wedged.
+fn wedged_agent(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let socket = dir.join("wedged.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::thread::spawn(move || {
+        // Hold the connection open and say nothing, for longer than any
+        // test is willing to wait.
+        let Ok((stream, _)) = listener.accept() else {
+            return;
+        };
+        std::thread::sleep(Duration::from_secs(120));
+        drop(stream);
+    });
+    socket
+}
+
+#[test]
+fn an_agent_that_never_answers_does_not_hang_the_command() {
+    let fixture = Fixture::start();
+    fixture.add_vault("plain", false);
+    let wedged_dir = tempfile::tempdir().unwrap();
+    let wedged = wedged_agent(wedged_dir.path());
+
+    let (output, elapsed) = fixture.passlane_with_socket(
+        &["--vault", "plain", "show", "--out", "github.com"],
+        &wedged,
+    );
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("did not answer within"), "{stderr}");
+    assert!(stderr.contains("Restart passlane-agent"), "{stderr}");
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "bounded by the request timeout, not by the wedged agent: {elapsed:?}"
+    );
+}
+
+#[test]
+fn hardware_key_commands_never_wait_unattended() {
+    let fixture = Fixture::start();
+    fixture.add_vault("plain", false);
+    fixture.add_vault("keyed", true);
+    // Enrolling needs the new key touched to save; recovery needs the
+    // secret typed in; an ordinary removal needs the enrolled key. None of
+    // that happens for a command without a terminal, and each is refused
+    // before anything is resolved, asked or touched.
+    for args in [
+        vec!["--vault", "plain", "hwkey", "add", "--slot", "1"],
+        vec!["--vault", "keyed", "hwkey", "remove", "--secret"],
+        vec!["--vault", "keyed", "hwkey", "remove"],
+    ] {
+        let (output, elapsed) = fixture.passlane(&args);
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(stderr.contains("from a terminal"), "{args:?}: {stderr}");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "{args:?} failed fast: {elapsed:?}"
+        );
+    }
+}
+
+#[test]
+fn a_session_holding_the_key_factor_lets_the_key_be_removed_unattended() {
+    let fixture = Fixture::start();
+    fixture.add_vault("keyed", true);
+    fixture.create_unlock_session("keyed", true);
+
+    // The session opens the vault with no key present, and the save that
+    // drops the factor needs no challenge.
+    let (output, elapsed) = fixture.passlane(&["--vault", "keyed", "hwkey", "remove"]);
+    assert!(
+        output.status.success(),
+        "rc={:?} stderr={:?}",
+        output.status,
+        stderr_of(&output)
+    );
+    assert!(
+        !stderr_of(&output).contains("Touch"),
+        "{:?}",
+        stderr_of(&output)
+    );
+    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+
+    // The vault itself no longer requires the factor, and the registry
+    // no longer records one.
+    let vault = fixture.home.path().join("keyed.kdbx");
+    KeepassVault::open(PASSWORD, vault.to_str().unwrap(), None, None)
+        .expect("the vault opens with the master password alone");
+    let registry =
+        std::fs::read_to_string(fixture.home.path().join(".passlane").join("vaults.json")).unwrap();
+    assert!(!registry.contains("hwkey"), "{registry}");
+}
+
+#[test]
+fn a_password_only_session_does_not_let_the_key_be_removed_unattended() {
+    let fixture = Fixture::start();
+    fixture.add_vault("keyed", true);
+    fixture.create_unlock_session("keyed", false);
+
+    let (output, _) = fixture.passlane(&["--vault", "keyed", "hwkey", "remove"]);
+    let stderr = stderr_of(&output);
+    assert!(!output.status.success());
+    assert!(stderr.contains("hardware key"), "{stderr}");
+    assert!(stderr.contains("from a terminal"), "{stderr}");
+    // Nothing changed: the vault still requires the factor.
+    let vault = fixture.home.path().join("keyed.kdbx");
+    assert!(KeepassVault::open(PASSWORD, vault.to_str().unwrap(), None, None).is_err());
 }
 
 #[test]

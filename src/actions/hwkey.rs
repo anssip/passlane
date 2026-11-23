@@ -1,11 +1,60 @@
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
 
-use crate::actions::{Action, get_vault_password};
+use crate::actions::{
+    Action, ChallengeKey, at_a_terminal, hardware_key_needs_a_terminal, unlock_keepass,
+};
 use crate::hwkey;
+use crate::session_agent::{SessionFactors, session_factors};
 use crate::vault_registry::{self, VaultConfig};
+use passlane_core::hwkey::HwKeyConfig;
 use passlane_core::vault::entities::Error;
-use passlane_core::vault::keepass_vault::KeepassVault;
+
+/// What opens a vault whose hardware key is being removed.
+enum Opening {
+    /// A live session holding the vault's key factor.
+    Session,
+    /// This key: the recovery secret, or the enrolled key on its device.
+    Key(ChallengeResponseKey),
+}
+
+/// How `hwkey remove` opens the vault. Recovery types the backed-up secret
+/// in; an ordinary removal uses the enrolled key — held by a live session
+/// when it holds the vault's key factor, which needs no key present, and
+/// touched on the device otherwise. A prompt or a touch needs a terminal,
+/// so both are refused up front for a command without one.
+fn removal_opening(
+    config: &VaultConfig,
+    enrolled: &HwKeyConfig,
+    secret: bool,
+) -> Result<Opening, Error> {
+    if secret {
+        if !at_a_terminal() {
+            return Err(Error::new(&format!(
+                "Recovery needs the backed-up secret typed in. Run 'passlane hwkey remove \
+                 --secret' for vault '{}' from a terminal.",
+                config.name
+            )));
+        }
+        return Ok(Opening::Key(hwkey::recovery_key_from_prompt()));
+    }
+    match session_factors(&config.name)? {
+        SessionFactors::WithKeyFactor => Ok(Opening::Session),
+        held => {
+            // Without the key factor held, the enrolled key has to be
+            // touched.
+            if !at_a_terminal() {
+                return Err(hardware_key_needs_a_terminal(
+                    config,
+                    held == SessionFactors::PasswordOnly,
+                ));
+            }
+            Ok(Opening::Key(
+                passlane_core::hwkey::configured_challenge_response_key(enrolled)?,
+            ))
+        }
+    }
+}
 
 pub struct HwKeyAction {
     pub command: HwKeyCommand,
@@ -64,32 +113,37 @@ impl HwKeyAction {
                 config.name
             )));
         }
+        // Enrolling needs the new key touched to re-save the vault, and
+        // perhaps the slot asked for. Neither happens for a command
+        // without a terminal: refuse before anything is resolved or asked.
+        if !at_a_terminal() {
+            return Err(Error::new(&format!(
+                "Enrolling a hardware key for vault '{}' needs the key touched to re-save the \
+                 vault. Run 'passlane hwkey add' from a terminal with the key connected.",
+                config.name
+            )));
+        }
         // Fail fast if no key is connected, before asking for the password.
         let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
-        let password = get_vault_password()?;
-        let result = (|| {
-            println!("Unlocking vault '{}'...", config.name);
-            let mut vault =
-                KeepassVault::open(&password, &config.path, config.keyfile.clone(), None)?;
-            // The re-save challenges the new key, proving the enrollment
-            // before the config is persisted.
-            vault.update_challenge_response(Some(challenge_response))?;
-            if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
-                // The vault now requires the key but passlane would not know
-                // to use it (no persisted config): roll the factor back or
-                // the vault can no longer be opened via passlane.
-                if let Err(rollback) = vault.update_challenge_response(None) {
-                    eprintln!(
-                        "Warning: failed to roll back the hardware key enrollment: {}",
-                        rollback
-                    );
-                }
-                return Err(e);
+        // The vault takes no challenge-response key yet; the new one is
+        // challenged by the save below.
+        let mut vault = unlock_keepass(ChallengeKey::Given(None))?.vault;
+        // The re-save challenges the new key, proving the enrollment
+        // before the config is persisted.
+        vault.update_challenge_response(Some(challenge_response))?;
+        if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
+            // The vault now requires the key but passlane would not know
+            // to use it (no persisted config): roll the factor back or
+            // the vault can no longer be opened via passlane.
+            if let Err(rollback) = vault.update_challenge_response(None) {
+                eprintln!(
+                    "Warning: failed to roll back the hardware key enrollment: {}",
+                    rollback
+                );
             }
-            Ok::<(), Error>(())
-        })();
-        result?;
+            return Err(e);
+        }
 
         hwkey::print_backup_reminder();
         Ok(format!("Hardware key enrolled for vault '{}'", config.name))
@@ -103,49 +157,37 @@ impl HwKeyAction {
                 config.name
             ))
         })?;
-        let challenge_response = if secret {
-            hwkey::recovery_key_from_prompt()
-        } else {
-            passlane_core::hwkey::configured_challenge_response_key(&enrolled)?
+        let opening = removal_opening(&config, &enrolled, secret)?;
+        let key = match &opening {
+            Opening::Session => ChallengeKey::Enrolled,
+            Opening::Key(key) => ChallengeKey::Given(Some(key)),
         };
-
-        let password = get_vault_password()?;
-        let result = (|| {
-            println!("Unlocking vault '{}'...", config.name);
-            let mut vault = KeepassVault::open(
-                &password,
-                &config.path,
-                config.keyfile.clone(),
-                Some(&challenge_response),
-            )?;
-            // Delete the config before touching the vault: if deletion
-            // fails, abort with the vault still protected by the key,
-            // rather than stripping the factor first and leaving passlane
-            // demanding a key the vault no longer requires.
-            vault_registry::set_hwkey(&config.name, None)?;
-            if let Err(e) = vault.update_challenge_response(None) {
-                // The vault on disk still requires the key; put the config
-                // back so passlane keeps using it.
-                if let Err(restore_err) =
-                    vault_registry::set_hwkey(&config.name, Some(enrolled.clone()))
-                {
-                    return Err(Error::new(&format!(
-                        "Removing the hardware key from the vault failed: {}. Restoring the \
-                         enrollment also failed: {}. The vault still requires the hardware key — \
-                         re-add slot {} (serial {:?}) to vault '{}' in {} and retry.",
-                        e,
-                        restore_err,
-                        enrolled.slot,
-                        enrolled.serial,
-                        config.name,
-                        vault_registry::registry_file_display(),
-                    )));
-                }
-                return Err(e);
+        let mut vault = unlock_keepass(key)?.vault;
+        // Delete the config before touching the vault: if deletion
+        // fails, abort with the vault still protected by the key,
+        // rather than stripping the factor first and leaving passlane
+        // demanding a key the vault no longer requires.
+        vault_registry::set_hwkey(&config.name, None)?;
+        if let Err(e) = vault.update_challenge_response(None) {
+            // The vault on disk still requires the key; put the config
+            // back so passlane keeps using it.
+            if let Err(restore_err) =
+                vault_registry::set_hwkey(&config.name, Some(enrolled.clone()))
+            {
+                return Err(Error::new(&format!(
+                    "Removing the hardware key from the vault failed: {}. Restoring the \
+                     enrollment also failed: {}. The vault still requires the hardware key — \
+                     re-add slot {} (serial {:?}) to vault '{}' in {} and retry.",
+                    e,
+                    restore_err,
+                    enrolled.slot,
+                    enrolled.serial,
+                    config.name,
+                    vault_registry::registry_file_display(),
+                )));
             }
-            Ok::<(), Error>(())
-        })();
-        result?;
+            return Err(e);
+        }
 
         Ok(format!(
             "Hardware key removed from vault '{}'. It now opens with the master password (and keyfile) only.",

@@ -145,7 +145,11 @@ the **first source that opens it**:
 
 A source that fails does not end the chain: a session whose factors no
 longer open the vault (it was re-keyed elsewhere) is reported and the
-keychain is tried, a stale keychain password gives way to the prompt.
+keychain is tried, a stale keychain password gives way to the prompt. The
+hardware-key commands open the vault through the same chain, with the key
+they chose (the recovery secret, or none while the first key is enrolled).
+When several live sessions cover one vault, the agent serves the one that
+holds the key factor, if any.
 
 **What a session holds.** `passlane unlock --session` hands the agent
 everything a command needs to open the vault without a prompt: the master
@@ -171,16 +175,27 @@ expect no answer to any prompt, so the chain never blocks on one:
   password stored by another build of passlane never closes by itself);
   a keychain that has not answered is reported as such;
 - the master password is never prompted for; the error says how to open a
-  session instead.
+  session instead;
+- `hwkey add` and `hwkey remove --secret` are refused outright — the first
+  needs the new key touched to save, the second the secret typed in — and
+  `hwkey remove` only when no live session holds the vault's key factor
+  (with one, the key is removed with no key present at all);
+- a request to the agent is given a few seconds too: a daemon that accepts
+  connections and never answers them is reported as wedged instead of
+  holding every command for good. (Subscribed event streams are not
+  bounded — waiting for an event is their job.)
 
-The silent completion-cache refresh follows the same rule: it reads the
-keychain, so it only runs at a terminal.
+The completion cache follows the same rule. A command that opens the vault
+brings a missing or stale cache up to date *from that vault*, with no
+keychain read. Only the commands that open no vault refresh a stale cache
+through the keychain, and only at a terminal while no live session serves
+the vault.
 
 **A configured agent is not optional.** When `PASSLANE_AGENT_SOCK` names
 a socket, a command that cannot use it stops with an error saying what
 is wrong and what to do — nothing is listening there, the socket is
-untrusted, or the agent speaks another protocol dialect (an agent left
-running from an older binary; restart it). Quietly moving on to the
+untrusted, the agent speaks another protocol dialect (an agent left
+running from an older binary; restart it), or it does not answer. Quietly moving on to the
 keychain or a prompt is how an agent context used to end up waiting
 forever (passlane#65). Without `PASSLANE_AGENT_SOCK` an absent agent is
 just absent, and the chain continues with the keychain.

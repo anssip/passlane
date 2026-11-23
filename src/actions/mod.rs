@@ -142,12 +142,12 @@ pub(crate) struct VaultFactors {
 
 /// Opens the vault with the given factors — the real open, or whatever a
 /// test injects.
-type OpenVault<'a> = &'a dyn Fn(&VaultFactors) -> Result<Box<dyn Vault>, Error>;
+type OpenVault<'a, T> = &'a dyn Fn(&VaultFactors) -> Result<T, Error>;
 
 /// An opened vault, with the factors that opened it and where they came
 /// from. `unlock --session` hands the factors to the agent.
-pub(crate) struct Unlocked {
-    pub(crate) vault: Box<dyn Vault>,
+pub(crate) struct Unlocked<T> {
+    pub(crate) vault: T,
     pub(crate) source: PasswordSource,
     pub(crate) factors: VaultFactors,
 }
@@ -183,21 +183,35 @@ struct Candidate {
     source: PasswordSource,
 }
 
+/// Which challenge-response factor opens the vault in an attempt.
+#[derive(Clone, Copy)]
+pub(crate) enum ChallengeKey<'a> {
+    /// The one the vault is enrolled with: held by the session when it
+    /// holds it, else the device's.
+    Enrolled,
+    /// This key, whatever the registry or a session says — for the
+    /// hardware-key commands, which choose the key themselves: the
+    /// recovery secret, or none while the first key is enrolled.
+    Given(Option<&'a ChallengeResponseKey>),
+}
+
 impl Candidate {
-    /// What opens the vault. The registry decides whether the vault has a
-    /// hardware-key factor: a session's held factor is used only when it
-    /// does, and otherwise the factor comes from the device — which is why
-    /// the chain only hands out such a candidate where someone can touch
-    /// the key.
+    /// What opens the vault. With the enrolled key, the registry decides
+    /// whether the vault has one: a session's held factor is used only when
+    /// it does, and otherwise the factor comes from the device — which is
+    /// why the chain only hands out such a candidate where someone can
+    /// touch the key.
     fn into_factors(
         self,
         config: &VaultConfig,
         sources: &UnlockSources,
+        key: ChallengeKey,
     ) -> Result<VaultFactors, Error> {
-        let challenge_response = match (&config.hwkey, self.held_challenge_response) {
-            (None, _) => None,
-            (Some(_), Some(held)) => Some(held),
-            (Some(hwkey), None) => Some((sources.hardware_key)(hwkey)?),
+        let challenge_response = match (key, &config.hwkey, self.held_challenge_response) {
+            (ChallengeKey::Given(key), _, _) => key.cloned(),
+            (ChallengeKey::Enrolled, None, _) => None,
+            (ChallengeKey::Enrolled, Some(_), Some(held)) => Some(held),
+            (ChallengeKey::Enrolled, Some(hwkey), None) => Some((sources.hardware_key)(hwkey)?),
         };
         Ok(VaultFactors {
             master_password: self.master_password,
@@ -223,6 +237,7 @@ impl Candidate {
 struct Candidates<'a> {
     config: &'a VaultConfig,
     sources: &'a UnlockSources<'a>,
+    key: ChallengeKey<'a>,
     stage: Stage,
     /// Why the candidates already handed out did not do, for the error
     /// that ends the chain.
@@ -238,10 +253,11 @@ enum Stage {
 }
 
 impl<'a> Candidates<'a> {
-    fn new(config: &'a VaultConfig, sources: &'a UnlockSources<'a>) -> Self {
+    fn new(config: &'a VaultConfig, sources: &'a UnlockSources<'a>, key: ChallengeKey<'a>) -> Self {
         Self {
             config,
             sources,
+            key,
             stage: Stage::Session,
             failures: Vec::new(),
         }
@@ -365,7 +381,12 @@ impl<'a> Candidates<'a> {
     /// waits on something. `password_only` says whether a live session
     /// holds the master password but not the key.
     fn check_unattended_hardware_key(&self, password_only: bool) -> Result<(), Error> {
-        if hardware_key_needs_a_touch(self.config) && !self.sources.interactive {
+        // A key given by the caller (a recovery secret) needs no device,
+        // and is not what this is about.
+        if matches!(self.key, ChallengeKey::Enrolled)
+            && hardware_key_needs_a_touch(self.config)
+            && !self.sources.interactive
+        {
             return Err(
                 self.with_failures(hardware_key_needs_a_terminal(self.config, password_only))
             );
@@ -401,7 +422,7 @@ fn hardware_key_needs_a_touch(config: &VaultConfig) -> bool {
     config.hwkey.is_some()
 }
 
-fn hardware_key_needs_a_terminal(config: &VaultConfig, password_only: bool) -> Error {
+pub(crate) fn hardware_key_needs_a_terminal(config: &VaultConfig, password_only: bool) -> Error {
     let session_note = if password_only {
         " The live session for this vault holds its master password only, not its key factor: a \
          physical key's factor cannot be handed to the session agent."
@@ -439,17 +460,20 @@ fn keychain_did_not_answer(config: &VaultConfig) -> Error {
     ))
 }
 
-/// Open the current vault through the unlock chain, with the open itself
-/// injected (the tests open a real vault file).
-fn unlock_with(
+/// Open the vault through the unlock chain, with the open itself injected:
+/// whatever `open` returns for the first factors that work. The tests open
+/// a real vault file; the hardware-key commands get the concrete
+/// `KeepassVault` they need to re-key.
+fn unlock_with<T>(
     config: &VaultConfig,
     sources: &UnlockSources,
-    open: OpenVault,
-) -> Result<Unlocked, Error> {
-    let mut candidates = Candidates::new(config, sources);
+    key: ChallengeKey,
+    open: OpenVault<T>,
+) -> Result<Unlocked<T>, Error> {
+    let mut candidates = Candidates::new(config, sources, key);
     while let Some(candidate) = candidates.next()? {
         let source = candidate.source;
-        let factors = candidate.into_factors(config, sources)?;
+        let factors = candidate.into_factors(config, sources, key)?;
         (sources.announce)(source);
         match open(&factors) {
             Ok(vault) => {
@@ -515,8 +539,29 @@ fn with_real_sources<T>(interactive: bool, use_sources: impl FnOnce(&UnlockSourc
 /// rule the agent policy uses to tell an owner from an agent context. The
 /// keychain's dialog and a hardware key's touch are prompts too, and are
 /// treated the same way.
-fn stdin_is_terminal() -> bool {
+pub(crate) fn at_a_terminal() -> bool {
     std::io::stdin().is_terminal()
+}
+
+/// Open the current vault through the unlock chain with the
+/// challenge-response key `key`, letting `open` turn the factors that work
+/// into whatever the caller needs.
+fn open_through_chain<T>(
+    key: ChallengeKey<'_>,
+    open: impl Fn(&str, &str, Option<String>, Option<&ChallengeResponseKey>) -> Result<T, Error>,
+) -> Result<Unlocked<T>, Error> {
+    let config = vault_registry::current()?;
+    with_real_sources(at_a_terminal(), |sources| {
+        let open = |factors: &VaultFactors| {
+            open(
+                &factors.master_password,
+                &config.path,
+                config.keyfile.clone(),
+                factors.challenge_response.as_ref(),
+            )
+        };
+        unlock_with(&config, sources, key, &open)
+    })
 }
 
 /// Open the current vault and remember where its factors came from (see
@@ -529,38 +574,22 @@ pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
 
 /// [`unlock`], also returning the factors that opened the vault:
 /// `unlock --session` hands them to the agent.
-pub(crate) fn unlock_reporting_factors() -> Result<Unlocked, Error> {
-    let config = vault_registry::current()?;
-    with_real_sources(stdin_is_terminal(), |sources| {
-        let open = |factors: &VaultFactors| {
-            KeepassVault::open(
-                &factors.master_password,
-                &config.path,
-                config.keyfile.clone(),
-                factors.challenge_response.as_ref(),
-            )
-            .map(|vault| Box::new(vault) as Box<dyn Vault>)
-        };
-        unlock_with(&config, sources, &open)
-    })
+pub(crate) fn unlock_reporting_factors() -> Result<Unlocked<Box<dyn Vault>>, Error> {
+    open_through_chain(
+        ChallengeKey::Enrolled,
+        |password, path, keyfile, challenge_response| {
+            KeepassVault::open(password, path, keyfile, challenge_response)
+                .map(|vault| Box::new(vault) as Box<dyn Vault>)
+        },
+    )
 }
 
-/// The current vault's master password through the unlock chain, without
-/// opening the vault — for the hardware-key commands, which resolve the
-/// key themselves.
-pub(crate) fn get_vault_password() -> Result<Zeroizing<String>, Error> {
-    let config = vault_registry::current()?;
-    with_real_sources(stdin_is_terminal(), |sources| {
-        match Candidates::new(&config, sources).next()? {
-            Some(candidate) => Ok(candidate.master_password),
-            // A fresh chain ends with a candidate or an error; it is only
-            // spent after handing one out.
-            None => Err(Error::new(&format!(
-                "Vault '{}' could not be unlocked.",
-                config.name
-            ))),
-        }
-    })
+/// The current vault as the concrete [`KeepassVault`], opened through the
+/// unlock chain with the challenge-response key the caller chose — for
+/// the hardware-key commands, which re-key it. Every source gets its turn
+/// until one opens the vault, as for any command.
+pub(crate) fn unlock_keepass(key: ChallengeKey<'_>) -> Result<Unlocked<KeepassVault>, Error> {
+    open_through_chain(key, KeepassVault::open)
 }
 
 pub fn copy_to_clipboard(value: &str) {
@@ -722,8 +751,16 @@ mod tests {
         guard
     }
 
-    /// The chain against the current vault's real file.
-    fn unlock_test(sources: &UnlockSources) -> Result<Unlocked, Error> {
+    /// The chain against the current vault's real file, opening it with
+    /// the key the vault is enrolled with.
+    fn unlock_test(sources: &UnlockSources) -> Result<Unlocked<Box<dyn Vault>>, Error> {
+        unlock_test_with(ChallengeKey::Enrolled, sources)
+    }
+
+    fn unlock_test_with(
+        key: ChallengeKey<'_>,
+        sources: &UnlockSources,
+    ) -> Result<Unlocked<Box<dyn Vault>>, Error> {
         let config = vault_registry::current().unwrap();
         let path = vault_file(config.hwkey.is_some());
         let open = |factors: &VaultFactors| {
@@ -735,7 +772,7 @@ mod tests {
             )
             .map(|vault| Box::new(vault) as Box<dyn Vault>)
         };
-        unlock_with(&config, sources, &open)
+        unlock_with(&config, sources, key, &open)
     }
 
     /// What the chain reports when nothing opens the vault.
@@ -1090,9 +1127,9 @@ mod tests {
     }
 
     #[test]
-    fn the_master_password_of_a_hardware_key_vault_is_never_resolved_unattended() {
-        // `hwkey add`/`remove` ask for the password through the same chain.
-        let guard = use_vault(true);
+    fn the_enrolled_key_is_never_resolved_unattended() {
+        // `hwkey remove` opens the vault through the chain like any command.
+        let _guard = use_vault(true);
         let sources = UnlockSources {
             interactive: false,
             keychain: &|_| panic!("nothing may wait on the keychain"),
@@ -1102,10 +1139,46 @@ mod tests {
             announce: &nothing_announced(),
         };
         let config = vault_registry::current().unwrap();
-        match Candidates::new(&config, &sources).next() {
+        match Candidates::new(&config, &sources, ChallengeKey::Enrolled).next() {
             Err(error) => assert!(error.message.contains("hardware key"), "{}", error.message),
             Ok(_) => panic!("the key factor is missing and cannot be asked for"),
         }
-        drop(guard);
+    }
+
+    #[test]
+    fn a_key_the_command_chooses_needs_neither_a_terminal_nor_a_held_factor() {
+        // `hwkey remove --secret` opens with the recovery secret the owner
+        // typed in: no device is involved, whatever the registry says.
+        let _guard = use_vault(true);
+        let recovery = ChallengeResponseKey::LocalChallenge(SLOT_SECRET.to_string());
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &|_| panic!("a live session supplies the password"),
+            session: &session_with(false),
+            hardware_key: &|_| panic!("the given key is used: no device is needed"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test_with(ChallengeKey::Given(Some(&recovery)), &sources)
+            .expect("the given key opens the vault");
+        assert_eq!(unlocked.source, PasswordSource::SessionAgent);
+    }
+
+    #[test]
+    fn a_stale_session_does_not_shadow_the_keychain_for_a_chosen_key_either() {
+        // `hwkey add` opens the not-yet-keyed vault with no challenge
+        // response: a stale session gives way to the keychain.
+        let _guard = use_vault(false);
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &stored(PASSWORD),
+            session: &wrong_session(),
+            hardware_key: &|_| panic!("no hardware key is enrolled yet"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test_with(ChallengeKey::Given(None), &sources)
+            .expect("the keychain opens the vault");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
     }
 }

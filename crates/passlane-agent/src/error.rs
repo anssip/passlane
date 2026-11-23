@@ -28,6 +28,11 @@ pub enum AgentError {
         /// Dialect this client speaks.
         client: u32,
     },
+    /// The agent took a request and did not answer within the client's
+    /// request timeout: it is wedged. Waiting longer would block the
+    /// command for good.
+    #[error("the session agent did not answer within {0:?} (it may be wedged)")]
+    TimedOut(std::time::Duration),
     /// Underlying I/O failure.
     #[error("{0}")]
     Io(#[from] std::io::Error),

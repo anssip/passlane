@@ -71,60 +71,112 @@ pub fn read_cache() -> Vec<String> {
     }
 }
 
-/// Ensures the cache file exists using an already-open vault.
-/// Only writes if the cache file is missing. Called from UnlockingAction::execute()
-/// so any command that opens the vault also creates the cache.
+/// How old the cache file at `path` is, in so many words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheAge {
+    /// There is no cache file.
+    Missing,
+    /// Older than [`STALE_DAYS`].
+    Stale,
+    /// Recent enough to be left alone.
+    Fresh,
+    /// The file is there but its age cannot be read: leave it alone rather
+    /// than rewrite it on every command.
+    Unknown,
+}
+
+fn cache_age(path: &Path) -> CacheAge {
+    let Ok(meta) = fs::metadata(path) else {
+        return if path.exists() {
+            CacheAge::Unknown
+        } else {
+            CacheAge::Missing
+        };
+    };
+    match meta.modified() {
+        Ok(modified) => {
+            if SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::ZERO)
+                > Duration::from_secs(STALE_DAYS * 24 * 60 * 60)
+            {
+                CacheAge::Stale
+            } else {
+                CacheAge::Fresh
+            }
+        }
+        Err(_) => CacheAge::Unknown,
+    }
+}
+
+/// Brings the cache file up to date from the vault a command has just
+/// opened, when it is missing or stale. Called from
+/// `UnlockingAction::execute`, so any command that opens the vault also
+/// refreshes the cache — from that vault, with no keychain read and no
+/// second open.
 pub fn ensure_cache_from_vault(vault: &Box<dyn Vault>) {
     let Some(path) = current_cache_path() else {
         return;
     };
-    if path.exists() {
-        return;
-    }
-    debug!("Completion cache missing, creating from open vault...");
-    update_cache(vault);
+    ensure_cache_at(&path, &|| update_cache(vault));
 }
 
-/// Checks if the current vault's cache file is older than 7 days. If so, and
-/// the vault is unlocked (master password in keychain), silently refreshes
-/// the cache — but only at a terminal. The keychain read that follows can
-/// wait on a permission dialog for as long as nobody clicks it, and a
-/// silent refresh must never be what blocks a command that runs unattended.
+/// [`ensure_cache_from_vault`] with the write injected, so the rule is
+/// testable without a vault.
+fn ensure_cache_at(path: &Path, write: &dyn Fn()) {
+    match cache_age(path) {
+        CacheAge::Missing => {
+            debug!("Completion cache missing, creating from open vault...");
+            write();
+        }
+        CacheAge::Stale => {
+            debug!("Completion cache is stale, refreshing from open vault...");
+            write();
+        }
+        CacheAge::Fresh | CacheAge::Unknown => {}
+    }
+}
+
+/// Refreshes the current vault's cache when it is older than 7 days, for
+/// the commands that do not open the vault themselves (the others refresh
+/// it from the vault they open; see [`ensure_cache_from_vault`]). It opens
+/// the vault through the keychain — a read that can wait on a permission
+/// dialog for as long as nobody clicks it — so it is skipped whenever no
+/// one can be expected to answer one: without a terminal, or while a live
+/// session-agent session serves the vault prompt-free.
 pub fn refresh_if_stale() {
     refresh_if_stale_with(
         std::io::stdin().is_terminal(),
         current_cache_path(),
+        &|| {
+            vault_registry::current()
+                .ok()
+                .is_some_and(|config| crate::session_agent::holds_unlock_session(&config.name))
+        },
         &create_cache_from_keychain,
     );
 }
 
 /// [`refresh_if_stale`] with what reaches outside the process injected, so
-/// the rule is testable without a terminal, a home directory or a keychain.
-fn refresh_if_stale_with(interactive: bool, cache_path: Option<PathBuf>, refresh: &dyn Fn()) {
+/// the rule is testable without a terminal, a home directory, a keychain
+/// or an agent. `session_live` is only asked when its answer matters: it
+/// talks to the agent.
+fn refresh_if_stale_with(
+    interactive: bool,
+    cache_path: Option<PathBuf>,
+    session_live: &dyn Fn() -> bool,
+    refresh: &dyn Fn(),
+) {
     if !interactive {
         return;
     }
     let Some(path) = cache_path else {
         return;
     };
-    if !path.exists() {
+    if cache_age(&path) != CacheAge::Stale {
         return;
     }
-
-    let stale = match fs::metadata(&path) {
-        Ok(meta) => match meta.modified() {
-            Ok(modified) => {
-                SystemTime::now()
-                    .duration_since(modified)
-                    .unwrap_or(Duration::ZERO)
-                    > Duration::from_secs(STALE_DAYS * 24 * 60 * 60)
-            }
-            Err(_) => false,
-        },
-        Err(_) => false,
-    };
-
-    if !stale {
+    if session_live() {
         return;
     }
 
@@ -269,9 +321,10 @@ mod tests {
         );
     }
 
-    /// A cache file whose modification time is `age` old.
-    fn cache_aged(dir: &Path, age: Duration) -> PathBuf {
-        let path = cache_path_in(dir, "work");
+    /// The cache file of vault `name` under `dir`, its modification time
+    /// set `age` back.
+    fn cache_aged(dir: &Path, name: &str, age: Duration) -> PathBuf {
+        let path = cache_path_in(dir, name);
         fs::write(&path, "github:alice\n").unwrap();
         let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_modified(SystemTime::now() - age).unwrap();
@@ -279,17 +332,93 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_cache_refresh_never_runs_without_a_terminal() {
+    fn a_silent_cache_refresh_never_reads_a_keychain_nobody_can_answer() {
         // The refresh reads the keychain, which can block on a permission
-        // dialog nobody is there to answer.
+        // dialog nobody is there to answer — or that a live session makes
+        // unnecessary in the first place.
         let dir = tempfile::tempdir().unwrap();
-        let stale = cache_aged(dir.path(), Duration::from_secs(8 * 24 * 60 * 60));
+        let stale = cache_aged(dir.path(), "stale", Duration::from_secs(8 * 24 * 60 * 60));
         let refreshed = Cell::new(0);
-        refresh_if_stale_with(false, Some(stale), &|| refreshed.set(1));
+        let refresh = || refreshed.set(1);
+        // The agent is not even asked without a terminal.
+        refresh_if_stale_with(
+            false,
+            Some(stale.clone()),
+            &|| panic!("no reason to ask the agent without a terminal"),
+            &refresh,
+        );
+        // Nor for a cache that does not need refreshing.
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let fresh = cache_aged(dir.path(), "fresh", week - Duration::from_secs(60));
+        refresh_if_stale_with(
+            true,
+            Some(fresh),
+            &|| panic!("no reason to ask the agent for a fresh cache"),
+            &refresh,
+        );
+        // Asked at a terminal with a stale cache — and a live session
+        // means no keychain read.
+        let asked = Cell::new(0);
+        refresh_if_stale_with(
+            true,
+            Some(stale),
+            &|| {
+                asked.set(asked.get() + 1);
+                true
+            },
+            &refresh,
+        );
+        assert_eq!(asked.get(), 1);
         assert_eq!(
             refreshed.get(),
             0,
-            "unattended commands must not touch the keychain"
+            "no keychain read without a terminal or while a session is live"
+        );
+    }
+
+    #[test]
+    fn an_open_vault_brings_a_missing_or_stale_cache_up_to_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let written = Cell::new(0);
+        let write = || written.set(written.get() + 1);
+
+        let missing = cache_path_in(dir.path(), "work");
+        ensure_cache_at(&missing, &write);
+        assert_eq!(written.get(), 1, "a missing cache is written");
+
+        let stale = cache_aged(dir.path(), "stale", week + Duration::from_secs(60));
+        ensure_cache_at(&stale, &write);
+        assert_eq!(written.get(), 2, "a stale cache is rewritten");
+
+        let fresh = cache_aged(dir.path(), "fresh", week - Duration::from_secs(60));
+        ensure_cache_at(&fresh, &write);
+        assert_eq!(written.get(), 2, "a fresh cache is left alone");
+    }
+
+    #[test]
+    fn cache_age_tells_a_missing_stale_and_fresh_cache_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        assert_eq!(
+            cache_age(&cache_path_in(dir.path(), "none")),
+            CacheAge::Missing
+        );
+        assert_eq!(
+            cache_age(&cache_aged(
+                dir.path(),
+                "stale",
+                week + Duration::from_secs(60)
+            )),
+            CacheAge::Stale
+        );
+        assert_eq!(
+            cache_age(&cache_aged(
+                dir.path(),
+                "fresh",
+                week - Duration::from_secs(60)
+            )),
+            CacheAge::Fresh
         );
     }
 
@@ -299,18 +428,19 @@ mod tests {
         let week = Duration::from_secs(7 * 24 * 60 * 60);
         let refreshed = Cell::new(0);
         let refresh = || refreshed.set(refreshed.get() + 1);
+        let no_session = || false;
 
-        let stale = cache_aged(dir.path(), week + Duration::from_secs(60));
-        refresh_if_stale_with(true, Some(stale), &refresh);
+        let stale = cache_aged(dir.path(), "stale", week + Duration::from_secs(60));
+        refresh_if_stale_with(true, Some(stale), &no_session, &refresh);
         assert_eq!(refreshed.get(), 1);
 
-        let fresh = cache_aged(dir.path(), week - Duration::from_secs(60));
-        refresh_if_stale_with(true, Some(fresh), &refresh);
+        let fresh = cache_aged(dir.path(), "fresh", week - Duration::from_secs(60));
+        refresh_if_stale_with(true, Some(fresh), &no_session, &refresh);
         assert_eq!(refreshed.get(), 1, "a fresh cache is left alone");
 
         let missing = cache_path_in(dir.path(), "other");
-        refresh_if_stale_with(true, Some(missing), &refresh);
-        refresh_if_stale_with(true, None, &refresh);
+        refresh_if_stale_with(true, Some(missing), &no_session, &refresh);
+        refresh_if_stale_with(true, None, &no_session, &refresh);
         assert_eq!(refreshed.get(), 1, "nothing to refresh without a cache");
     }
 }

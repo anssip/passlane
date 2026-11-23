@@ -83,6 +83,15 @@ impl Grant {
         matches!(self, Grant::Unlock(_))
     }
 
+    /// Whether this unlock grant also holds the vault's challenge-response
+    /// factor — the whole factor set a hardware-key vault needs.
+    pub fn holds_challenge_response(&self) -> bool {
+        match self {
+            Grant::Unlock(material) => material.challenge_response.is_some(),
+            Grant::Reveal { .. } => false,
+        }
+    }
+
     /// Whether this grant covers the given reveal, by UUID and field.
     pub fn covers_reveal(&self, id: &str, field: &str) -> bool {
         matches!(
@@ -220,10 +229,16 @@ mod tests {
             "title collision must not grant access"
         );
         assert!(!g.is_unlock());
+        assert!(!g.holds_challenge_response());
 
         let u = Grant::Unlock(KeyMaterial::new("pw"));
         assert!(u.is_unlock());
         assert!(!u.covers_reveal("github.com", "password"));
+        assert!(!u.holds_challenge_response());
+        assert!(
+            Grant::Unlock(KeyMaterial::new("pw").with_challenge_response(secret_material("aabb")))
+                .holds_challenge_response()
+        );
     }
 
     #[test]
