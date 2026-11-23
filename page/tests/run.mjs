@@ -287,7 +287,8 @@ if (process.argv.includes("--write-fixture")) {
 
   const VAULT = "3f7a2c9180e64b25a1d0f3c87592e641";
   const held = pk.newKeyRecord(VAULT, "work", "held-key");
-  const staged = pk.newKeyRecord(VAULT, "work", "staged-key");
+  const staged = pk.newKeyRecord(VAULT, "work", "staged-key");  // must run after held for distinct ids
+  if (held.id === staged.id) throw new Error("key records carry distinct generation ids");
   const save = { vault_id: VAULT, operation: { kind: "save" } };
   const unlock = { vault_id: VAULT, operation: { kind: "unlock" } };
 
@@ -305,9 +306,24 @@ if (process.argv.includes("--write-fixture")) {
     const which = pk.keyDecision(record, save);
     assertEq(which.key, staged, "the staged key answers the save");
     assertEq(which.promote, true, "and is promoted by it");
-    const next = pk.promoteStagedKey(record, VAULT);
+    const next = pk.promoteStagedKey(record, VAULT, staged.id);
     assertEq(pk.heldKeyOf(next, VAULT), staged, "the staged key is now held");
     assert(!pk.stagedKey(next, VAULT), "nothing stays staged");
+  });
+
+  pureTest("promote and drop bind to the generation they were decided about", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    // Another tab replaced the staged key before the decision persisted.
+    const newer = pk.newKeyRecord(VAULT, "work", "newer-key");
+    const replaced = pk.stageKey(record, VAULT, newer);
+    const promoted = pk.promoteStagedKey(replaced, VAULT, staged.id);
+    assertEq(pk.heldKeyOf(promoted, VAULT), held, "an older decision promotes nothing");
+    assertEq(pk.stagedKey(promoted, VAULT), newer, "the newer generation stays staged");
+    const dropped = pk.dropStagedKey(replaced, VAULT, staged.id);
+    assertEq(pk.stagedKey(dropped, VAULT), newer, "an older decision drops nothing");
+    // The generation's own decision still applies.
+    const ok = pk.dropStagedKey(replaced, VAULT, newer.id);
+    assert(!pk.stagedKey(ok, VAULT), "the matching generation is dropped");
   });
 
   pureTest("an unlock answers with the held key and drops a staged one", () => {
@@ -315,7 +331,7 @@ if (process.argv.includes("--write-fixture")) {
     const which = pk.keyDecision(record, unlock);
     assertEq(which.key, held, "the held key answers the unlock");
     assertEq(which.dropStaged, true, "the staged one is dead: the vault opened with the old key");
-    const next = pk.dropStagedKey(record, VAULT);
+    const next = pk.dropStagedKey(record, VAULT, staged.id);
     assertEq(pk.heldKeyOf(next, VAULT), held, "the held key survives");
     assert(!pk.stagedKey(next, VAULT), "the staged key is gone");
   });
@@ -330,6 +346,15 @@ if (process.argv.includes("--write-fixture")) {
   pureTest("a vault with only a staged key has nothing to answer an unlock with", () => {
     const record = pk.stageKey({ rkid: "k1" }, VAULT, staged);
     assertEq(pk.keyDecision(record, unlock), null, "an unlock is not the staged key's to answer");
+  });
+
+  pureTest("the gate lets a staged key finish a first enrollment's save", () => {
+    // No held key yet: the enrollment created and staged one. Its save
+    // must be approvable — through the same rules the answer uses.
+    const record = pk.stageKey({ rkid: "k1" }, VAULT, staged);
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, staged, "the save is the staged key's to answer");
+    assertEq(which.promote, true, "and it is its promotion");
   });
 
   pureTest("a deny never carries an answer, however it was computed", () => {

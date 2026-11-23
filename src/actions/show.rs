@@ -399,11 +399,13 @@ impl ShowTotpTemplate {
         let unlock_backed =
             crate::actions::last_unlock_source() == crate::actions::PasswordSource::SessionAgent;
         let reveal_backed = crate::agent::last_gate_used_session();
-        // A timed phone-answer session can back an open whose password
-        // came from elsewhere (the keychain): the codes it funds stop
-        // when that session dies, like any session-backed view.
-        let phone_backed =
-            crate::session_agent::last_phone_answer_expiry() > crate::session_agent::now_secs();
+        // A phone-answer session can back an open whose password came
+        // from elsewhere (the keychain): the codes it funds stop when
+        // that session dies, like any session-backed view. The flag is
+        // set by the fetch itself, so it cannot go stale-false between
+        // the open and here — the revalidation below (and the event
+        // watch) is what decides liveness.
+        let phone_backed = crate::session_agent::phone_answer_backed();
         if unlock_backed || reveal_backed || phone_backed {
             let Some(mut events) = crate::session_agent::subscribe_to_events() else {
                 // The agent was reachable moments ago (it supplied the

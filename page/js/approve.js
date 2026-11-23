@@ -99,19 +99,19 @@ export function challengeBytes(body) {
  * phonekey.js's, also tested).
  */
 export function phoneKeyGate(record, body) {
-  const key = heldKey(record, body.vault_id);
+  const which = keyDecision(record, body);
   const challenge = challengeBytes(body);
   if (body.operation.kind === "enroll_key") {
     return {
       canApprove: true,
-      replacing: key !== null,
+      replacing: heldKey(record, body.vault_id) !== null,
       note:
         "This creates the key for the vault on this device and answers with it. " +
         "The recovery sheet is shown first; the request is only answered once its " +
         "secret has been typed back from a copy of the sheet.",
     };
   }
-  if (!key) {
+  if (!which) {
     return {
       canApprove: false,
       replacing: false,
@@ -131,7 +131,10 @@ export function phoneKeyGate(record, body) {
   return {
     canApprove: true,
     replacing: false,
-    note: `Answered with the key this device holds for vault '${body.vault_name}'.`,
+    note: which.promote
+      ? `Answered with the key this device just created for vault '${body.vault_name}' — ` +
+          "this approval completes its enrollment."
+      : `Answered with the key this device holds for vault '${body.vault_name}'.`,
   };
 }
 
@@ -214,6 +217,30 @@ function hideSheet() {
   const sheet = $("sheet");
   sheet.querySelector("pre").textContent = "";
   sheet.hidden = true;
+}
+
+/**
+ * The sheet's own step: it stays visible — and printable — until its
+ * owner says a copy exists away from this screen. A native confirm()
+ * would block the very printing it asks about.
+ */
+function waitSheetSaved() {
+  return new Promise((resolve) => {
+    const sheet = $("sheet");
+    const done = document.createElement("button");
+    done.textContent = "I saved the sheet — continue";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    const finish = (saved) => {
+      done.remove();
+      cancel.remove();
+      resolve(saved);
+    };
+    done.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    sheet.append(done, cancel);
+    done.focus();
+  });
 }
 
 /**
@@ -355,16 +382,12 @@ async function main() {
     const secretHex = toHex(secret);
     const hmacKey = await importSecret(secret);
     showSheet(sheetText(body.vault_name, secretHex, Date.now()), sheetInstructions());
-    // The sheet's own step: its owner says a copy exists away from this
-    // screen, and only then does the sheet hide — the read-back input
-    // never shares a screen with the secret it asks for.
-    const saved = await askConfirm(
-      "Have you saved the recovery sheet away from this screen (printed it, or " +
-        "written the secret down)? The sheet hides itself next, and the secret must " +
-        "be typed back from your copy.",
-    );
+    // The sheet's own step: it stays on screen — printable — until its
+    // owner says a copy exists away from it, and only then hides. The
+    // read-back input never shares a screen with the secret it asks for.
+    const saved = await waitSheetSaved();
+    hideSheet();
     if (!saved) {
-      hideSheet();
       $("status").textContent =
         "Enrollment cancelled before the sheet was saved; nothing was created. " +
         "Approve to start again, or deny the request.";
@@ -372,7 +395,6 @@ async function main() {
       $("deny").disabled = false;
       return null;
     }
-    hideSheet();
     const readBack = await readSheetSecret();
     // The raw bytes have served their one purpose: the sheet. They do
     // not exist from here on.
@@ -408,6 +430,7 @@ async function main() {
     // An answer exists only for an Allow, and only from here on in this
     // function — a Deny cannot carry one (see respond()).
     let answerHex = null;
+    let pendingTransition = null;
     try {
       $("approve").disabled = true;
       $("deny").disabled = true;
@@ -423,14 +446,12 @@ async function main() {
         const which = keyDecision(record, body);
         if (which) {
           answerHex = toHex(await computeResponse(which.key.key, challengeBytes(body)));
-          if (which.promote || which.dropStaged) {
-            await mutateApprover(record.rkid, (current) => {
-              let next = current;
-              if (which.promote) next = promoteStagedKey(next, body.vault_id);
-              if (which.dropStaged) next = dropStagedKey(next, body.vault_id);
-              return next;
-            });
-          }
+          // The transitions this answer implies are persisted only after
+          // the assertion succeeds (below), and bound to the exact key
+          // generation the answer was computed with — a cancelled
+          // passkey prompt changes nothing, and a key another tab staged
+          // in between is neither promoted nor dropped by this decision.
+          pendingTransition = which;
         }
       }
       $("status").textContent = "Confirm with the passkey…";
@@ -442,6 +463,18 @@ async function main() {
         assert: assertWithPasskey,
         answerHex,
       });
+      if (pendingTransition) {
+        await mutateApprover(record.rkid, (current) => {
+          let next = current;
+          if (pendingTransition.promote) {
+            next = promoteStagedKey(next, body.vault_id, pendingTransition.key.id);
+          }
+          if (pendingTransition.dropStaged) {
+            next = dropStagedKey(next, body.vault_id, pendingTransition.key.id);
+          }
+          return next;
+        });
+      }
       $("response").value = blob;
       $("response-wrap").hidden = false;
       $("status").textContent =

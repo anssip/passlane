@@ -244,8 +244,8 @@ fn try_challenge_response_current(
     let challenge_hex = passlane_approval::encoding::hex_encode(&seed);
     let mut client = connect_result()?;
     match client.get_challenge_response(&config.name, &challenge_hex) {
-        Ok((response, expiry)) => {
-            note_phone_answer_expiry(expiry);
+        Ok((response, _expiry)) => {
+            note_phone_answer_backing();
             let bytes = passlane_approval::encoding::hex_decode(&response).map_err(|e| {
                 AgentError::Protocol(format!("the agent returned a malformed answer: {e}"))
             })?;
@@ -265,25 +265,29 @@ fn try_challenge_response_current(
     }
 }
 
-/// When the phone-answer session that served this process last ended:
-/// the expiry a timed session reported as its answer was handed over (0
-/// when there is nothing, or it was single-use). The continuous TOTP
-/// view reads it to keep watching a session that supplied the second
-/// factor while the password came from elsewhere (the keychain, say) —
-/// codes must stop when that session dies, not only when the whole
-/// unlock was session-backed.
-static LAST_PHONE_ANSWER_EXPIRY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+/// Whether a phone-answer session backed this process's current open:
+/// set the moment an answer is fetched (from the chain or the transport),
+/// reset when the next unlock attempt begins. The continuous TOTP view
+/// reads it to watch a session that supplied the second factor while the
+/// password came from elsewhere (the keychain, say) — and, unlike an
+/// expiry comparison, it cannot turn false between the fetch and the
+/// view, so the session is always revalidated and never silently
+/// unwatched.
+static PHONE_ANSWER_BACKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-/// The expiry (unix seconds) of the phone-answer session that backed
-/// this process's last phone-gated open, or 0.
-pub fn last_phone_answer_expiry() -> u64 {
-    LAST_PHONE_ANSWER_EXPIRY.load(std::sync::atomic::Ordering::Relaxed)
+/// Whether a phone-answer session backed the current open.
+pub fn phone_answer_backed() -> bool {
+    PHONE_ANSWER_BACKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn note_phone_answer_expiry(expiry: Option<u64>) {
-    let at = expiry.filter(|until| *until > 0).unwrap_or(0);
-    LAST_PHONE_ANSWER_EXPIRY.store(at, std::sync::atomic::Ordering::Relaxed);
+/// Begin a fresh unlock attempt: nothing has backed it yet.
+pub fn reset_phone_answer_backing() {
+    PHONE_ANSWER_BACKED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note_phone_answer_backing() {
+    PHONE_ANSWER_BACKED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The answer a live session holds for a phone-held key (passlane#53):
@@ -294,8 +298,8 @@ fn note_phone_answer_expiry(expiry: Option<u64>) {
 pub fn try_challenge_response(vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
     let mut client = try_connect()?;
     match client.get_challenge_response(vault, challenge_hex) {
-        Ok((response, expiry)) => {
-            note_phone_answer_expiry(expiry);
+        Ok((response, _expiry)) => {
+            note_phone_answer_backing();
             let bytes = match passlane_approval::encoding::hex_decode(&response) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -908,8 +912,19 @@ mod tests {
                 .expect("the agent holds the answer")
                 .is_some()
         );
-        let expiry = last_phone_answer_expiry();
-        assert!(expiry > now_secs(), "a timed session's expiry is recorded");
+        // The fetch records what the view needs to watch: that this open
+        // was phone-backed — set by the fetch, not derived from an
+        // expiry, so it survives a session that dies right after.
+        assert!(phone_answer_backed(), "the fetch backs the open");
+        reset_phone_answer_backing();
+        assert!(!phone_answer_backed(), "a fresh unlock attempt clears it");
+        // And the liveness probe sees it again once re-fetched.
+        assert!(
+            crate::session_agent::held_phone_answer(&config)
+                .expect("the agent still holds the answer")
+                .is_some()
+        );
+        assert!(phone_answer_backed());
 
         assert!(
             session_access_live(false, false, true, &config.name, "entry", "code"),

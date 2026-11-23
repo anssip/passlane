@@ -279,6 +279,9 @@ enum Stage {
 
 impl<'a> Candidates<'a> {
     fn new(config: &'a VaultConfig, sources: &'a UnlockSources<'a>, key: ChallengeKey<'a>) -> Self {
+        // A fresh attempt: whether a phone answer backed the previous one
+        // describes that one, not this.
+        crate::session_agent::reset_phone_answer_backing();
         Self {
             config,
             sources,
@@ -320,15 +323,6 @@ impl<'a> Candidates<'a> {
         // the vault's current challenge. An agent that is running but
         // cannot serve it is the same error as one that cannot serve the
         // password.
-        let held_phone_answer = if self.config.phone_key.is_some() {
-            match (self.sources.phone_answer)(self.config) {
-                Ok(answer) => answer,
-                Err(AgentError::NotRunning(_)) => None,
-                Err(e) => return Err(crate::session_agent::to_error(e)),
-            }
-        } else {
-            None
-        };
         let factors = match (self.sources.session)(&self.config.name) {
             Ok(factors) => factors,
             // No agent is running: it is optional infrastructure.
@@ -344,6 +338,21 @@ impl<'a> Candidates<'a> {
             self.check_unattended_hardware_key(false)?;
             return Ok(None);
         };
+        // A held phone answer is fetched only now that a session password
+        // exists to use it with, and only for the enrolled key: fetching
+        // consumes a single-use approval, and one fetched with no password
+        // candidate to pair with (or for a caller-chosen recovery key)
+        // would be burned for nothing — the next source asks again.
+        let held_phone_answer =
+            if self.config.phone_key.is_some() && matches!(self.key, ChallengeKey::Enrolled) {
+                match (self.sources.phone_answer)(self.config) {
+                    Ok(answer) => answer,
+                    Err(AgentError::NotRunning(_)) => None,
+                    Err(e) => return Err(crate::session_agent::to_error(e)),
+                }
+            } else {
+                None
+            };
         let held_challenge_factor = match factors.challenge_response {
             Some(ChallengeResponseMaterial::Secret { secret_hex }) => Some(
                 ChallengeFactor::from_existing_secret_hex(secret_hex.expose())?,
@@ -1380,21 +1389,45 @@ mod tests {
     #[test]
     fn an_answer_without_a_session_password_stays_held_for_the_next_source() {
         // No session at all (so no password from it), but the agent holds
-        // an answer: the chain must not consume it on a candidate that
-        // cannot open anything, and the keychain's password plus the held
-        // answer opens the vault without a terminal.
+        // an answer: the chain must not even FETCH it — fetching consumes
+        // a single-use approval, and with no session password to pair it
+        // with, the fetch would burn it for nothing. The keychain's
+        // password plus the transport (which takes the held answer
+        // exactly once) opens the vault without a terminal.
         let _guard = use_vault_as(false, true);
         let sources = UnlockSources {
             interactive: false,
             keychain: &stored(PASSWORD),
             session: &no_session(),
-            phone_answer: &held_phone_answer(),
+            phone_answer: &|_| panic!("no answer may be fetched without a password to use it with"),
             phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
         };
         let unlocked = unlock_test(&sources).expect("the held answer serves the keychain too");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    #[test]
+    fn a_caller_given_key_never_fetches_a_held_answer() {
+        // Recovery chose its own factor — the backed-up secret — so the
+        // open uses exactly it: a held answer must not be fetched (and
+        // so cannot fail it); the fetch is for the enrolled key alone.
+        let _guard = use_vault_as(false, true);
+        let recovery = ChallengeFactor::from_existing_secret_hex(SLOT_SECRET).unwrap();
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &|_| panic!("a given key fetches no held answer"),
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test_with(ChallengeKey::Given(Some(&recovery)), &sources)
+            .expect("the keychain opens the vault with the given recovery key");
         assert_eq!(unlocked.source, PasswordSource::Keychain);
     }
 

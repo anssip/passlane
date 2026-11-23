@@ -157,12 +157,16 @@ export function describeOperation(operation, vaultName) {
   }
 }
 
-/** A vault's key record as it lives in the approver record. */
+/** A vault's key record as it lives in the approver record. `id`
+ *  identifies the generation: transitions bind to it, so a key created
+ *  in another tab is never promoted or dropped by a decision made about
+ *  this one. */
 export function newKeyRecord(vaultId, vaultName, hmacKey, now = Date.now()) {
   return {
     vault: vaultId,
     vaultName,
     key: hmacKey,
+    id: toHex(randomBytes(8)),
     createdAt: now,
     /// Set once the sheet was read back; until then the key answers
     /// nothing and the next enrollment may replace it.
@@ -202,19 +206,26 @@ export function stageKey(record, vaultId, keyRecord) {
 }
 
 /** Promote the staged key to the vault's held key: after it answered a
- *  save, the vault needs it. Pure: returns the next record. */
-export function promoteStagedKey(record, vaultId) {
+ *  save, the vault needs it. Bound to `expectedId` — the generation the
+ *  answer was computed with: if another tab replaced the staged key in
+ *  between, this leaves the newer one alone. Pure: returns the next
+ *  record. */
+export function promoteStagedKey(record, vaultId, expectedId) {
   const staged = stagedKey(record, vaultId);
-  if (!staged) return record;
+  if (!staged || staged.id !== expectedId) return record;
   const rest = { ...record.staged };
   delete rest[vaultId];
   return { ...record, keys: { ...(record.keys ?? {}), [vaultId]: staged }, staged: rest };
 }
 
 /** Forget the staged key: the vault just opened with the held one, so
- *  the enrollment that staged it never completed. Pure. */
-export function dropStagedKey(record, vaultId) {
-  if (!stagedKey(record, vaultId)) return record;
+ *  the enrollment that staged it never completed. Bound to `expectedId`
+ *  the same way [`promoteStagedKey`] is, so a newer generation another
+ *  tab staged is not discarded by a decision made about the old one.
+ *  Pure. */
+export function dropStagedKey(record, vaultId, expectedId) {
+  const staged = stagedKey(record, vaultId);
+  if (!staged || staged.id !== expectedId) return record;
   const rest = { ...record.staged };
   delete rest[vaultId];
   return { ...record, staged: rest };
