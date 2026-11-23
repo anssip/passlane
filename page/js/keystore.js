@@ -54,6 +54,27 @@ export async function putApprover(record) {
 }
 
 /**
+ * Mutate one approver record inside a single read/write transaction:
+ * the record is re-read *when the mutation runs*, so two tabs — each
+ * holding the snapshot this page loaded at open — cannot overwrite one
+ * another's keys. The second enrollment's completion merges with the
+ * first's stored key instead of erasing it. `mutate` receives the
+ * current record and returns the next one (or a falsy value to store
+ * nothing, e.g. when the record vanished).
+ */
+export async function mutateApprover(rkid, mutate) {
+  return withStore("readwrite", (store) => {
+    const request = store.get(rkid);
+    request.onsuccess = () => {
+      if (request.result === undefined) return;
+      const next = mutate(request.result);
+      if (next) store.put(next);
+    };
+    return request;
+  });
+}
+
+/**
  * The phone-held key this device holds for one vault, if any: the record
  * stored under `record.keys[vaultId]` by 'hwkey add --phone'.
  */

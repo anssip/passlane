@@ -315,6 +315,9 @@ pub fn emit_to(
     let exp = envelope.header().exp;
     let encoded = envelope.to_base64url();
     let link = approve_link(&link_base_for(dir, peer), &encoded);
+    // The request was sealed to this approver; only its response may
+    // answer it (checked at verification, against the response's sender).
+    let holder_kid = peer.enc_kid().ok();
 
     // Recording runs under the store's exclusive lock (and persists the
     // pruning of dead records) — a concurrent consume/approve can never
@@ -332,6 +335,7 @@ pub fn emit_to(
             kind: target.kind,
             challenge: target.challenge.map(str::to_string),
             link: Some(link.clone()),
+            holder_kid,
             state: RequestState::Pending,
         });
     })
@@ -388,7 +392,8 @@ pub fn emit_approval_request(
 /// The body of a challenge-bearing request (SPEC §7): the operation, the
 /// 32-byte challenge it is answered for, and who is asking.
 pub fn challenge_request_body(
-    vault: &str,
+    vault_id: &str,
+    vault_name: &str,
     operation: Operation,
     challenge: &[u8],
     requester: &str,
@@ -405,9 +410,12 @@ pub fn challenge_request_body(
             passlane_approval::message::CHALLENGE_LEN
         ));
     }
+    // `vault_id` is the holder-side identity the approver keys its key
+    // under (stable across 'passlane vault rename'); `vault_name` is what
+    // the approval card shows.
     Ok(Body::ApprovalRequest {
-        vault_id: vault.to_string(),
-        vault_name: vault.to_string(),
+        vault_id: vault_id.to_string(),
+        vault_name: vault_name.to_string(),
         operation,
         requester: requester.to_string(),
         scope: Scope::Once,
@@ -579,6 +587,20 @@ pub fn verify_response(
             return Err(format!(
                 "the request expired at {}; emit a new one by re-running the command",
                 record.exp
+            ));
+        }
+        // The approver the request was sealed to is the only one who may
+        // answer it. The response's sender key id says who did; with
+        // several approvers pinned, another one holding the link could
+        // otherwise answer in the holder's place — for a challenge
+        // request, with Save/Unlock material of its own choosing.
+        if let Some(expected) = &record.holder_kid
+            && header.skid != *expected
+        {
+            return Err(format!(
+                "request {rid} was addressed to approver {expected}, but this response comes \
+                 from '{}'. Only the device a request was sealed to may answer it.",
+                header.skid
             ));
         }
 
@@ -1572,7 +1594,8 @@ mod tests {
             RequestKind::EnrollKey => Operation::EnrollKey,
             RequestKind::Reveal => panic!("a reveal carries no challenge"),
         };
-        let body = challenge_request_body("default", operation, challenge, "test-user").unwrap();
+        let body = challenge_request_body("default", "default", operation, challenge, "test-user")
+            .unwrap();
         emit_to(
             dir,
             &peer,
@@ -1646,6 +1669,7 @@ mod tests {
         assert!(
             challenge_request_body(
                 "v",
+                "v",
                 Operation::Reveal {
                     entry: "e".into(),
                     field: "f".into()
@@ -1656,10 +1680,97 @@ mod tests {
             .is_err()
         );
         assert!(
-            challenge_request_body("v", Operation::Unlock, &[0u8; 20], "r").is_err(),
+            challenge_request_body("v", "v", Operation::Unlock, &[0u8; 20], "r").is_err(),
             "the challenge is the 32-byte KDF seed"
         );
-        assert!(challenge_request_body("v", Operation::EnrollKey, &[7u8; 32], "r").is_ok());
+        assert!(challenge_request_body("v", "v", Operation::EnrollKey, &[7u8; 32], "r").is_ok());
+    }
+
+    #[test]
+    fn a_response_from_another_pinned_approver_is_refused() {
+        // The request is sealed to one approver; with several pinned,
+        // another one holding the link must not be able to answer in the
+        // holder's place — with Save/Unlock material of its own choosing.
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, _page, _passkey) = mock_page();
+            let expected_kid = pin.enc_kid().unwrap();
+            pin_approver(dir, pin, None).unwrap();
+            // A second, different approver, also pinned (pinning replaces
+            // by label, so it needs its own).
+            let (mut other_pin, other_page, other_passkey) = mock_page();
+            other_pin.label = "second-page".into();
+            let other_kid = other_pin.enc_kid().unwrap();
+            assert_ne!(other_kid, expected_kid);
+            pin_approver(dir, other_pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            // Emit to the FIRST pin, explicitly — with two pinned, the
+            // helper's "remove(0)" pick is whichever loads first.
+            let challenge = [0xa1u8; 32];
+            let body = challenge_request_body(
+                "default",
+                "default",
+                Operation::Unlock,
+                &challenge,
+                "test-user",
+            )
+            .unwrap();
+            let peers = load_peers_pinned(dir).unwrap();
+            let holder = peers
+                .iter()
+                .find(|peer| peer.enc_kid().ok().as_deref() == Some(expected_kid.as_str()))
+                .expect("the first pin is there")
+                .clone();
+            let emitted = emit_to(
+                dir,
+                &holder,
+                crate::approvals::RequestTarget::challenge(
+                    "default",
+                    RequestKind::Unlock,
+                    &passlane_approval::encoding::hex_encode(&challenge),
+                ),
+                body,
+                None,
+            )
+            .unwrap();
+
+            let blob = mock_page_answer(
+                &cli,
+                &other_page,
+                &other_passkey,
+                &emitted.rid,
+                Decision::Allow,
+                Some([0x99u8; 20]),
+                Scope::Once,
+            )
+            .to_base64url();
+            let err = verify_response(dir, &blob, Disposition::ConsumeNow, &|_| Ok(()))
+                .expect_err("a response from the wrong approver is refused");
+            assert!(err.contains("was addressed to approver"), "{err}");
+            assert!(
+                err.contains(&other_kid),
+                "the refusal names who answered: {err}"
+            );
+            assert!(
+                PendingStore::load(dir)
+                    .unwrap()
+                    .find(&emitted.rid)
+                    .unwrap()
+                    .state
+                    == RequestState::Pending,
+                "the request is still pending: nothing was consumed"
+            );
+            // And the request is still pending: nothing was consumed.
+            assert_eq!(
+                PendingStore::load(dir)
+                    .unwrap()
+                    .find(&emitted.rid)
+                    .unwrap()
+                    .state,
+                RequestState::Pending
+            );
+        }
     }
 
     #[test]

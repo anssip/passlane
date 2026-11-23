@@ -263,6 +263,96 @@ if (process.argv.includes("--write-fixture")) {
   console.log(`fixture written: ${enrollPath}`);
 }
 
+// Pure phone-key lifecycle tests (the staged-key rules and the
+// deny-carries-no-answer rule): the wiring-level flows they drive are
+// exercised by the CLI's Rust integration tests against this page's
+// protocol output.
+{
+  const pk = await import(join(page, "js", "phonekey.js"));
+  const pure = [];
+  const pureTest = (name, fn) => {
+    try {
+      fn();
+      pure.push({ ok: true, name });
+    } catch (e) {
+      pure.push({ ok: false, name, error: String(e && e.message ? e.message : e) });
+    }
+  };
+  const assertEq = (a, b, msg) => {
+    if (a !== b) throw new Error(`${msg ?? "values differ"}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
+  };
+  const assert = (cond, msg) => {
+    if (!cond) throw new Error(msg ?? "assertion failed");
+  };
+
+  const VAULT = "3f7a2c9180e64b25a1d0f3c87592e641";
+  const held = pk.newKeyRecord(VAULT, "work", "held-key");
+  const staged = pk.newKeyRecord(VAULT, "work", "staged-key");
+  const save = { vault_id: VAULT, operation: { kind: "save" } };
+  const unlock = { vault_id: VAULT, operation: { kind: "unlock" } };
+
+  pureTest("staging leaves the held key untouched until promotion", () => {
+    const record = { rkid: "k1", keys: { [VAULT]: held } };
+    const next = pk.stageKey(record, VAULT, staged);
+    assertEq(pk.heldKeyOf(next, VAULT), held, "the held key is unchanged");
+    assertEq(pk.stagedKey(next, VAULT), staged, "the staged key sits beside it");
+    assertEq(pk.heldKeyOf(record, VAULT), held, "pure: the input record is untouched");
+    assert(!pk.stagedKey(record, VAULT), "pure: nothing staged in the input");
+  });
+
+  pureTest("the enrollment's save answers with the staged key and promotes it", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, staged, "the staged key answers the save");
+    assertEq(which.promote, true, "and is promoted by it");
+    const next = pk.promoteStagedKey(record, VAULT);
+    assertEq(pk.heldKeyOf(next, VAULT), staged, "the staged key is now held");
+    assert(!pk.stagedKey(next, VAULT), "nothing stays staged");
+  });
+
+  pureTest("an unlock answers with the held key and drops a staged one", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    const which = pk.keyDecision(record, unlock);
+    assertEq(which.key, held, "the held key answers the unlock");
+    assertEq(which.dropStaged, true, "the staged one is dead: the vault opened with the old key");
+    const next = pk.dropStagedKey(record, VAULT);
+    assertEq(pk.heldKeyOf(next, VAULT), held, "the held key survives");
+    assert(!pk.stagedKey(next, VAULT), "the staged key is gone");
+  });
+
+  pureTest("a save without a staged key is the held key's, unpromoted", () => {
+    const record = { rkid: "k1", keys: { [VAULT]: held } };
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, held, "the held key answers");
+    assertEq(which.promote, false, "nothing to promote");
+  });
+
+  pureTest("a vault with only a staged key has nothing to answer an unlock with", () => {
+    const record = pk.stageKey({ rkid: "k1" }, VAULT, staged);
+    assertEq(pk.keyDecision(record, unlock), null, "an unlock is not the staged key's to answer");
+  });
+
+  pureTest("a deny never carries an answer, however it was computed", () => {
+    assertEq(pk.answerForDecision("deny", "abcd1234"), null, "a deny strips the answer");
+    assertEq(pk.answerForDecision("allow", "abcd1234"), "abcd1234", "an allow carries it");
+    assertEq(pk.answerForDecision("allow", null), null, "an allow without an answer carries none");
+  });
+
+  let purePassed = 0;
+  let pureFailed = 0;
+  for (const r of pure) {
+    if (r.ok) {
+      purePassed++;
+      console.log(`ok   ${r.name}`);
+    } else {
+      pureFailed++;
+      console.log(`FAIL ${r.name}\n     ${r.error}`);
+    }
+  }
+  domOut.passed += purePassed;
+  domOut.failed += pureFailed;
+}
+
 function concatU8(...parts) {
   const len = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(len);

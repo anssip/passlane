@@ -64,9 +64,35 @@ pub struct PhoneKeyConfig {
     /// holds the secret. Requests for the vault are sealed to that pin;
     /// a label would not do, since re-enrolling a label replaces its keys.
     pub holder_kid: String,
+    /// The vault's holder-side identity (32 lower-case hex characters):
+    /// what the request body's `vault_id` carries and the approver keys
+    /// its held key under. Assigned once at enrollment and never changed —
+    /// the registry name is mutable ('passlane vault rename'), but the
+    /// holder's copy of "which vault is this" must not be. Absent only in
+    /// registries from before the field existed; then the name is used,
+    /// and stays correct until the vault is renamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_uid: Option<String>,
     /// Unix time the vault was re-keyed to the holder's key.
     #[serde(default)]
     pub enrolled_at: u64,
+}
+
+impl PhoneKeyConfig {
+    /// The holder-side identity for an enrollment of `holder_kid` with
+    /// the vault at `path`: deterministic, so a resumed enrollment (a
+    /// re-run that consumes an approval given to the first) asks the
+    /// holder under the same id the first one did — and a renamed vault
+    /// keeps it, since the path does not move. 32 hex characters.
+    pub fn assigned_vault_uid(holder_kid: &str, path: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"passlane phone-held-key vault uid v1");
+        hasher.update(holder_kid.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(path.as_bytes());
+        passlane_approval::encoding::hex_encode(&hasher.finalize()[..16])
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -230,6 +256,17 @@ fn validate_entries(path: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
                     path.display(),
                     vault.name,
                     phone_key.holder_kid
+                )));
+            }
+            if let Some(uid) = &phone_key.vault_uid
+                && !is_holder_vault_uid(uid)
+            {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has an invalid phone-held key vault id '{}' (must be 32 \
+                     lower-case hex characters).",
+                    path.display(),
+                    vault.name,
+                    uid
                 )));
             }
             if vault.hwkey.is_some() {
@@ -549,6 +586,15 @@ pub fn set_current(vault: VaultConfig) {
     *CURRENT.write().unwrap() = Some(vault);
 }
 
+/// Test-only: forget the process-global current vault again.
+#[cfg(test)]
+pub fn clear_current_for_tests() {
+    let mut current = CURRENT
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *current = None;
+}
+
 pub fn current() -> Result<VaultConfig, Error> {
     CURRENT.read().unwrap().clone().ok_or_else(|| {
         Error::new("No vault selected. Run 'passlane init' or 'passlane vault use'.")
@@ -739,6 +785,14 @@ pub fn set_phone_key(vault_name: &str, phone_key: Option<PhoneKeyConfig>) -> Res
 
 /// A protocol key id: 16 lower-case hex characters (the first 8 bytes of a
 /// SHA-256, hex-encoded, as `passlane_approval::keys::kid` produces).
+/// A holder-side vault identity: 32 lower-case hex characters.
+pub(crate) fn is_holder_vault_uid(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+}
+
 pub(crate) fn is_kid(value: &str) -> bool {
     value.len() == 16
         && value
@@ -1038,7 +1092,90 @@ mod tests {
     fn phone_key() -> PhoneKeyConfig {
         PhoneKeyConfig {
             holder_kid: PHONE_KID.to_string(),
+            vault_uid: None,
             enrolled_at: 1_760_000_000,
+        }
+    }
+
+    #[test]
+    fn a_phone_key_roundtrips_its_holder_side_vault_id() {
+        let dir = tempfile::tempdir().unwrap();
+        add_vault_to(
+            dir.path(),
+            VaultConfig {
+                name: "a".into(),
+                path: "/a.kdbx".into(),
+                keyfile: None,
+                hwkey: None,
+                phone_key: Some(PhoneKeyConfig {
+                    holder_kid: "0123456789abcdef".into(),
+                    vault_uid: Some(PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx")),
+                    enrolled_at: 9,
+                }),
+            },
+        )
+        .unwrap();
+        let loaded = load_from(dir.path()).unwrap();
+        let recorded = find(&loaded, "a").unwrap().phone_key.clone().unwrap();
+        assert_eq!(
+            recorded.vault_uid.as_deref(),
+            Some(PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx").as_str()),
+            "the assigned id is the derived one"
+        );
+        // The shape: 32 lower-case hex characters, and fresh each call.
+        let uid = find(&loaded, "a")
+            .unwrap()
+            .phone_key
+            .as_ref()
+            .unwrap()
+            .vault_uid
+            .clone()
+            .unwrap();
+        assert!(
+            is_holder_vault_uid(&uid),
+            "a generated id is 32 lower-case hex characters: {uid}"
+        );
+        assert_ne!(
+            uid,
+            PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/other.kdbx"),
+            "the path is part of the identity"
+        );
+        assert_eq!(
+            PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx"),
+            find(&loaded, "a")
+                .unwrap()
+                .phone_key
+                .as_ref()
+                .unwrap()
+                .vault_uid
+                .clone()
+                .unwrap(),
+            "deterministic: the same holder and path derive the same id"
+        );
+        assert!(!is_holder_vault_uid(&uid.to_uppercase()), "case matters");
+    }
+
+    #[test]
+    fn an_invalid_holder_side_vault_id_is_refused() {
+        // The registry is written the way a hand edit would leave it, and
+        // must be refused on load — not half-accepted.
+        for uid in ["not hex!", "abcd", &"a".repeat(33)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = sample_vault("a");
+            config.phone_key = Some(PhoneKeyConfig {
+                holder_kid: PHONE_KID.to_string(),
+                vault_uid: Some(uid.to_string()),
+                enrolled_at: 1,
+            });
+            std::fs::write(
+                dir.path().join("vaults.json"),
+                serde_json::to_string(&vec![config]).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                load_from(dir.path()).is_err(),
+                "the id '{uid}' is refused on load"
+            );
         }
     }
 

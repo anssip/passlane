@@ -474,9 +474,16 @@ fn enroll_and_record(
     source: Arc<dyn ResponseSource>,
     record: &dyn Fn(Option<PhoneKeyConfig>) -> Result<(), Error>,
 ) -> Result<PhoneKeyConfig, Error> {
-    let enrollment = crate::phone_key::enroll::enroll(config, vault, password, source)?;
+    // The holder-side identity, derived (not random): a resumed
+    // enrollment — the re-run that consumes an approval given to the
+    // first — asks under the same id the first one did, so the holder's
+    // key is found; and a later rename keeps it, since the path does not
+    // move.
+    let vault_uid = PhoneKeyConfig::assigned_vault_uid(&holder_kid, &config.path);
+    let enrollment = crate::phone_key::enroll::enroll(config, vault, password, &vault_uid, source)?;
     let phone_key = PhoneKeyConfig {
         holder_kid,
+        vault_uid: Some(vault_uid),
         enrolled_at: enrollment.enrolled_at,
     };
     if let Err(e) = record(Some(phone_key.clone())) {
@@ -876,6 +883,7 @@ mod tests {
         });
         let ph = Enrolled::Phone(PhoneKeyConfig {
             holder_kid: KID.into(),
+            vault_uid: None,
             enrolled_at: 1,
         });
         let message = hw.already_enrolled("work").message;
@@ -904,6 +912,7 @@ mod tests {
         .unwrap();
         let phone = Enrolled::Phone(PhoneKeyConfig {
             holder_kid: KID.into(),
+            vault_uid: None,
             enrolled_at: 7,
         });
         record_factor_to(dir.path(), "work", Some(&phone)).unwrap();
@@ -914,6 +923,7 @@ mod tests {
                 .phone_key,
             Some(PhoneKeyConfig {
                 holder_kid: KID.into(),
+                vault_uid: None,
                 enrolled_at: 7
             })
         );

@@ -75,16 +75,17 @@ qrcode = "0.14"
 rand = "0.8"
 # Session-agent client for unlock/approval sessions (issue #54).
 passlane-agent = { path = "crates/passlane-agent", version = "0.1.0" }
+# The registry derives the phone-held key's holder-side vault id with it
+# (same version as passlane-approval's, so the workspace unifies).
+sha2 = "0.10"
 
 [dev-dependencies]
+# Same versions as passlane-approval's, so the workspace unifies: the
+# approval-transport tests build mocked passkeys with p256.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
 tempfile = "3.24.0"
 # The mocked phone of the phone-held-key tests computes HMAC-SHA1 answers
 # exactly as keepass-ng's LocalChallenge (a YubiKey slot) does. Same
 # versions as passlane-approval's, so the workspace unifies.
 hmac = "0.12"
 sha1 = "0.10"
-# Same versions as passlane-approval's, so the workspace unifies: the
-# approval-transport tests build mocked passkeys with p256 and mirror the
-# enrollment challenge with sha2.
-p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
-sha2 = "0.10"

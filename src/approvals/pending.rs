@@ -111,6 +111,14 @@ pub struct PendingRequest {
     /// while the request is pending. Sealed to the approver; not secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The enc key id of the approver the request was sealed to. A
+    /// verified response must come from exactly that approver: with
+    /// several pinned, another one holding the link could otherwise
+    /// answer in the holder's place — for a challenge request, with
+    /// Save/Unlock material of its own choosing. Absent only in records
+    /// from before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_kid: Option<String>,
     /// Where the request stands.
     pub state: RequestState,
 }
@@ -353,6 +361,7 @@ mod tests {
             kind: RequestKind::Reveal,
             challenge: None,
             link: None,
+            holder_kid: None,
             state,
         }
     }

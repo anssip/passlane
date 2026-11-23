@@ -178,12 +178,26 @@ pub(crate) fn take_last_open_answer() -> Option<(PhoneRequest, Answer)> {
 /// first challenge must then be that same seed; a different one means the
 /// file changed underneath the request (a sync client replaced it), and
 /// an answer to the old seed would be silently wrong.
+/// The vault's holder-side identity: the uid assigned at enrollment if
+/// there is one, else the registry name. This is what a request body's
+/// `vault_id` carries and the approver keys its held key under — stable
+/// across 'passlane vault rename', which changes the name but must not
+/// orphan the holder's key.
+pub(crate) fn vault_identity(config: &VaultConfig) -> String {
+    config
+        .phone_key
+        .as_ref()
+        .and_then(|key| key.vault_uid.clone())
+        .unwrap_or_else(|| config.name.clone())
+}
+
 pub(crate) fn open_key(
     config: &VaultConfig,
     source: Arc<dyn ResponseSource>,
 ) -> Result<ChallengeFactor, Error> {
     let seed = kdf_seed::read_kdf_seed(&config.path)?;
     Ok(responder_key(
+        &vault_identity(config),
         &config.name,
         source,
         Opening::ExpectSeed(seed),
@@ -193,10 +207,11 @@ pub(crate) fn open_key(
 /// The challenge-response key for a vault that is already open and is
 /// about to be re-keyed (enrollment): every challenge is a new seed.
 pub(crate) fn save_only_key(
-    config: &VaultConfig,
+    vault_id: &str,
+    vault_name: &str,
     source: Arc<dyn ResponseSource>,
 ) -> ChallengeFactor {
-    responder_key(&config.name, source, Opening::AlreadyOpen)
+    responder_key(vault_id, vault_name, source, Opening::AlreadyOpen)
 }
 
 /// A session-held answer, wrapped for the unlock chain: it answers the
@@ -265,23 +280,42 @@ pub(crate) fn held_answer_key(
     config: &VaultConfig,
     seed: [u8; CHALLENGE_LEN],
     answer: Zeroizing<Vec<u8>>,
-    transport: Arc<dyn ResponseSource>,
 ) -> ChallengeFactor {
     responder_key(
+        &vault_identity(config),
         &config.name,
         Arc::new(HeldAnswer {
             seed,
             answer,
-            transport,
+            transport: Arc::new(LazyTransport {
+                config: config.clone(),
+            }),
         }),
         Opening::ExpectSeed(seed),
     )
+}
+
+/// The link transport, resolved when a challenge first needs it: a
+/// session-backed open must not fail because the holder is not pinned
+/// (or the approvals state cannot be read) — only the *next save* needs
+/// the holder, and that is where the refusal belongs.
+struct LazyTransport {
+    config: VaultConfig,
+}
+
+impl ResponseSource for LazyTransport {
+    fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
+        let transport =
+            transport_source(&self.config).map_err(|e| ResponseError::Unavailable(e.message))?;
+        transport.respond(request)
+    }
 }
 
 /// The challenge-response key for opening a vault with one known answer.
 pub(crate) fn fixed_key(config: &VaultConfig, fixed: FixedAnswer) -> ChallengeFactor {
     let challenge = fixed.challenge;
     responder_key(
+        &vault_identity(config),
         &config.name,
         Arc::new(fixed),
         Opening::ExpectSeed(challenge),
@@ -295,12 +329,14 @@ enum Opening {
 }
 
 fn responder_key(
-    vault: &str,
+    vault_id: &str,
+    vault_name: &str,
     source: Arc<dyn ResponseSource>,
     opening: Opening,
 ) -> ChallengeFactor {
     let responder = PhoneResponder {
-        vault: vault.to_string(),
+        vault_id: vault_id.to_string(),
+        vault_name: vault_name.to_string(),
         source,
         opening,
         opened: AtomicBool::new(false),
@@ -311,7 +347,10 @@ fn responder_key(
 }
 
 struct PhoneResponder {
-    vault: String,
+    /// The holder-side identity the request body carries.
+    vault_id: String,
+    /// The registry name, for display on the approval screen.
+    vault_name: String,
     source: Arc<dyn ResponseSource>,
     opening: Opening,
     /// Set once the opening challenge has been answered.
@@ -350,8 +389,8 @@ impl PhoneResponder {
         };
 
         let request = PhoneRequest {
-            vault_id: self.vault.clone(),
-            vault_name: self.vault.clone(),
+            vault_id: self.vault_id.clone(),
+            vault_name: self.vault_name.clone(),
             operation: if opening {
                 Operation::Unlock
             } else {
@@ -498,6 +537,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_request_identity_is_the_assigned_id_and_survives_a_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        KeepassVault::new(path.to_str().unwrap(), "pw", None, None).unwrap();
+
+        // No phone key: the name, as ever.
+        let mut config = config_for(&path);
+        assert_eq!(vault_identity(&config), "work");
+
+        // Enrolled: the assigned id — and still it after the registry's
+        // name changes, which is the whole point of the field.
+        config.phone_key = Some(crate::vault_registry::PhoneKeyConfig {
+            holder_kid: "0123456789abcdef".to_string(),
+            vault_uid: Some("a1b2c3d4e5f60718293a4b5c6d7e8f90".to_string()),
+            enrolled_at: 1,
+        });
+        assert_eq!(vault_identity(&config), "a1b2c3d4e5f60718293a4b5c6d7e8f90");
+        config.name = "renamed".to_string();
+        assert_eq!(
+            vault_identity(&config),
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "a rename does not change what the holder is asked by"
+        );
+
+        // A pre-field enrollment (no uid recorded): the name remains the
+        // identity, exactly as when it was enrolled.
+        config.phone_key.as_mut().unwrap().vault_uid = None;
+        assert_eq!(vault_identity(&config), "renamed");
+    }
+
+    #[test]
     fn vault_enrolled_by_phone_answers_opens_and_saves() {
         let dir = tempfile::tempdir().unwrap();
         let vault_path = dir.path().join("vault.kdbx");
@@ -509,7 +579,7 @@ pub(crate) mod tests {
         // -- re-key: the save asks the phone for the new seed's answer --
         let mut vault = KeepassVault::open("master-pw", vault_path, None, None).unwrap();
         vault
-            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key("work", "work", phone.clone())))
             .unwrap();
         drop(vault);
         assert_eq!(operations(&phone), [Operation::Save]);
@@ -562,7 +632,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_factor(Some(save_only_key(&config, phone)))
+            .update_challenge_factor(Some(save_only_key("work", "work", phone)))
             .unwrap();
         drop(vault);
 
@@ -593,7 +663,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key("work", "work", phone.clone())))
             .unwrap();
         drop(vault);
 
@@ -634,7 +704,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key("work", "work", phone.clone())))
             .unwrap();
         drop(vault);
 
@@ -644,7 +714,7 @@ pub(crate) mod tests {
             other.to_str().unwrap(),
             "master-pw",
             None,
-            Some(&save_only_key(&config, phone.clone())),
+            Some(&save_only_key("work", "work", phone.clone())),
         )
         .unwrap();
         std::fs::copy(&other, vault_path).unwrap();
@@ -687,7 +757,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET).with_origin(AnswerOrigin::SessionAgent));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key("work", "work", phone.clone())))
             .unwrap();
         drop(vault);
 

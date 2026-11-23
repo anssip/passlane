@@ -452,6 +452,12 @@ impl World {
         }
     }
 
+    /// The holder-side identity the phone keys this vault's key under:
+    /// the same one the CLI derives (holder kid + vault path).
+    fn phone_uid(&self) -> String {
+        crate_phone_uid(&self.phone.kid(), &self.vault_path.to_string_lossy())
+    }
+
     /// The owner approves a request from elsewhere: the phone answers the
     /// link, and `passlane approve --response` hands the answer over.
     fn approve(&self, link: &str) -> Output {
@@ -487,7 +493,7 @@ impl World {
         );
         assert!(self.phone_key().is_none());
         assert!(
-            self.phone.sheet_secret(&self.vault_name).is_none(),
+            self.phone.sheet_secret(&self.phone_uid()).is_none(),
             "no key exists before the sheet is scanned back"
         );
 
@@ -521,12 +527,30 @@ impl World {
 
         let phone_key = self.phone_key().expect("the factor is recorded");
         assert_eq!(phone_key["holder_kid"], self.phone.kid());
+        // The recorded identity is the derived one the phone keyed its
+        // key under — pinning this test's copy of the derivation to the
+        // CLI's.
+        assert_eq!(phone_key["vault_uid"], self.phone_uid());
         assert_ne!(
             std::fs::read(&self.vault_path).unwrap(),
             self.vault_before_enrollment,
             "the vault was re-keyed"
         );
     }
+}
+
+/// The holder-side identity, derived exactly as the CLI's
+/// `PhoneKeyConfig::assigned_vault_uid` derives it. Duplicated because the
+/// binary exports no library — and pinned against the registry's recorded
+/// value by the enrollment test, so a drift fails loudly.
+fn crate_phone_uid(holder_kid: &str, path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"passlane phone-held-key vault uid v1");
+    hasher.update(holder_kid.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(path.as_bytes());
+    passlane_approval::encoding::hex_encode(&hasher.finalize()[..16])
 }
 
 /// The page's real phone-key code (node WebCrypto standing in for the
@@ -643,7 +667,7 @@ fn enrollment_rekeys_the_vault_through_two_remote_approvals() {
     assert!(KeepassVault::open(MASTER_PW, world.vault_path.to_str().unwrap(), None, None).is_err());
     let sheet = world
         .phone
-        .sheet_secret(&world.vault_name)
+        .sheet_secret(&world.phone_uid())
         .expect("the sheet exists");
     let as_a_yubikey_slot = keepass_ng::ChallengeResponseKey::LocalChallenge(
         passlane_approval::encoding::hex_encode(&sheet),
@@ -701,7 +725,7 @@ fn an_enrollment_without_the_scan_back_leaves_the_vault_unchanged() {
         world.vault_before_enrollment
     );
     assert!(world.phone_key().is_none());
-    assert!(world.phone.sheet_secret(&world.vault_name).is_none());
+    assert!(world.phone.sheet_secret(&world.phone_uid()).is_none());
 
     // The request is still pending, waiting for an answer that will not
     // come; it expires on its own.
@@ -729,7 +753,7 @@ fn a_denied_enrollment_leaves_the_vault_unchanged() {
         world.vault_before_enrollment
     );
     assert!(
-        world.phone.sheet_secret(&world.vault_name).is_none(),
+        world.phone.sheet_secret(&world.phone_uid()).is_none(),
         "no key was created"
     );
 }

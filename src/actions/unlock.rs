@@ -167,6 +167,7 @@ mod tests {
             keyfile: None,
             hwkey: None,
             phone_key: phone.then(|| crate::vault_registry::PhoneKeyConfig {
+                vault_uid: None,
                 holder_kid: "0123456789abcdef".into(),
                 enrolled_at: 1,
             }),

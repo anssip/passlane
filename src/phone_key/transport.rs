@@ -177,7 +177,7 @@ impl ResponseSource for LinkTransport {
 
         // An answer granted earlier — `unlock --session`, or an approval
         // deposited from another terminal — is used without asking again.
-        if let Some(response) = self.store.take(&request.vault_id, &challenge_hex) {
+        if let Some(response) = self.store.take(&request.vault_name, &challenge_hex) {
             return Ok(Answer {
                 response,
                 origin: AnswerOrigin::SessionAgent,
@@ -187,6 +187,7 @@ impl ResponseSource for LinkTransport {
         let kind = RequestKind::from_operation(&request.operation);
         let body = approvals::challenge_request_body(
             &request.vault_id,
+            &request.vault_name,
             request.operation.clone(),
             &request.challenge,
             &self.requester,
@@ -195,7 +196,7 @@ impl ResponseSource for LinkTransport {
         let emitted = approvals::emit_to(
             &self.dir,
             &self.holder,
-            RequestTarget::challenge(&request.vault_id, kind, &challenge_hex),
+            RequestTarget::challenge(&request.vault_name, kind, &challenge_hex),
             body.clone(),
             None,
         )
@@ -206,7 +207,7 @@ impl ResponseSource for LinkTransport {
             ))
         })?;
         self.log
-            .log_challenge_request(&emitted.rid, &request.vault_id, kind.label(), &body);
+            .log_challenge_request(&emitted.rid, &request.vault_name, kind.label(), &body);
 
         self.terminal.show(&Shown {
             request,
@@ -231,7 +232,7 @@ impl ResponseSource for LinkTransport {
 
         let approved = outcome.is_ok();
         self.log
-            .log_challenge_decision(&emitted.rid, &request.vault_id, kind.label(), approved);
+            .log_challenge_decision(&emitted.rid, &request.vault_name, kind.label(), approved);
         outcome
     }
 }
@@ -265,25 +266,43 @@ impl LinkTransport {
                     Ok(())
                 });
             match verified {
-                Ok(verified) => match verified.outcome {
-                    ApproveOutcome::Allowed { .. } => {
-                        // verify_response refuses a challenge request
-                        // approved without an answer, so this is Some.
-                        return Ok(Answer {
-                            response: handed.into_inner().ok_or_else(|| {
-                                ResponseError::Unavailable(
-                                    "the approved response carried no answer".into(),
-                                )
-                            })?,
-                            origin: AnswerOrigin::LinkTransport,
-                        });
-                    }
-                    ApproveOutcome::Denied { reason, .. } => {
-                        return Err(ResponseError::Denied(
-                            reason.unwrap_or_else(|| "no reason given".into()),
+                Ok(verified) => {
+                    // The response must answer the request this command
+                    // emitted, not any other pending one: an answer pasted
+                    // to a different unlock or save must not pass as this
+                    // gate's confirmation.
+                    let answers_this = match &verified.outcome {
+                        ApproveOutcome::Allowed { rid, .. }
+                        | ApproveOutcome::Denied { rid, .. } => rid == &emitted.rid,
+                    };
+                    if !answers_this {
+                        self.terminal.note(&format!(
+                            "That response answers a different request than the one this \
+                             command emitted; it was not used. {} attempt(s) left.",
+                            MAX_PASTE_ATTEMPTS - attempt
                         ));
+                        continue;
                     }
-                },
+                    match verified.outcome {
+                        ApproveOutcome::Allowed { .. } => {
+                            // verify_response refuses a challenge request
+                            // approved without an answer, so this is Some.
+                            return Ok(Answer {
+                                response: handed.into_inner().ok_or_else(|| {
+                                    ResponseError::Unavailable(
+                                        "the approved response carried no answer".into(),
+                                    )
+                                })?,
+                                origin: AnswerOrigin::LinkTransport,
+                            });
+                        }
+                        ApproveOutcome::Denied { reason, .. } => {
+                            return Err(ResponseError::Denied(
+                                reason.unwrap_or_else(|| "no reason given".into()),
+                            ));
+                        }
+                    }
+                }
                 Err(e) => {
                     let expired = e.contains("expired");
                     if !expired {
@@ -328,7 +347,10 @@ impl LinkTransport {
             .max(1);
         let deadline = Instant::now() + self.max_wait.unwrap_or(Duration::from_secs(left));
         loop {
-            if let Some(response) = self.store.take(&request.vault_id, &request.challenge_hex()) {
+            if let Some(response) = self
+                .store
+                .take(&request.vault_name, &request.challenge_hex())
+            {
                 return Ok(Answer {
                     response,
                     origin: AnswerOrigin::SessionAgent,
@@ -398,8 +420,11 @@ pub(crate) fn holder_pin(dir: &Path, holder_kid: &str) -> Result<PeerPin, Error>
             );
             if peers.is_empty() {
                 message.push_str(
-                    " To pair it again run 'passlane approvals enroll' — on the same device \
-                     and browser profile, so it still has the key it enrolled.",
+                    " Recovering needs the recovery sheet: 'passlane hwkey remove --secret' \
+                     opens the vault without the holder and removes its key. Pairing again \
+                     creates a new device identity that does not hold this vault's key, so \
+                     after recovering, pair ('passlane approvals enroll') and enroll the \
+                     key again ('passlane hwkey add --phone').",
                 );
             } else {
                 let pinned: Vec<String> = peers
@@ -410,9 +435,10 @@ pub(crate) fn holder_pin(dir: &Path, holder_kid: &str) -> Result<PeerPin, Error>
                     })
                     .collect();
                 message.push_str(&format!(
-                    " Pinned approvers: {}. To pair the key holder again run 'passlane \
-                     approvals enroll' on the same device and browser profile that enrolled \
-                     the key.",
+                    " Pinned approvers: {}. Pairing again creates a new device identity \
+                     that does not hold this vault's key, so recovering needs the recovery \
+                     sheet: 'passlane hwkey remove --secret', then pair ('passlane approvals \
+                     enroll') and enroll again ('passlane hwkey add --phone').",
                     pinned.join(", ")
                 ));
             }

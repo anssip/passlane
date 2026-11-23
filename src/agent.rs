@@ -453,7 +453,6 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    use fs4::FileExt;
     use std::io::Write;
     file.lock()?;
     let result = writeln!(file, "{}", line).and_then(|()| file.flush());

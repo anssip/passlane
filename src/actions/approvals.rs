@@ -302,7 +302,10 @@ pub(crate) fn describe_holder(
             .map(|peer| format!("held by '{}'", peer.label))
             .unwrap_or_else(|| {
                 format!(
-                    "holder {} is NOT pinned (re-pair with 'passlane approvals enroll')",
+                    "holder {} is NOT pinned (recover with 'passlane hwkey remove --secret', \
+                     then pair with 'passlane approvals enroll' and enroll again with \
+                     'passlane hwkey add --phone' — re-pairing alone creates a new identity \
+                     that holds no key for this vault)",
                     phone_key.holder_kid
                 )
             }),

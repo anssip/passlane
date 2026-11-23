@@ -828,6 +828,7 @@ mod tests {
             }),
             phone_key: phone.then_some(crate::vault_registry::PhoneKeyConfig {
                 holder_kid: "0123456789abcdef".to_string(),
+                vault_uid: None,
                 enrolled_at: 1,
             }),
         });

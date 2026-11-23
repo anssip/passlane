@@ -82,6 +82,7 @@ pub(crate) fn enroll(
     config: &VaultConfig,
     vault: &mut KeepassVault,
     password: &str,
+    vault_id: &str,
     source: Arc<dyn ResponseSource>,
 ) -> Result<Enrollment, Error> {
     if config.hwkey.is_some() || config.phone_key.is_some() {
@@ -103,7 +104,7 @@ pub(crate) fn enroll(
     //    with it the challenge, so a stale approval is simply not found.
     let proof = kdf_seed::read_kdf_seed(&config.path)?;
     let request = PhoneRequest {
-        vault_id: config.name.clone(),
+        vault_id: vault_id.to_string(),
         vault_name: config.name.clone(),
         operation: passlane_approval::message::Operation::EnrollKey,
         challenge: proof,
@@ -124,25 +125,21 @@ pub(crate) fn enroll(
         inner: source,
         last_save: Mutex::new(None),
     });
-    vault.update_challenge_factor(Some(save_only_key(config, recording.clone())))?;
+    vault.update_challenge_factor(Some(save_only_key(
+        vault_id,
+        &config.name,
+        recording.clone(),
+    )))?;
 
     // 4. Prove it: open the file as it is on disk with the one answer the
-    //    save obtained. Anything wrong here is undone before returning.
-    let proved = prove_enrollment(config, password, &recording);
-    if let Err(e) = proved {
-        return match vault.update_challenge_response(None) {
-            Ok(()) => Err(Error::new(&format!(
-                "{} The phone-held key was not enrolled; the vault is as it was.",
-                e.message
-            ))),
-            Err(rollback) => Err(Error::new(&format!(
-                "{} Rolling the phone-held key back also failed: {}. The vault file now needs \
-                 the phone-held key, but passlane does not know that yet — retry 'passlane \
-                 hwkey add --phone', or recover with the recovery sheet ('passlane hwkey \
-                 remove --secret').",
-                e.message, rollback
-            ))),
-        };
+    //    save obtained. Anything wrong here is undone before returning —
+    //    except a replaced file, which nothing of ours may touch again.
+    match prove_enrollment(config, password, &recording) {
+        Ok(()) => {}
+        Err(ProofFailure::FileReplaced(e)) => return Err(e),
+        Err(ProofFailure::Failed(e)) => {
+            return Err(undo_failed_enrollment(config, vault, &recording, e));
+        }
     }
 
     Ok(Enrollment {
@@ -150,23 +147,88 @@ pub(crate) fn enroll(
     })
 }
 
+/// Undo an enrollment whose proof failed, saving the vault without the
+/// factor again — unless the file on disk is no longer this enrollment's
+/// own write, in which case nothing of ours may be saved over it.
+fn undo_failed_enrollment(
+    config: &VaultConfig,
+    vault: &mut KeepassVault,
+    recording: &RecordingSource,
+    e: Error,
+) -> Error {
+    // Re-check whose write is on disk before saving over it: the
+    // proof did check, but a replacement may land in between, and
+    // the rollback's save must clobber nothing but this
+    // enrollment's own re-keyed file.
+    let recorded = recording
+        .last_save
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(seed, _)| *seed)
+        .expect("the proof ran, so a save was recorded");
+    match kdf_seed::read_kdf_seed(&config.path) {
+        Ok(seed) if seed == recorded => match vault.update_challenge_factor(None) {
+            Ok(()) => Error::new(&format!(
+                "{} The phone-held key was not enrolled; the vault is as it was.",
+                e.message
+            )),
+            Err(rollback) => Error::new(&format!(
+                "{} Rolling the phone-held key back also failed: {}. The vault file \
+                     now needs the phone-held key, but passlane does not know that yet — \
+                     retry 'passlane hwkey add --phone', or recover with the recovery \
+                     sheet ('passlane hwkey remove --secret').",
+                e.message, rollback
+            )),
+        },
+        Ok(_) => Error::new(&format!(
+            "{} The vault file then changed while the enrollment was being undone \
+                 (a sync client may have replaced it); nothing was saved over it. The \
+                 file on disk is not this enrollment's write and stands as it is; \
+                 nothing was enrolled and nothing was recorded.",
+            e.message
+        )),
+        Err(read) => Error::new(&format!(
+            "{} The vault file could not be re-read before the rollback ({}), so \
+                 nothing was saved over it. The vault file now needs the phone-held \
+                 key, but passlane does not know that yet — retry 'passlane hwkey add \
+                 --phone', or recover with the recovery sheet ('passlane hwkey remove \
+                 --secret').",
+            e.message, read
+        )),
+    }
+}
+
+/// Why the proving open failed. A **replaced file** must not be touched
+/// again — not even by the rollback, whose save would put the older
+/// in-memory database over whatever a sync client put there.
+enum ProofFailure {
+    FileReplaced(Error),
+    Failed(Error),
+}
+
 fn prove_enrollment(
     config: &VaultConfig,
     password: &str,
     recording: &RecordingSource,
-) -> Result<(), Error> {
-    let (seed, answer) = recording
-        .last_save
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| Error::new("the save did not ask the holder for an answer"))?;
-    let on_disk = kdf_seed::read_kdf_seed(&config.path)?;
+) -> Result<(), ProofFailure> {
+    let (seed, answer) = recording.last_save.lock().unwrap().clone().ok_or_else(|| {
+        ProofFailure::Failed(Error::new("the save did not ask the holder for an answer"))
+    })?;
+    let on_disk = kdf_seed::read_kdf_seed(&config.path).map_err(|e| {
+        ProofFailure::Failed(Error::new(&format!(
+            "the vault file could not be re-read: {}",
+            e.message
+        )))
+    })?;
     if on_disk != seed {
-        return Err(Error::new(
+        return Err(ProofFailure::FileReplaced(Error::new(
             "the vault file changed while it was being re-keyed (a sync client may have \
-             replaced it); the file on disk was not written by this enrollment",
-        ));
+             replaced it); the file on disk was not written by this enrollment. Nothing is \
+             saved over it: that file stands as it is, this enrollment did not complete, and \
+             the registry records no phone-held key. Reconcile the file (let the sync client \
+             finish, or restore its version) and re-run 'passlane hwkey add --phone'.",
+        )));
     }
     let key = fixed_key(config, FixedAnswer::new(seed, answer));
     match KeepassVault::open_with_challenge_factor(
@@ -176,10 +238,10 @@ fn prove_enrollment(
         Some(&key),
     ) {
         Ok(_) => Ok(()),
-        Err(e) => Err(Error::new(&format!(
+        Err(e) => Err(ProofFailure::Failed(Error::new(&format!(
             "the re-keyed vault did not open with the holder's answer: {}",
             e.message
-        ))),
+        )))),
     }
 }
 
@@ -219,7 +281,7 @@ mod tests {
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
         let phone = Arc::new(MockPhone::new(&SECRET));
 
-        let enrollment = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap();
+        let enrollment = enroll(&config, &mut vault, "master-pw", "work", phone.clone()).unwrap();
         assert!(enrollment.enrolled_at > 0);
 
         // Exactly two asks: create the key (with the scan-back gating its
@@ -263,7 +325,7 @@ mod tests {
         ));
 
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        let err = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
+        let err = enroll(&config, &mut vault, "master-pw", "work", phone.clone()).unwrap_err();
         assert!(
             err.message
                 .contains("the recovery sheet was not scanned back"),
@@ -285,7 +347,14 @@ mod tests {
             inner: phone.clone(),
         };
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        let err = enroll(&config, &mut vault, "master-pw", Arc::new(refuse_save)).unwrap_err();
+        let err = enroll(
+            &config,
+            &mut vault,
+            "master-pw",
+            "work",
+            Arc::new(refuse_save),
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("refused by the approver: not this save"),
@@ -317,7 +386,7 @@ mod tests {
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        enroll(&config, &mut vault, "master-pw", phone).unwrap();
+        enroll(&config, &mut vault, "master-pw", "work", phone).unwrap();
         assert!(open_failure(&config.path, None).contains("Incorrect key"));
 
         rollback_enrollment(&mut vault).unwrap();
@@ -331,11 +400,12 @@ mod tests {
         let mut config = plain_vault(dir.path()).0;
         config.phone_key = Some(crate::vault_registry::PhoneKeyConfig {
             holder_kid: "0123456789abcdef".into(),
+            vault_uid: None,
             enrolled_at: 1,
         });
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        let err = enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
+        let err = enroll(&config, &mut vault, "master-pw", "work", phone.clone()).unwrap_err();
         assert!(
             err.message
                 .contains("already has a challenge-response factor")
@@ -353,7 +423,7 @@ mod tests {
         // agent is running — so nothing is enrolled.
         phone.refuse(ResponseError::Unavailable("no terminal, no agent".into()));
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        enroll(&config, &mut vault, "master-pw", phone.clone()).unwrap_err();
+        enroll(&config, &mut vault, "master-pw", "work", phone.clone()).unwrap_err();
         assert_eq!(std::fs::read(&config.path).unwrap(), before);
         let asked_run_1 = phone.asked();
         assert_eq!(asked_run_1.len(), 1);
@@ -370,7 +440,14 @@ mod tests {
             inner: phone.clone(),
         };
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        enroll(&config, &mut vault, "master-pw", Arc::new(answering)).unwrap();
+        enroll(
+            &config,
+            &mut vault,
+            "master-pw",
+            "work",
+            Arc::new(answering),
+        )
+        .unwrap();
         assert_eq!(
             phone.asked()[1..]
                 .iter()
@@ -417,6 +494,105 @@ mod tests {
         }
     }
 
+    /// A recording of a save that already happened: one (seed, answer)
+    /// pair, as the real RecordingSource would hold it.
+    fn primed_recording(seed: [u8; CHALLENGE_LEN]) -> Arc<RecordingSource> {
+        struct NeverAsked;
+        impl ResponseSource for NeverAsked {
+            fn respond(&self, _: &PhoneRequest) -> Result<Answer, ResponseError> {
+                unreachable!("the proof reads the recording, not the source")
+            }
+        }
+        Arc::new(RecordingSource {
+            inner: Arc::new(NeverAsked),
+            last_save: Mutex::new(Some((
+                seed,
+                Zeroizing::new(hmac_sha1(&SECRET, &seed).to_vec()),
+            ))),
+        })
+    }
+
+    #[test]
+    fn a_replaced_file_is_classified_and_never_saved_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, _) = plain_vault(dir.path());
+        // The enrollment's own re-keyed write: a vault that needs the
+        // phone, with a known seed.
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", "work", phone).unwrap();
+        let seed = kdf_seed::read_kdf_seed(&config.path).unwrap();
+
+        // A sync client replaces the file with another vault entirely.
+        let replacement = dir.path().join("replacement.kdbx");
+        KeepassVault::new(replacement.to_str().unwrap(), "other-pw", None, None).unwrap();
+        let replacement_bytes = std::fs::read(&replacement).unwrap();
+        std::fs::copy(&replacement, &config.path).unwrap();
+
+        // The proof classifies it as a replacement, not a failed proof.
+        let recording = primed_recording(seed);
+        let classified = prove_enrollment(&config, "master-pw", &recording);
+        assert!(matches!(classified, Err(ProofFailure::FileReplaced(_))));
+
+        // And the undo of a *failed* proof (wrong answer, same replaced
+        // file) does not save anything over it either: the re-read finds
+        // a foreign seed and leaves the file alone. The in-memory vault
+        // the undo holds is this branch's never-saved bystander — a
+        // stand-in opened elsewhere stands in for it.
+        assert!(
+            KeepassVault::open("master-pw", &config.path, None, None).is_err(),
+            "our password does not open the replacement"
+        );
+        let stand_in = dir.path().join("stand-in.kdbx");
+        KeepassVault::new(stand_in.to_str().unwrap(), "bystander", None, None).unwrap();
+        let mut held_vault =
+            KeepassVault::open("bystander", stand_in.to_str().unwrap(), None, None).unwrap();
+        let err = undo_failed_enrollment(
+            &config,
+            &mut held_vault,
+            &primed_recording(seed),
+            Error::new("the re-keyed vault did not open with the holder's answer: no"),
+        );
+        assert!(
+            err.message
+                .contains("changed while the enrollment was being undone"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("vault is as it was"),
+            "no rollback was claimed: {err}"
+        );
+        // The replacement stands exactly as it was, and opens with its
+        // own password and no second factor.
+        assert_eq!(std::fs::read(&config.path).unwrap(), replacement_bytes);
+        assert!(KeepassVault::open("other-pw", &config.path, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_failed_proof_of_our_own_write_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, _) = plain_vault(dir.path());
+        let phone = Arc::new(MockPhone::new(&SECRET));
+        let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
+        enroll(&config, &mut vault, "master-pw", "work", phone).unwrap();
+        let seed = kdf_seed::read_kdf_seed(&config.path).unwrap();
+        assert!(open_failure(&config.path, None).contains("Incorrect key"));
+
+        let err = undo_failed_enrollment(
+            &config,
+            &mut vault,
+            &primed_recording(seed),
+            Error::new("the re-keyed vault did not open with the holder's answer: no"),
+        );
+        assert!(
+            err.message.contains("the vault is as it was"),
+            "{}",
+            err.message
+        );
+        assert!(KeepassVault::open("master-pw", &config.path, None, None).is_ok());
+    }
+
     #[test]
     fn an_enrolled_vault_opens_with_the_secret_itself() {
         // The factor is ordinary KeePass challenge-response: a YubiKey
@@ -427,7 +603,7 @@ mod tests {
         let (config, _) = plain_vault(dir.path());
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::open("master-pw", &config.path, None, None).unwrap();
-        enroll(&config, &mut vault, "master-pw", phone).unwrap();
+        enroll(&config, &mut vault, "master-pw", "work", phone).unwrap();
 
         let secret_hex = passlane_approval::encoding::hex_encode(&SECRET);
         let as_a_yubikey_slot =

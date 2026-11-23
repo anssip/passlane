@@ -53,7 +53,6 @@ end). The unlock chain asks for a held answer **before** the keychain —
 a command with no terminal and no keychain opens through one, which is
 the point (#61 finding 4). Two paths deliver it to the command that
 needs it:
-
 - **Interactive terminal**: the response is pasted into the waiting
   command and consumed on the spot.
 - **Anywhere else** (`passlane approve --response` from another shell,
@@ -83,11 +82,19 @@ still works once an agent is running.
    to the new seed, then opens the saved file with that one answer to
    prove the enrollment before recording the factor.
 4. The registry records only *which holder* to ask —
-   `phone_key: { holder_kid, enrolled_at }` — never anything secret.
+   `phone_key: { holder_kid, vault_uid, enrolled_at }` — never anything
+   secret. `vault_uid` is the vault's holder-side identity: derived
+   from the holder and the vault's path, so a resumed enrollment asks
+   under the same id the first run did, and `passlane vault rename`
+   (which changes the name) does not orphan the holder's key — requests
+   carry the uid, and the name only ever for display.
 
 If anything fails along the way (a refusal, an abandoned sheet, a
 registry that cannot be written), the re-key is rolled back and the
-vault is exactly as it was.
+vault is exactly as it was. One failure is exempt from the rollback: a
+vault file that a sync client replaced mid-enrollment is left exactly
+as the sync client wrote it — the rollback's save would clobber it with
+our older in-memory copy — and the enrollment simply did not happen.
 
 ## Recovery
 
@@ -96,9 +103,13 @@ vault is exactly as it was.
   thing), opens the vault, and strips the factor. A YubiKey programmed
   from the sheet secret opens the vault too, without removing anything.
 - **The holder is gone** (device lost, pin dropped): `hwkey remove
-  --secret` from the sheet is the way in. A re-paired device that kept
-  its ECDH key (same browser profile) answers again; a new profile has
-  a new key id and must be re-enrolled — after recovering.
+  --secret` from the sheet is the way in. Re-pairing does not restore
+  the pin: the approval page generates a fresh identity on every
+  pairing — even in the same browser profile — so the new pin holds no
+  key for the vault while the registry still references the old
+  holder. Recover from the sheet first, then pair
+  (`passlane approvals enroll`) and enroll the key again
+  (`passlane hwkey add --phone`).
 
 ## Limits, honestly
 

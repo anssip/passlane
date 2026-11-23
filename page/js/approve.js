@@ -18,17 +18,22 @@ import {
   parseEnvelopeB64Url,
 } from "./envelope.js";
 import { hpkeOpen, hpkeSeal, kid } from "./hpke.js";
-import { getApprover, heldKey, putApprover } from "./keystore.js";
+import { getApprover, heldKey, mutateApprover } from "./keystore.js";
 import { ecdsaDerToRaw, fromUtf8, nowSeconds, toBase64Url, toHex } from "./lib.js";
 import {
+  answerForDecision,
   computeResponse,
   describeOperation,
+  dropStagedKey,
   generateSecret,
   importSecret,
   isPhoneKeyOperation,
+  keyDecision,
   newKeyRecord,
+  promoteStagedKey,
   sheetInstructions,
   sheetText,
+  stageKey,
   verifySheetReadBack,
   wipe,
 } from "./phonekey.js";
@@ -133,10 +138,12 @@ export function phoneKeyGate(record, body) {
 /**
  * Build the page's decision envelope and assert it with the passkey.
  * For unlock, save and enrollment requests, `answerHex` (the HMAC-SHA1 of
- * the challenge) rides encrypted inside the body; the body is sealed
- * before the assertion is made, so the answer exists before the human
- * confirms it — but it is sealed to the CLI and only ever leaves this
- * page together with a valid passkey assertion over it.
+ * the challenge) rides encrypted inside the body — but only for an
+ * Allow: a Deny never carries one, so an answer computed before the
+ * decision cannot leak through a denial (the requesting computer can
+ * decrypt the body whatever the decision says). The body is sealed
+ * before the assertion is made, and it leaves this page only together
+ * with a valid passkey assertion over it.
  */
 export async function respond({ envelope, record, decision, reason, assert, answerHex }) {
   const myKid = record.rkid;
@@ -150,7 +157,7 @@ export async function respond({ envelope, record, decision, reason, assert, answ
         ? "Allow"
         : { Deny: reason ? { reason } : {} },
     scope: { kind: "once" },
-    response: answerHex,
+    response: answerForDecision(decision, answerHex),
     recipientPublicSec1: record.cliPublicSec1,
     seal: hpkeSeal,
     now: nowSeconds(),
@@ -313,7 +320,6 @@ async function main() {
   // under the key this device holds for that vault. Everything the answer
   // needs is prepared before any button works: without a held key (or
   // without a challenge) there is nothing to approve.
-  let answerHex = null;
   if (phoneKeyRequest) {
     const gate = phoneKeyGate(record, body);
     const note = document.createElement("p");
@@ -326,8 +332,11 @@ async function main() {
   /**
    * Enrollment's gate: create the key, show the recovery sheet, and only
    * prepare the answer once the sheet's secret has been typed back from
-   * a copy. Until then nothing is stored and nothing is answered — the
-   * request simply waits (or expires).
+   * a copy. The key is *staged* beside any held one — an aborted
+   * ceremony must not destroy a working factor; the enrollment's own
+   * save (answered with the staged key) promotes it. Returns the answer
+   * hex, or null when the ceremony stopped itself (the caller stops
+   * with it: nothing was answered).
    */
   const runEnrollment = async () => {
     if (heldKey(record, body.vault_id)) {
@@ -339,31 +348,49 @@ async function main() {
         $("status").textContent = "Enrollment cancelled; nothing changed.";
         $("approve").disabled = false;
         $("deny").disabled = false;
-        return;
+        return null;
       }
     }
     const secret = generateSecret();
     const secretHex = toHex(secret);
     const hmacKey = await importSecret(secret);
     showSheet(sheetText(body.vault_name, secretHex, Date.now()), sheetInstructions());
+    // The sheet's own step: its owner says a copy exists away from this
+    // screen, and only then does the sheet hide — the read-back input
+    // never shares a screen with the secret it asks for.
+    const saved = await askConfirm(
+      "Have you saved the recovery sheet away from this screen (printed it, or " +
+        "written the secret down)? The sheet hides itself next, and the secret must " +
+        "be typed back from your copy.",
+    );
+    if (!saved) {
+      hideSheet();
+      $("status").textContent =
+        "Enrollment cancelled before the sheet was saved; nothing was created. " +
+        "Approve to start again, or deny the request.";
+      $("approve").disabled = false;
+      $("deny").disabled = false;
+      return null;
+    }
+    hideSheet();
     const readBack = await readSheetSecret();
     // The raw bytes have served their one purpose: the sheet. They do
     // not exist from here on.
     wipe(secret);
     if (!(await verifySheetReadBack(hmacKey, readBack))) {
-      hideSheet();
       $("status").textContent =
         "That does not match the sheet's secret. Nothing was created; try again " +
         "(Approve) or deny the request.";
       $("approve").disabled = false;
       $("deny").disabled = false;
-      return;
+      return null;
     }
-    hideSheet();
     const keyRecord = newKeyRecord(body.vault_id, body.vault_name, hmacKey);
     keyRecord.sheetConfirmedAt = Date.now();
-    record.keys = { ...(record.keys ?? {}), [body.vault_id]: keyRecord };
-    await putApprover(record);
+    // Stage it — inside one transaction, against the record as it is on
+    // disk now: another tab's enrollment may have completed meanwhile,
+    // and its key must survive this one's.
+    await mutateApprover(record.rkid, (current) => stageKey(current, body.vault_id, keyRecord));
     return toHex(await computeResponse(hmacKey, challengeBytes(body)));
   };
 
@@ -378,15 +405,33 @@ async function main() {
         "The request expired while this page was open; nothing was answered. Re-run the command to emit a fresh request.";
       return;
     }
+    // An answer exists only for an Allow, and only from here on in this
+    // function — a Deny cannot carry one (see respond()).
+    let answerHex = null;
     try {
       $("approve").disabled = true;
       $("deny").disabled = true;
       if (decision === "allow" && body.operation.kind === "enroll_key") {
         $("status").textContent = "Waiting for the recovery sheet to be confirmed…";
         answerHex = await runEnrollment();
+        if (answerHex == null) {
+          // The ceremony stopped itself and re-enabled the buttons;
+          // nothing was answered, so nothing leaves this page.
+          return;
+        }
       } else if (decision === "allow" && phoneKeyRequest) {
-        const key = heldKey(record, body.vault_id);
-        answerHex = toHex(await computeResponse(key.key, challengeBytes(body)));
+        const which = keyDecision(record, body);
+        if (which) {
+          answerHex = toHex(await computeResponse(which.key.key, challengeBytes(body)));
+          if (which.promote || which.dropStaged) {
+            await mutateApprover(record.rkid, (current) => {
+              let next = current;
+              if (which.promote) next = promoteStagedKey(next, body.vault_id);
+              if (which.dropStaged) next = dropStagedKey(next, body.vault_id);
+              return next;
+            });
+          }
+        }
       }
       $("status").textContent = "Confirm with the passkey…";
       const blob = await respond({

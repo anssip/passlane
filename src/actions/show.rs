@@ -399,7 +399,12 @@ impl ShowTotpTemplate {
         let unlock_backed =
             crate::actions::last_unlock_source() == crate::actions::PasswordSource::SessionAgent;
         let reveal_backed = crate::agent::last_gate_used_session();
-        if unlock_backed || reveal_backed {
+        // A timed phone-answer session can back an open whose password
+        // came from elsewhere (the keychain): the codes it funds stop
+        // when that session dies, like any session-backed view.
+        let phone_backed =
+            crate::session_agent::last_phone_answer_expiry() > crate::session_agent::now_secs();
+        if unlock_backed || reveal_backed || phone_backed {
             let Some(mut events) = crate::session_agent::subscribe_to_events() else {
                 // The agent was reachable moments ago (it supplied the
                 // unlock or the approval) and now is not: fail closed
@@ -414,6 +419,7 @@ impl ShowTotpTemplate {
             if !crate::session_agent::session_access_live(
                 unlock_backed,
                 reveal_backed,
+                phone_backed,
                 &vault,
                 &the_match.id().to_string(),
                 "code",
