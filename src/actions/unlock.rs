@@ -1,4 +1,4 @@
-use crate::actions::{Action, unlock};
+use crate::actions::{Action, unlock_reporting_factors};
 use crate::completion_cache;
 use crate::keychain;
 use crate::vault_registry;
@@ -24,28 +24,42 @@ impl Action for UnlockAction {
             // agent to hold the session.
             crate::session_agent::connect_or_error()?;
         }
-        let vault = unlock()?;
+        let unlocked = unlock_reporting_factors()?;
         match self.session_secs {
             None => {
-                keychain::save_master_password(&config.name, &vault.get_master_password())?;
-                completion_cache::update_cache(&vault);
+                keychain::save_master_password(&config.name, &unlocked.factors.master_password)?;
+                completion_cache::update_cache(&unlocked.vault);
                 Ok(format!("Vault '{}' unlocked", config.name))
             }
             Some(secs) => {
+                // A hardware key whose secret stays in the device cannot be
+                // handed over; say so, or the session looks like more than
+                // it is the first time a command still asks for the key.
+                let challenge_response = crate::session_agent::challenge_response_material(
+                    unlocked.factors.challenge_response.as_ref(),
+                );
+                let key_note = match (&config.hwkey, &challenge_response) {
+                    (None, _) => "the unlock factors",
+                    (Some(_), Some(_)) => "the unlock factors, hardware key included",
+                    (Some(_), None) => {
+                        "the master password — the hardware key itself is still needed for \
+                         every command"
+                    }
+                };
                 let expires_at = crate::session_agent::create_unlock_session(
                     &config.name,
-                    &vault.get_master_password(),
+                    &unlocked.factors.master_password,
+                    challenge_response,
                     secs,
                 )?;
-                completion_cache::update_cache(&vault);
+                completion_cache::update_cache(&unlocked.vault);
                 let when = chrono::DateTime::from_timestamp(expires_at as i64, 0)
                     .map(|t| t.to_rfc3339())
                     .unwrap_or_else(|| format!("+{secs}s"));
                 Ok(format!(
-                    "Vault '{}' unlocked — the session agent holds the unlock factors until \
-                     {} (memory only, nothing stored in the keychain; 'passlane lock' revokes \
-                     it early)",
-                    config.name, when
+                    "Vault '{}' unlocked — the session agent holds {} until {} (memory only, \
+                     nothing stored in the keychain; 'passlane lock' revokes it early)",
+                    config.name, key_note, when
                 ))
             }
         }
