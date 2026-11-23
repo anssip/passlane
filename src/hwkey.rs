@@ -9,6 +9,7 @@ use passlane_core::hwkey::{HwKeyConfig, friendly_device_error};
 
 use crate::ui::input::{ask_password, ask_with_options};
 use passlane_core::vault::entities::Error;
+use zeroize::Zeroizing;
 
 /// List connected hardware keys and ask which slot to enroll (unless `slot`
 /// was given on the command line). Returns the factor to enroll the vault
@@ -54,12 +55,14 @@ fn ask_slot() -> Result<u8, Error> {
 /// the virtual challenge factor, which answers challenges with the same key
 /// material the lost key holds. See [`recovery_factor`] for what is accepted.
 pub fn recovery_key_from_prompt() -> Result<ChallengeFactor, Error> {
-    let secret = ask_password(
+    // The typed secret is scrubbed once this scope ends, whatever happens:
+    // the constructors each own (and zeroize) only their normalized copy.
+    let secret = Zeroizing::new(ask_password(
         "Enter the backed-up HMAC-SHA1 secret (hex) of the enrolled slot",
         Some(
             "The 40-character hex secret saved when the key's slot was programmed, e.g. with 'ykman otp chalresp'",
         ),
-    );
+    ));
     let (factor, note) = recovery_factor(&secret)?;
     if let Some(note) = note {
         println!("{note}");
