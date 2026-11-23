@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# Deploy the passlane approval page to AWS S3 + CloudFront (passlane#60).
+#
+# Everything runs against the AWS profile in $AWS_PROFILE (default:
+# anssipiirainen.com). The script is idempotent: re-running it only
+# re-uploads changed files and waits out pending resources.
+#
+# Stages:
+#   1. S3 bucket (eu-north-1, public read via bucket policy) + upload of
+#      page/ with correct Content-Type per file (the apple-app-site-
+#      association MUST be application/json) and conservative caching.
+#   2. ACM certificate in us-east-1 (CloudFront only accepts certs from
+#      there), DNS-validated.
+#   3. DNS records in Route 53: the ACM validation CNAME and the CloudFront
+#      alias A/AAAA. If the profile cannot write Route 53 (the S3-www user
+#      cannot), the script writes applicable change-batch files and prints
+#      instructions instead of failing.
+#   4. CloudFront distribution (S3 origin, ACM cert, HTTPS redirect).
+#   5. Verification over HTTPS.
+#
+# Usage: ./deploy.sh [--page-dir DIR] [--domain NAME]
+set -euo pipefail
+
+PROFILE="${AWS_PROFILE:-anssipiirainen.com}"
+REGION="eu-north-1"              # S3 bucket region (matches the main site)
+CERT_REGION="us-east-1"          # CloudFront certs must live here
+DOMAIN="approve.anssipiirainen.com"
+PAGE_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --page-dir) PAGE_DIR="$2"; shift 2 ;;
+    --domain) DOMAIN="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+# Normalize: a trailing slash in --page-dir would defeat the key-prefix
+# stripping in upload() and land every file under a bogus S3 prefix.
+while [[ "$PAGE_DIR" == */ ]]; do PAGE_DIR="${PAGE_DIR%/}"; done
+BUCKET="$DOMAIN"
+export AWS_PROFILE="$PROFILE"
+# Regional S3 endpoint: the global endpoint can answer 307 redirects for
+# freshly created regional buckets while routing propagates, and CloudFront
+# passes origin redirects through to viewers (breaking the AASA
+# no-redirect requirement and stage 5).
+S3_EP=(--endpoint-url "https://s3.${REGION}.amazonaws.com")
+
+log() { printf '\n==> %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Stage 1: bucket + upload
+# ---------------------------------------------------------------------------
+log "Stage 1: S3 bucket $BUCKET ($REGION)"
+if ! aws s3api "${S3_EP[@]}" head-bucket --bucket "$BUCKET" 2>/dev/null; then
+  aws s3api "${S3_EP[@]}" create-bucket \
+    --bucket "$BUCKET" \
+    --region "$REGION" \
+    --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null
+  echo "bucket created"
+else
+  echo "bucket exists"
+fi
+# Access setup runs on EVERY pass: a run interrupted between bucket
+# creation and these calls would otherwise leave an "existing" bucket
+# half-provisioned and CloudFront's anonymous origin returning 403s.
+# (ACL-free bucket policy — works with the modern BucketOwnerEnforced
+# default; matches the account's website pattern. Both calls idempotent.)
+aws s3api "${S3_EP[@]}" put-public-access-block --bucket "$BUCKET" \
+  --public-access-block \
+  BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+aws s3api "${S3_EP[@]}" put-bucket-policy --bucket "$BUCKET" --policy "{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [{
+    \"Sid\": \"PublicReadGetObject\",
+    \"Effect\": \"Allow\",
+    \"Principal\": \"*\",
+    \"Action\": \"s3:GetObject\",
+    \"Resource\": \"arn:aws:s3:::$BUCKET/*\"
+  }]
+}"
+echo "public read access ensured"
+
+log "Uploading $PAGE_DIR -> s3://$BUCKET/"
+upload() { # upload <path> <content-type> <cache-control>
+  local path="$1" type="$2" cache="$3" key="${1#"$PAGE_DIR"/}"
+  aws s3 "${S3_EP[@]}" cp "$path" "s3://$BUCKET/$key" \
+    --content-type "$type" --cache-control "$cache" >/dev/null
+  echo "  $key ($type, $cache)"
+}
+# The page is versionless: keep everything short-lived so fixes propagate.
+HTML_CACHE="no-cache"
+ASSET_CACHE="max-age=300"
+while IFS= read -r -d '' f; do
+  case "$f" in
+    *.html)    upload "$f" "text/html; charset=utf-8" "$HTML_CACHE" ;;
+    *.js)      upload "$f" "text/javascript; charset=utf-8" "$ASSET_CACHE" ;;
+    *.css)     upload "$f" "text/css; charset=utf-8" "$ASSET_CACHE" ;;
+    *.json)    upload "$f" "application/json" "$ASSET_CACHE" ;;
+    */apple-app-site-association)
+               # iOS fetchers reject the AASA unless it is exactly this
+               # content type, served without a redirect.
+               upload "$f" "application/json" "$ASSET_CACHE" ;;
+    *)         upload "$f" "application/octet-stream" "$ASSET_CACHE" ;;
+  esac
+done < <(find "$PAGE_DIR" -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \
+             -o -name '*.json' -o -name 'apple-app-site-association' \
+             -o -name '*.svg' -o -name '*.png' -o -name '*.ico' -o -name '*.txt' \) \
+             ! -name 'r53-*.json' ! -name 'cloudfront-config.json' -print0)
+
+# Generated run-time files never belong on the site; remove any that a
+# previous run of this script uploaded before the exclusion existed.
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/r53-acm-validation.json" >/dev/null 2>&1 || true
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/r53-alias.json" >/dev/null 2>&1 || true
+aws s3 "${S3_EP[@]}" rm "s3://$BUCKET/cloudfront-config.json" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# Stage 2: ACM certificate (us-east-1)
+# ---------------------------------------------------------------------------
+log "Stage 2: ACM certificate for $DOMAIN ($CERT_REGION)"
+# Reuse only recoverable certificates: terminal statuses (FAILED,
+# VALIDATION_TIMED_OUT, EXPIRED) would make a resumed provisioning wait
+# forever on a certificate that can never issue; request a fresh one
+# instead.
+CERT_ARN="$(aws acm list-certificates --region "$CERT_REGION" --output text \
+  --query "CertificateSummaryList[?DomainName=='$DOMAIN' && (Status=='ISSUED' || Status=='PENDING_VALIDATION')].CertificateArn | [0]")"
+if [[ -z "$CERT_ARN" || "$CERT_ARN" == "None" ]]; then
+  CERT_ARN="$(aws acm request-certificate --region "$CERT_REGION" \
+    --domain-name "$DOMAIN" --validation-method DNS \
+    --query 'CertificateArn' --output text)"
+  echo "requested: $CERT_ARN"
+else
+  echo "existing:  $CERT_ARN"
+fi
+
+for _ in $(seq 1 30); do
+  VALIDATION="$(aws acm describe-certificate --region "$CERT_REGION" \
+    --certificate-arn "$CERT_ARN" \
+    --query 'Certificate.DomainValidationOptions[0].ResourceRecord' \
+    --output json 2>/dev/null || echo null)"
+  [[ "$VALIDATION" != "null" && -n "$VALIDATION" ]] && break
+  sleep 5
+done
+
+# ---------------------------------------------------------------------------
+# Stage 3: DNS (Route 53 if writable, otherwise instructions)
+# ---------------------------------------------------------------------------
+log "Stage 3: DNS records"
+# Exact public-zone match: list-hosted-zones-by-name returns a sorted
+# listing starting at the name, not a filter — an unrelated or private
+# zone with a matching name must not be selected (its records could never
+# publicly validate the certificate). No exact public match falls back to
+# the manual batches, like a denied Route 53.
+ZONE_NAME="${DOMAIN#*.}."
+ZONE_ID="$(aws route53 list-hosted-zones-by-name \
+  --dns-name "${DOMAIN#*.}" --output text \
+  --query "HostedZones[?Name=='$ZONE_NAME' && Config.PrivateZone==\`false\`].Id | [0]" 2>/dev/null || true)"
+ZONE_ID="${ZONE_ID##*/}"
+
+if [[ -n "$ZONE_ID" && "$ZONE_ID" != "None" ]]; then
+  echo "Route 53 zone $ZONE_ID is writable with this profile; creating records."
+else
+  echo "Route 53 is not accessible with profile $PROFILE."
+  echo "Change-batch files are written next to this script; apply them with a"
+  echo "profile/account that manages DNS for ${DOMAIN#*.} (console or CLI),"
+  echo "then re-run this script."
+fi
+
+CERT_NAME="$(printf '%s' "$VALIDATION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Name"])')"
+CERT_VALUE="$(printf '%s' "$VALIDATION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Value"])')"
+
+upsert_record() { # upsert_record <zone> <file> <name> <type> <value>
+  local zone="$1" file="$2" name="$3" type="$4" value="$5"
+  python3 - "$file" "$name" "$type" "$value" <<'PYEOF'
+import json, sys
+path, name, rtype, value = sys.argv[1:5]
+batch = {"Comment": "passlane approval page", "Changes": [{"Action": "UPSERT",
+    "ResourceRecordSet": {"Name": name, "Type": rtype, "TTL": 300,
+    "ResourceRecords": [{"Value": value}]}}]}
+open(path, "w").write(json.dumps(batch, indent=2))
+PYEOF
+  if [[ -n "$zone" && "$zone" != "None" ]]; then
+    # Zone visibility does not imply record-write permission; a failed
+    # write must fall back to the manual batch, not abort the deploy.
+    if aws route53 change-resource-record-sets --hosted-zone-id "$zone" \
+      --change-batch "file://$file" >/dev/null 2>&1; then
+      echo "  created $name $type"
+    else
+      echo "  pending (manual): $name $type -> $value  [$file]"
+      echo "  (this profile can see the zone but not write records)"
+    fi
+  else
+    echo "  pending (manual): $name $type -> $value  [$file]"
+  fi
+}
+
+CERT_BATCH="$PAGE_DIR/r53-acm-validation.json"
+upsert_record "$ZONE_ID" "$CERT_BATCH" "$CERT_NAME" CNAME "$CERT_VALUE"
+
+# ---------------------------------------------------------------------------
+# Stage 4: CloudFront distribution
+# ---------------------------------------------------------------------------
+log "Stage 4: waiting for certificate to be ISSUED (ACM validation)..."
+aws acm wait certificate-validated --region "$CERT_REGION" --certificate-arn "$CERT_ARN"
+echo "certificate issued"
+
+log "CloudFront distribution for $DOMAIN"
+# Guard Aliases.Items against null (distributions without aliases).
+DIST_ID="$(aws cloudfront list-distributions --output text \
+  --query "DistributionList.Items[?Aliases.Items != null && contains(Aliases.Items, '$DOMAIN')].Id | [0]")"
+if [[ -z "$DIST_ID" || "$DIST_ID" == "None" ]]; then
+  cat > "$PAGE_DIR/cloudfront-config.json" <<EOF
+{
+  "CallerReference": "passlane-approve-$DOMAIN-$(date +%s)",
+  "Comment": "passlane approval page ($DOMAIN)",
+  "Enabled": true,
+  "DefaultRootObject": "index.html",
+  "Aliases": {"Quantity": 1, "Items": ["$DOMAIN"]},
+  "Origins": {"Quantity": 1, "Items": [{
+    "Id": "S3-$BUCKET",
+    "DomainName": "$BUCKET.s3.$REGION.amazonaws.com",
+    "S3OriginConfig": {"OriginAccessIdentity": ""}
+  }]},
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "S3-$BUCKET",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"],
+      "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}
+    },
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+    "Compress": true
+  },
+  "ViewerCertificate": {
+    "ACMCertificateArn": "$CERT_ARN",
+    "SSLSupportMethod": "sni-only",
+    "MinimumProtocolVersion": "TLSv1.2_2021"
+  },
+  "HttpVersion": "http2",
+  "PriceClass": "PriceClass_100"
+}
+EOF
+  DIST_ID="$(aws cloudfront create-distribution \
+    --distribution-config "file://$PAGE_DIR/cloudfront-config.json" \
+    --query 'Distribution.Id' --output text)"
+  echo "created: $DIST_ID"
+else
+  echo "existing: $DIST_ID"
+  # A replaced certificate (expired/failed before) must actually be
+  # installed: leaving the distribution pointed at the dead ARN keeps
+  # HTTPS broken after "recovery". Content-only deploys (same ARN) stay
+  # read-only.
+  CURRENT_CERT="$(aws cloudfront get-distribution --id "$DIST_ID" \
+    --query 'Distribution.DistributionConfig.ViewerCertificate.ACMCertificateArn' --output text)"
+  if [[ "$CURRENT_CERT" != "$CERT_ARN" ]]; then
+    echo "certificate changed ($CURRENT_CERT -> $CERT_ARN); updating distribution"
+    ETAG="$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text)"
+    aws cloudfront get-distribution --id "$DIST_ID" \
+      --query 'Distribution.DistributionConfig' --output json > "$PAGE_DIR/cloudfront-config.json"
+    python3 - "$PAGE_DIR/cloudfront-config.json" "$CERT_ARN" <<'PYEOF'
+import json, sys
+path, arn = sys.argv[1:3]
+cfg = json.load(open(path))
+cfg["ViewerCertificate"]["ACMCertificateArn"] = arn
+json.dump(cfg, open(path, "w"), indent=2)
+PYEOF
+    aws cloudfront update-distribution --id "$DIST_ID" --if-match "$ETAG" \
+      --distribution-config "file://$PAGE_DIR/cloudfront-config.json" >/dev/null
+  fi
+fi
+
+DIST_DOMAIN="$(aws cloudfront get-distribution --id "$DIST_ID" \
+  --query 'Distribution.DomainName' --output text)"
+
+ALIAS_BATCH="$PAGE_DIR/r53-alias.json"
+ALIAS_TARGET="$DIST_DOMAIN"
+upsert_alias() {
+  python3 - "$ALIAS_BATCH" "$DOMAIN" "$ALIAS_TARGET" <<'PYEOF'
+import json, sys
+path, domain, target = sys.argv[1:4]
+batch = {"Comment": "passlane approval page alias", "Changes": [
+  {"Action": "UPSERT", "ResourceRecordSet": {
+    "Name": domain, "Type": "A", "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2", "DNSName": target,
+      "EvaluateTargetHealth": False}}}]}
+open(path, "w").write(json.dumps(batch, indent=2))
+PYEOF
+  if [[ -n "$ZONE_ID" && "$ZONE_ID" != "None" ]]; then
+    if aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+      --change-batch "file://$ALIAS_BATCH" >/dev/null 2>&1; then
+      echo "  created alias $DOMAIN -> $ALIAS_TARGET"
+    else
+      echo "  pending (manual): alias $DOMAIN -> $ALIAS_TARGET  [$ALIAS_BATCH]"
+      echo "  (this profile can see the zone but not write records)"
+    fi
+  else
+    echo "  pending (manual): alias $DOMAIN -> $ALIAS_TARGET  [$ALIAS_BATCH]"
+  fi
+}
+upsert_alias
+
+log "Waiting for CloudFront deployment..."
+aws cloudfront wait distribution-deployed --id "$DIST_ID"
+echo "deployed"
+
+# ---------------------------------------------------------------------------
+# Stage 5: verification
+# ---------------------------------------------------------------------------
+log "Stage 5: verifying https://$DOMAIN/"
+URL="https://$DOMAIN"
+check() { # check <path> <expected-content-type>
+  local headers status ct location
+  headers="$(curl -sSI "$URL$1")"
+  # Through an HTTPS proxy curl prepends the proxy's own
+  # "HTTP/1.1 200 Connection established" — the FINAL status line is the
+  # origin's, and it is what a browser would actually see.
+  status="$(printf '%s' "$headers" | tr -d '\r' | awk '/^HTTP/{s=$2} END{print s}')"
+  location="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
+  ct="$(printf '%s' "$headers" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
+  if [[ "$status" != "200" ]]; then
+    echo "  FAIL $1 (HTTP $status, want 200)"
+    return 1
+  fi
+  if [[ -n "$location" ]]; then
+    echo "  FAIL $1 (redirects to $location; the site must answer directly)"
+    return 1
+  fi
+  if [[ "$ct" == "$2"* ]]; then
+    echo "  OK   $1 ($status, $ct)"
+  else
+    echo "  FAIL $1 (got: '$ct', want: '$2')"
+    return 1
+  fi
+}
+FAILURES=0
+check "/" "text/html" || FAILURES=$((FAILURES+1))
+check "/test.html" "text/html" || FAILURES=$((FAILURES+1))
+check "/.well-known/apple-app-site-association" "application/json" || FAILURES=$((FAILURES+1))
+
+if [[ "$FAILURES" -eq 0 ]]; then
+  echo ""
+  echo "Deployed: $URL"
+  echo "Enroll with: passlane approvals enroll --page $URL"
+  exit 0
+else
+  echo "$FAILURES check(s) failed" >&2
+  exit 1
+fi
