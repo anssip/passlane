@@ -49,6 +49,7 @@ A **session** is one granted approval:
 | Kind | Holds | Created by | Ends |
 | --- | --- | --- | --- |
 | `unlock` | the vault's master password | `passlane unlock --session` (later: a phone approval of `Operation::Unlock`) | expiry, revoke, `lock`, agent stop |
+| `challenge_response` | a phone-held key's 20-byte answer for one vault file version | `passlane approve --response`, `unlock --session` | first use (single-use ones), expiry, revoke, `lock`, agent stop |
 | `reveal` | no secret — a recorded "approve for this session" covering one entry field | the ask flow's *Approve for this session* | first use (`once`), expiry, revoke, `lock`, agent stop |
 
 Reveal sessions are keyed by the entry's **stable UUID** (the title travels
@@ -227,11 +228,15 @@ systemctl --user enable --now passlane-agent.service
 
 ## Relationship to the phone-key work
 
-When the link transport and phone-held key land (passlane-ios v1), the
-phone's `ApprovalResponse { scope: Timed { .. } }` for an
-`Operation::Unlock` becomes exactly one `unlock` session — the agent
-already speaks the protocol's `Scope` shape. The HMAC response will be
-held the same way the master password is today (memory only, wiped on
-expiry), and `Body::SessionRevoke` from the phone maps to
-`revoke_session`. That is why the session model lives in the shared
-crates rather than the CLI.
+The phone-held key has landed (passlane#53, `passlane hwkey add
+--phone`); see [phone-held-key.md](phone-held-key.md). An answer arrives
+through `passlane approve --response` and is held as a
+`challenge_response` session keyed by the exact challenge it answers —
+the vault's KDF seed, which rotates on every save, so a stale answer
+can never open a re-saved vault. `passlane unlock --session` holds the
+opening answer beside the master password, so one approval serves until
+expiry; `passlane lock` drops it with everything else. Single-use
+answers are consumed by the one command that uses them, and a response
+presented while no agent runs is refused before anything is recorded,
+so it still works once one is. `Body::SessionRevoke` from the phone maps
+to `revoke_session`, as before.

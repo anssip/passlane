@@ -85,6 +85,11 @@ src/                     # The passlane CLI package
 ├── store.rs            # File I/O: CSV operations, low-level config-dir helpers
 ├── keychain.rs         # OS keychain integration for master password storage
 ├── hwkey.rs            # Interactive hardware-key flows: enrollment prompts, recovery, backup reminder
+├── phone_key/          # Phone-held key (issue #53): KDF-seed reader, link transport,
+│   │                   #   enrollment; answers arrive as keepass-ng External challenges
+│   ├── kdf_seed.rs     #   Read a vault's challenge from the cleartext kdbx outer header
+│   ├── transport.rs    #   The link transport: QR/link out, pasted or agent-held answer in
+│   └── enroll.rs       #   The enrollment sequence (sheet scan-back gates the re-key)
 └── ui/                 # User interface components
     ├── input.rs        # Interactive prompts and input handling
     └── output.rs       # Formatted output and table rendering

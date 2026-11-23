@@ -59,10 +59,13 @@ impl Enrollment {
     }
 }
 
+/// A save's answer: the seed it was for, and the answer itself.
+type SaveAnswer = ([u8; CHALLENGE_LEN], Zeroizing<Vec<u8>>);
+
 /// The holder's answer to the re-key, kept for the open that proves it.
 struct RecordingSource {
     inner: Arc<dyn ResponseSource>,
-    last_save: Mutex<Option<([u8; CHALLENGE_LEN], Zeroizing<Vec<u8>>)>>,
+    last_save: Mutex<Option<SaveAnswer>>,
 }
 
 impl ResponseSource for RecordingSource {
@@ -259,7 +262,7 @@ mod tests {
         // Run 1: the answer is "nowhere to be kept" — as when no session
         // agent is running — so nothing is enrolled.
         phone.refuse(ResponseError::Unavailable("no terminal, no agent".into()));
-        let err = enroll(&config, "master-pw", phone.clone()).unwrap_err();
+        enroll(&config, "master-pw", phone.clone()).unwrap_err();
         assert_eq!(std::fs::read(&config.path).unwrap(), before);
         let asked_run_1 = phone.asked();
         assert_eq!(asked_run_1.len(), 1);

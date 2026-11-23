@@ -182,8 +182,10 @@ pub(crate) mod tests {
         use keepass_ng::db::Database;
         use keepass_ng::{DatabaseConfig, DatabaseKey};
         let path = dir.join(name);
-        let mut config = DatabaseConfig::default();
-        config.kdf_config = kdf;
+        let config = DatabaseConfig {
+            kdf_config: kdf,
+            ..DatabaseConfig::default()
+        };
         let db = Database::new(config);
         let mut file = std::fs::File::create(&path).unwrap();
         db.save(&mut file, DatabaseKey::new().with_password("master-pw"))

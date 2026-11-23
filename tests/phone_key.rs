@@ -528,6 +528,62 @@ impl World {
     }
 }
 
+/// The page's real phone-key code (node WebCrypto standing in for the
+/// browser's) answered a fixed challenge under a fixed secret; this test
+/// opens that envelope with passlane-approval and recomputes the answer
+/// independently. Both sides must agree on HMAC-SHA1(secret, challenge)
+/// and on the envelope that carries it.
+#[test]
+fn page_phone_key_fixture_opens_and_answers_in_rust() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("page")
+        .join("tests")
+        .join("fixtures")
+        .join("page-phone-key-v1.json");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("fixture committed"))
+            .expect("fixture is valid JSON");
+    let recipient = {
+        let r = &doc["recipient"];
+        IdentityKeys::from_bytes(
+            &passlane_approval::encoding::hex_decode(r["enc_secret"].as_str().unwrap()).unwrap(),
+            &passlane_approval::encoding::hex_decode(r["sig_secret"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap()
+    };
+    let pin: PeerPin = serde_json::from_value(doc["sender_pin"].clone()).unwrap();
+    let envelope = Envelope::from_base64url(doc["envelope_base64url"].as_str().unwrap()).unwrap();
+    let now = doc["now"].as_u64().unwrap();
+    let secret =
+        passlane_approval::encoding::hex_decode(doc["secret_hex"].as_str().unwrap()).unwrap();
+    let challenge =
+        passlane_approval::encoding::hex_decode(doc["challenge_hex"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope.header().rid, doc["rid"].as_str().unwrap());
+
+    let body = passlane_approval::envelope::open(
+        &recipient,
+        std::slice::from_ref(&pin),
+        &envelope,
+        now,
+        &Policy::default(),
+        &mut InMemoryNonceStore::default(),
+    )
+    .expect("the page's phone-key envelope verifies");
+    let Body::ApprovalResponse {
+        decision: Decision::Allow,
+        response,
+        ..
+    } = &*body
+    else {
+        panic!("expected an allowing response carrying an answer");
+    };
+    // The recomputation: the same HMAC-SHA1 keepass-ng's LocalChallenge
+    // (and a YubiKey slot programmed with the sheet secret) computes.
+    let answer = response.as_ref().unwrap().as_bytes().unwrap();
+    assert_eq!(answer.as_slice(), hmac_sha1(&secret, &challenge));
+    assert_eq!(answer.len(), 20);
+}
+
 /// The first `https://…/approve.html#…` in some output.
 fn first_link(text: &str) -> Option<String> {
     text.lines()

@@ -101,6 +101,7 @@ export async function buildApprovalResponse({
   recipientKid,
   decision, // "Allow" | { Deny: { reason?: string } }
   scope, // { kind: "once" } | { kind: "timed", seconds }
+  response, // optional: 40 lower-case hex characters, the HMAC-SHA1 answer
   recipientPublicSec1,
   seal,
   now,
@@ -118,7 +119,14 @@ export async function buildApprovalResponse({
     rid,
   };
   const headerJson = JSON.stringify(header);
-  const bodyJson = JSON.stringify({ type: "approval_response", decision, scope });
+  const body = { type: "approval_response", decision, scope };
+  if (response !== undefined && response !== null) {
+    if (!/^[0-9a-f]{40}$/.test(response)) {
+      throw new Error("an approval answer is 40 hex characters (HMAC-SHA1)");
+    }
+    body.response = response;
+  }
+  const bodyJson = JSON.stringify(body);
 
   // Stage 1: frame with the placeholder assertion (sig-kind 2 is already
   // part of the AAD — the assertion form is bound before it exists).

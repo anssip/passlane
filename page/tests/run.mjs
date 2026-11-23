@@ -179,6 +179,85 @@ if (process.argv.includes("--write-fixture")) {
     blob,
     expected: { enc_pub: blob.enc_pub },
   };
+  // The phone-held-key fixture: the page's real phonekey.js answers a
+  // challenge with HMAC-SHA1 under a fixed secret, and the Rust test
+  // verifies the envelope AND recomputes the answer itself — the JS↔Rust
+  // leg of the phone-key proof.
+  {
+    const hpkeMod = await import(join(page, "js", "hpke.js"));
+    const { importSecret, computeResponse } = await import(join(page, "js", "phonekey.js"));
+    const { buildApprovalResponse, attachAssertion, assertionToJson } = await import(
+      join(page, "js", "envelope.js")
+    );
+    const secretHex = "3c".repeat(20);
+    const challengeHex = "2a".repeat(32);
+    const bytesOf = (hex) => new Uint8Array(hex.match(/.{2}/g).map((b) => parseInt(b, 16)));
+    const key = await importSecret(bytesOf(secretHex));
+    const answer = await computeResponse(key, bytesOf(challengeHex));
+
+    const rid = "d13451de7160efa2b23076fd782de967";
+    const now2 = 1_760_000_050;
+    const built = await buildApprovalResponse({
+      rid,
+      senderKid: await hpkeMod.kid("enc", bytesOf(pagePublic)),
+      recipientKid: await hpkeMod.kid("enc", bytesOf(cliPublic)),
+      decision: "Allow",
+      scope: { kind: "once" },
+      response: toHex(answer),
+      recipientPublicSec1: bytesOf(cliPublic),
+      seal: hpkeMod.hpkeSeal,
+      now: now2,
+      ttl: 300,
+      nonceHex: "ea9f11f8dfb0ca08a8810f9ea39c3a6a",
+    });
+
+    // The passkey (an ECDSA WebCrypto key stands in for the authenticator,
+    // exactly like the other fixtures) signs the transcript challenge.
+    const rpHash = await sha256(utf8(rpId));
+    const authData = concatU8(rpHash, new Uint8Array([0x01, 0, 0, 0, 0]));
+    const clientDataJson = JSON.stringify({
+      type: "webauthn.get",
+      challenge: built.challenge,
+      origin: `https://${rpId}`,
+    });
+    const raw = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        passkey.privateKey,
+        concatU8(authData, await sha256(utf8(clientDataJson))),
+      ),
+    );
+    const finalBytes = attachAssertion(
+      built.transcript,
+      assertionToJson({
+        authenticator_data: toBase64Url(authData),
+        client_data_json: toBase64Url(utf8(clientDataJson)),
+        signature: toBase64Url(ecdsaRawToDer(raw)),
+      }),
+    );
+
+    const phoneFixture = {
+      note: "Produced by page/tests/run.mjs --write-fixture driving page/js/phonekey.js and envelope.js with node WebCrypto. The Rust test opens the envelope with passlane-approval and recomputes HMAC-SHA1(secret, challenge) itself.",
+      version: 1,
+      now: now2,
+      rid,
+      secret_hex: secretHex,
+      challenge_hex: challengeHex,
+      envelope_base64url: toBase64Url(finalBytes),
+      recipient: cliKeys,
+      sender_pin: {
+        label: "approval-page",
+        enc_pub: pagePublic,
+        sig_pub: toHex(passkeyPub),
+        paired_at: now2,
+        webauthn: { rp_id: rpId, origin: `https://${rpId}` },
+      },
+    };
+    const phonePath = join(fixtureDir, "page-phone-key-v1.json");
+    writeFileSync(phonePath, JSON.stringify(phoneFixture, null, 2) + "\n");
+    console.log(`fixture written: ${phonePath}`);
+  }
+
   const enrollPath = join(fixtureDir, "page-enrollment-v1.json");
   writeFileSync(enrollPath, JSON.stringify(enrollFixture, null, 2) + "\n");
   console.log(`fixture written: ${enrollPath}`);

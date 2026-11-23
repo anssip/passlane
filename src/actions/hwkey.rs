@@ -52,7 +52,7 @@ impl HwKeyAction {
                     serial: sub.get_one::<u32>("serial").copied(),
                     phone: sub
                         .get_one::<bool>("phone")
-                        .map_or(false, |v| *v)
+                        .is_some_and(|v| *v)
                         .then(|| PhoneAdd {
                             page: sub.get_one::<String>("page").cloned(),
                             approver: sub.get_one::<String>("approver").cloned(),
@@ -61,7 +61,7 @@ impl HwKeyAction {
             },
             Some(("remove", sub)) => HwKeyAction {
                 command: HwKeyCommand::Remove {
-                    secret: sub.get_one::<bool>("secret").map_or(false, |v| *v),
+                    secret: sub.get_one::<bool>("secret").is_some_and(|v| *v),
                 },
             },
             _ => HwKeyAction {

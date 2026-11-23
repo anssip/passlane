@@ -26,7 +26,7 @@ enum Held {
     /// The vault has no phone-held key.
     NotPhoneGated,
     /// The answer is in the agent until this unix time.
-    Held(u64),
+    Until(u64),
     /// No answer was obtained in this process.
     NoAnswer,
     /// The agent refused it; the agent's message.
@@ -61,7 +61,7 @@ fn hold_phone_answer(
         answer.response.as_slice(),
         Scope::Timed { seconds },
     ) {
-        Ok(until) => Held::Held(until),
+        Ok(until) => Held::Until(until),
         Err(e) => Held::Refused(e.message),
     }
 }
@@ -108,7 +108,7 @@ impl Action for UnlockAction {
                     .unwrap_or_else(|| format!("+{secs}s"));
                 let phone = match held {
                     Held::NotPhoneGated => String::new(),
-                    Held::Held(_) => {
+                    Held::Until(_) => {
                         " The phone's approval is held with it, so commands will not ask \
                          again until then."
                             .to_string()
@@ -195,7 +195,7 @@ mod tests {
                 Ok(1_900)
             },
         );
-        assert_eq!(held, Held::Held(1_900));
+        assert_eq!(held, Held::Until(1_900));
     }
 
     #[test]
@@ -231,6 +231,6 @@ mod tests {
                 Ok(0)
             },
         );
-        assert_eq!(held, Held::Held(0));
+        assert_eq!(held, Held::Until(0));
     }
 }

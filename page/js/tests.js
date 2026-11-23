@@ -19,6 +19,19 @@ import {
   toHex,
   utf8,
 } from "./lib.js";
+import {
+  computeResponse,
+  describeOperation,
+  formatSecret,
+  generateSecret,
+  importSecret,
+  isPhoneKeyOperation,
+  newKeyRecord,
+  parseSheetSecret,
+  sheetInstructions,
+  sheetText,
+  verifySheetReadBack,
+} from "./phonekey.js";
 
 const CASES = new Map();
 let passed = 0;
@@ -601,6 +614,292 @@ test("mocked approval: JS produces a response the same JS framing accepts", asyn
   const parsed = envelope.parseEnvelopeB64Url(out.envelopeBase64Url);
   eq(parsed.sigKind, 2, "webauthn sig kind");
   if (out.passkeyPublicSec1Hex.length !== 130) throw new Error("passkey pub must be SEC1 hex");
+});
+
+// -- the phone-held key (passlane#53) ------------------------------------------
+
+const SECRET_HEX = "3c".repeat(20);
+const SECRET_BYTES_OF = (hex) => new Uint8Array(hex.match(/.{2}/g).map((b) => parseInt(b, 16)));
+
+test("phone key: a generated secret imports non-extractable and signs", async () => {
+  const secret = generateSecret();
+  eq(secret.length, 20, "20 bytes");
+  const key = await importSecret(secret);
+  // The key can sign and cannot be exported — extractable is false.
+  const challenge = new Uint8Array(32).fill(0x5a);
+  const answer = await computeResponse(key, challenge);
+  eq(answer.length, 20, "HMAC-SHA1");
+  let exported = null;
+  try {
+    exported = await crypto.subtle.exportKey("raw", key);
+  } catch {
+    /* expected */
+  }
+  if (exported !== null && exported !== undefined) throw new Error("the key must not be exportable");
+});
+
+test("phone key: the answer is exactly HMAC-SHA1, as keepass computes it", async () => {
+  // The same construction keepass-ng's LocalChallenge (and a YubiKey slot)
+  // uses — HMAC-SHA1(secret, seed) — computed through the page's
+  // non-extractable key and through an independent plain import; the two
+  // must agree byte for byte. The Rust tests pin the same construction
+  // against keepass-ng itself.
+  const key = await importSecret(SECRET_BYTES_OF(SECRET_HEX));
+  const challenge = new Uint8Array(32).fill(0x2a);
+  const answer = await computeResponse(key, challenge);
+  const plain = await crypto.subtle.importKey(
+    "raw",
+    SECRET_BYTES_OF(SECRET_HEX),
+    { name: "HMAC", hash: "SHA-1" },
+    true,
+    ["sign"],
+  );
+  const expected = new Uint8Array(await crypto.subtle.sign("HMAC", plain, challenge));
+  eq(toHex(answer), toHex(expected), "both import paths sign identically");
+  eq(answer.length, 20, "HMAC-SHA1");
+
+  // The challenge is the vault's 32-byte seed, and only that.
+  for (const bad of [new Uint8Array(31), new Uint8Array(33), new Uint8Array(0)]) {
+    let threw = 0;
+    try {
+      await computeResponse(key, bad);
+    } catch {
+      threw++;
+    }
+    if (!threw) throw new Error("a challenge is 32 bytes");
+  }
+});
+
+test("phone key: the sheet formats, parses and verifies", async () => {
+  const text = sheetText("work", SECRET_HEX, Date.UTC(2026, 10, 23));
+  if (!text.includes("Vault: work")) throw new Error("the sheet names the vault");
+  if (!text.includes("passlane hwkey remove --secret")) throw new Error("the sheet says how to recover");
+  if (!text.includes(formatSecret(SECRET_HEX))) throw new Error("the sheet carries the secret, grouped");
+  eq((SECRET_HEX.match(/.{4}/g) ?? []).length, 10, "ten groups of four");
+
+  // Parsing accepts the sheet's own grouping and freer typing.
+  eq(parseSheetSecret(formatSecret(SECRET_HEX)), SECRET_HEX);
+  eq(parseSheetSecret(` ${SECRET_HEX.toUpperCase().match(/.{4}/g).join("-")}`), SECRET_HEX);
+  let threw = 0;
+  for (const bad of ["", "zz", "3c", SECRET_HEX.slice(0, 38), SECRET_HEX + "3c", "g".repeat(40)]) {
+    try {
+      parseSheetSecret(bad);
+    } catch {
+      threw++;
+    }
+  }
+  if (threw !== 6) throw new Error(`bad secrets must be rejected (got ${threw}/6)`);
+
+  // The read-back verifies against the held key and rejects a wrong copy.
+  const key = await importSecret(SECRET_BYTES_OF(SECRET_HEX));
+  if (!(await verifySheetReadBack(key, formatSecret(SECRET_HEX)))) {
+    throw new Error("the sheet's own secret verifies");
+  }
+  if (await verifySheetReadBack(key, "ef".repeat(20))) {
+    throw new Error("a wrong copy must not verify");
+  }
+});
+
+test("phone key: request classification and descriptions", () => {
+  for (const kind of ["unlock", "save", "enroll_key"]) {
+    if (!isPhoneKeyOperation({ kind })) throw new Error(kind);
+  }
+  if (isPhoneKeyOperation({ kind: "reveal" })) throw new Error("a reveal is not ours");
+  eq(
+    describeOperation({ kind: "unlock" }, "work"),
+    "Supply the challenge-response that opens vault 'work'",
+  );
+  eq(
+    describeOperation({ kind: "save" }, "work"),
+    "Supply the challenge-response for saving vault 'work'",
+  );
+  eq(
+    describeOperation({ kind: "enroll_key" }, "work"),
+    "Create this device's key for vault 'work'",
+  );
+  let threw = 0;
+  try {
+    describeOperation({ kind: "reveal" }, "work");
+  } catch {
+    threw++;
+  }
+  if (!threw) throw new Error("a reveal must not describe as ours");
+  // The instructions must say that a copy on the same screen does not count.
+  if (!sheetInstructions().includes("does not count")) throw new Error(sheetInstructions());
+});
+
+test("phone key: key records are created unconfirmed", () => {
+  const record = newKeyRecord("work", "work", { fake: "key" }, 1234);
+  eq(record.vault, "work");
+  eq(record.sheetConfirmedAt, null, "unconfirmed until the read-back");
+  eq(record.createdAt, 1234);
+});
+
+test("response envelope: an answer rides the encrypted body", async () => {
+  const cliPair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const cliPub = new Uint8Array(await crypto.subtle.exportKey("raw", cliPair.publicKey));
+  const pagePair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const pagePub = new Uint8Array(await crypto.subtle.exportKey("raw", pagePair.publicKey));
+  const rid = "d13451de7160efa2b23076fd782de967";
+  const answerHex = "77".repeat(20);
+
+  const built = await envelope.buildApprovalResponse({
+    rid,
+    senderKid: await hpke.kid("enc", pagePub),
+    recipientKid: await hpke.kid("enc", cliPub),
+    decision: "Allow",
+    scope: { kind: "once" },
+    response: answerHex,
+    recipientPublicSec1: cliPub,
+    seal: hpke.hpkeSeal,
+    now: 1_760_000_000,
+    ttl: 300,
+    nonceHex: "ea9f11f8dfb0ca08a8810f9ea39c3a6a",
+  });
+  const parsed = envelope.parseEnvelope(built.framedBytes);
+  const body = JSON.parse(
+    new TextDecoder().decode(
+      await hpke.hpkeOpen(parsed.enc, cliPair.privateKey, cliPub, 4, parsed.aad, parsed.ct),
+    ),
+  );
+  eq(body.response, answerHex, "the answer is in the body");
+
+  // A body without an answer stays exactly as it was (optional field).
+  const bare = await envelope.buildApprovalResponse({
+    rid,
+    senderKid: await hpke.kid("enc", pagePub),
+    recipientKid: await hpke.kid("enc", cliPub),
+    decision: "Deny",
+    scope: { kind: "once" },
+    recipientPublicSec1: cliPub,
+    seal: hpke.hpkeSeal,
+    now: 1_760_000_000,
+    ttl: 300,
+    nonceHex: "11223344556677881122334455667788",
+  });
+  eq(
+    bare.bodyJson,
+    '{"type":"approval_response","decision":"Deny","scope":{"kind":"once"}}',
+    "no stray field",
+  );
+
+  // Malformed answers are refused at build time, not on the wire.
+  for (const bad of ["ZZ".repeat(20), "77".repeat(19), "77".repeat(21), 42]) {
+    let threw = 0;
+    try {
+      await envelope.buildApprovalResponse({
+        rid,
+        senderKid: await hpke.kid("enc", pagePub),
+        recipientKid: await hpke.kid("enc", cliPub),
+        decision: "Allow",
+        scope: { kind: "once" },
+        response: bad,
+        recipientPublicSec1: cliPub,
+        seal: hpke.hpkeSeal,
+        now: 1_760_000_000,
+        ttl: 300,
+        nonceHex: "11223344556677881122334455667789",
+      });
+    } catch {
+      threw++;
+    }
+    if (!threw) throw new Error(`a bad answer must be refused: ${bad}`);
+  }
+});
+
+// -- the approval page's decision wiring for phone-held keys ------------------
+
+const { phoneKeyGate, challengeBytes, describeBody } = await import("./approve.js");
+
+test("approve page: an unlock with a held key and a challenge is approvable", () => {
+  const record = { keys: { work: { key: {} } } };
+  const gate = phoneKeyGate(record, {
+    vault_id: "work",
+    vault_name: "work",
+    operation: { kind: "unlock" },
+    challenge: "5a".repeat(32),
+  });
+  if (!gate.canApprove) throw new Error(gate.note);
+  if (!gate.note.includes("holds for vault 'work'")) throw new Error(gate.note);
+});
+
+test("approve page: a vault with no held key cannot be approved", () => {
+  for (const kind of ["unlock", "save"]) {
+    const gate = phoneKeyGate({ keys: {} }, {
+      vault_id: "work",
+      vault_name: "work",
+      operation: { kind },
+      challenge: "5a".repeat(32),
+    });
+    if (gate.canApprove) throw new Error(kind);
+    if (!gate.note.includes("holds no key for vault 'work'")) throw new Error(gate.note);
+    if (!gate.note.includes("hwkey add --phone")) throw new Error(gate.note);
+  }
+});
+
+test("approve page: a request without a challenge cannot open anything", () => {
+  const gate = phoneKeyGate(
+    { keys: { work: { key: {} } } },
+    {
+      vault_id: "work",
+      vault_name: "work",
+      operation: { kind: "unlock" },
+      challenge: null,
+    },
+  );
+  if (gate.canApprove) throw new Error("no challenge, no answer");
+  if (!gate.note.includes("no challenge")) throw new Error(gate.note);
+  eq(challengeBytes({ challenge: null }), null);
+  eq(challengeBytes({ challenge: "5a".repeat(31) }), null, "31 bytes is no seed");
+  eq(challengeBytes({ challenge: "5A".repeat(32) }), null, "upper case is not the wire form");
+  eq(challengeBytes({ challenge: "5a".repeat(32) }).length, 32);
+});
+
+test("approve page: enrollment is always possible and says it replaces", () => {
+  const fresh = phoneKeyGate(
+    { keys: {} },
+    { vault_id: "work", vault_name: "work", operation: { kind: "enroll_key" }, challenge: "00".repeat(32) },
+  );
+  if (!fresh.canApprove) throw new Error(fresh.note);
+  if (fresh.replacing) throw new Error("nothing to replace");
+  if (!fresh.note.includes("recovery sheet")) throw new Error(fresh.note);
+
+  const again = phoneKeyGate(
+    { keys: { work: { key: {} } } },
+    { vault_id: "work", vault_name: "work", operation: { kind: "enroll_key" }, challenge: "00".repeat(32) },
+  );
+  if (!again.canApprove) throw new Error(again.note);
+  if (!again.replacing) throw new Error("an existing key is being replaced");
+});
+
+test("approve page: the card describes phone-key operations", () => {
+  const view = describeBody({
+    type: "approval_request",
+    vault_id: "work",
+    vault_name: "work",
+    operation: { kind: "enroll_key" },
+    requester: "anssi@macbook",
+    scope: { kind: "once" },
+    challenge: "5a".repeat(32),
+  });
+  eq(view.op, "Create this device's key for vault 'work'");
+  eq(view.vault, "work");
+  const view2 = describeBody({
+    type: "approval_request",
+    vault_name: "work",
+    operation: { kind: "save" },
+    requester: "anssi@macbook",
+    scope: { kind: "once" },
+  });
+  eq(view2.op, "Supply the challenge-response for saving vault 'work'");
 });
 
 // -- the enrollment ceremony (SPEC §6, with both CLI keys bound) --------------

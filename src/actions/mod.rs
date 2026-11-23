@@ -410,6 +410,11 @@ mod tests {
         });
     }
 
+    /// Tests that set the process-global current vault serialize on this:
+    /// `set_current` would otherwise race with each other (and with every
+    /// assertion that reads the global back).
+    static CURRENT_VAULT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn agent_password(pw: &str) -> impl Fn(&str) -> Option<Zeroizing<String>> + '_ {
         move |vault| {
             assert_eq!(vault, "agent-test");
@@ -419,6 +424,8 @@ mod tests {
 
     #[test]
     fn password_order_keychain_first_then_agent_then_prompt() {
+        let _guard = CURRENT_VAULT_LOCK.lock().unwrap();
+
         test_vault();
         // Keychain hit: the agent is never consulted (no once-sessions
         // get burned while the password is already on disk).
@@ -453,6 +460,8 @@ mod tests {
     /// and only once.
     #[test]
     fn phone_key_is_resolved_before_the_password_and_only_once() {
+        let _guard = CURRENT_VAULT_LOCK.lock().unwrap();
+
         let mut config = VaultConfig {
             name: "agent-test".to_string(),
             path: "/nonexistent/agent-test.kdbx".to_string(),
@@ -499,6 +508,8 @@ mod tests {
     /// asked for a password.
     #[test]
     fn an_unresolvable_phone_key_fails_before_the_password_prompt() {
+        let _guard = CURRENT_VAULT_LOCK.lock().unwrap();
+
         set_current(VaultConfig {
             name: "agent-test".to_string(),
             path: "/nonexistent/agent-test.kdbx".to_string(),
@@ -523,6 +534,8 @@ mod tests {
     /// cannot be found still aborts the unlock.
     #[test]
     fn a_missing_hardware_key_still_fails_the_unlock() {
+        let _guard = CURRENT_VAULT_LOCK.lock().unwrap();
+
         test_vault();
         let err =
             get_vault_properties_with(&|_| Some("keychain-pw".to_string()), &|_| None, &|_| {
@@ -535,6 +548,8 @@ mod tests {
 
     #[test]
     fn vault_properties_flow_through_the_agent_source() {
+        let _guard = CURRENT_VAULT_LOCK.lock().unwrap();
+
         test_vault();
         let (properties, source) =
             get_vault_properties_with(&|_| None, &agent_password("agent-pw"), &|_| Ok(None))

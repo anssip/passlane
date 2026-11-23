@@ -84,7 +84,7 @@ impl Terminal for RealTerminal {
         let link_line = format!(
             "Approval needed to {} (request {}…): {}",
             request.describe(),
-            short(&shown.rid),
+            short(shown.rid),
             shown.link
         );
         if shown.link_on_stdout {
@@ -497,15 +497,17 @@ pub(crate) mod tests {
     struct ScriptedTerminal {
         shown: Mutex<Vec<ShownRecord>>,
         notes: Mutex<Vec<String>>,
-        on_show: Mutex<Option<Box<dyn FnOnce(&ShownRecord) + Send>>>,
-        on_read: Box<dyn Fn(&ShownRecord) -> Option<String> + Send + Sync>,
+        on_show: Mutex<Option<OnShow>>,
+        on_read: OnRead,
     }
 
+    /// What a scripted terminal does when a request appears.
+    type OnShow = Box<dyn FnOnce(&ShownRecord) + Send>;
+    /// What it pastes for one, given what was shown last.
+    type OnRead = Box<dyn Fn(&ShownRecord) -> Option<String> + Send + Sync>;
+
     impl ScriptedTerminal {
-        fn new(
-            on_show: Option<Box<dyn FnOnce(&ShownRecord) + Send>>,
-            on_read: Box<dyn Fn(&ShownRecord) -> Option<String> + Send + Sync>,
-        ) -> Self {
+        fn new(on_show: Option<OnShow>, on_read: OnRead) -> Self {
             Self {
                 shown: Mutex::new(Vec::new()),
                 notes: Mutex::new(Vec::new()),
@@ -598,6 +600,8 @@ pub(crate) mod tests {
     /// A scratch approvals state with a pinned page and a transport
     /// against it.
     struct Rig {
+        /// Keeps the scratch directories alive; the field is never read.
+        #[allow(dead_code)]
         state: tempfile::TempDir,
         dir: PathBuf,
         log_path: PathBuf,
@@ -860,6 +864,7 @@ pub(crate) mod tests {
                         Ok(())
                     })
                     .unwrap();
+                assert_eq!(verified.kind, RequestKind::Save);
             }),
         );
         let answer = rig.ask(Operation::Save).unwrap();

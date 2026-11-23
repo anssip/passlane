@@ -56,21 +56,18 @@ fn keep_in_session_agent(handoff: &ResponseHandoff<'_>) -> Result<(), String> {
         handoff,
         crate::session_agent::agent_running(),
         &|vault, challenge, answer, scope| {
-            crate::session_agent::create_challenge_response_session(
-                vault, challenge, &answer, scope,
-            )
-            .map(|_| ())
+            crate::session_agent::create_challenge_response_session(vault, challenge, answer, scope)
+                .map(|_| ())
         },
     )
 }
 
+/// An agent that can take an answer: (vault, challenge, answer-hex, scope).
+type Hold = dyn Fn(&str, &str, &str, Scope) -> Result<(), Error>;
+
 /// [`keep_in_session_agent`] with the agent injected: `running` says
 /// whether one would take the answer, `hold` hands it over.
-fn hand_over(
-    handoff: &ResponseHandoff<'_>,
-    running: bool,
-    hold: &dyn Fn(&str, &str, &str, Scope) -> Result<(), Error>,
-) -> Result<(), String> {
+fn hand_over(handoff: &ResponseHandoff<'_>, running: bool, hold: &Hold) -> Result<(), String> {
     if !running {
         return Err(format!(
             "this response (request {}…) carries the answer that {} but there is nowhere to \
