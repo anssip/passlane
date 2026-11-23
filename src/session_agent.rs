@@ -397,16 +397,16 @@ mod tests {
 
     // The agent's server is Unix-only, and so are the tests that need a
     // socket to talk to; everything else here runs everywhere.
+    use std::sync::Mutex;
     #[cfg(unix)]
     use {
         passlane_agent::server::{AgentConfig, AgentServer},
         std::path::Path,
-        std::sync::Mutex,
     };
 
-    /// The socket the CLI talks to is process-global (an environment
-    /// variable); the socket tests below are the only ones that set it.
-    #[cfg(unix)]
+    /// Environment variables are process-global; every test in this
+    /// binary that touches them takes turns holding this. It is
+    /// deliberately not Unix-only: the no-agent test below needs it too.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// The ask flow's held duration must track the approval protocol's

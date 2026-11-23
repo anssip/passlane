@@ -150,15 +150,19 @@ pub fn refresh_if_stale() {
     refresh_if_stale_with(
         std::io::stdin().is_terminal(),
         current_cache_path(),
-        &|| {
-            match vault_registry::current() {
-                Ok(config) => refresh_may_read_keychain(session_factors(&config.name)),
-                // No vault to speak of: nothing holds it open.
-                Err(_) => true,
-            }
-        },
+        &may_read_keychain_for_current_vault,
         &create_cache_from_keychain,
     );
+}
+
+/// The `may_read_keychain` answer for the current vault: only when no
+/// session serves it *and* the agent's state is known.
+fn may_read_keychain_for_current_vault() -> bool {
+    match vault_registry::current() {
+        Ok(config) => refresh_may_read_keychain(session_factors(&config.name)),
+        // No vault to speak of: nothing holds it open.
+        Err(_) => true,
+    }
 }
 
 /// Whether the optional stale-cache refresh may read the keychain: only
@@ -171,12 +175,12 @@ fn refresh_may_read_keychain(held: Result<SessionFactors, Error>) -> bool {
 
 /// [`refresh_if_stale`] with what reaches outside the process injected, so
 /// the rule is testable without a terminal, a home directory, a keychain
-/// or an agent. `session_live` is only asked when its answer matters: it
-/// talks to the agent.
+/// or an agent. `may_read_keychain` is only asked when its answer matters:
+/// it talks to the agent.
 fn refresh_if_stale_with(
     interactive: bool,
     cache_path: Option<PathBuf>,
-    session_live: &dyn Fn() -> bool,
+    may_read_keychain: &dyn Fn() -> bool,
     refresh: &dyn Fn(),
 ) {
     if !interactive {
@@ -188,7 +192,7 @@ fn refresh_if_stale_with(
     if cache_age(&path) != CacheAge::Stale {
         return;
     }
-    if session_live() {
+    if !may_read_keychain() {
         return;
     }
 
@@ -382,8 +386,15 @@ mod tests {
             &|| panic!("no reason to ask the agent for a fresh cache"),
             &refresh,
         );
-        // Asked at a terminal with a stale cache — and a live session
-        // means no keychain read.
+        // Asked at a terminal with a stale cache. A session serving the
+        // vault, or an agent whose state is unknown, means no keychain
+        // read; only a known absence of one allows it.
+        refresh_if_stale_with(true, Some(stale.clone()), &|| false, &refresh);
+        assert_eq!(
+            refreshed.get(),
+            0,
+            "no keychain read while a session may serve the vault, or the agent is unusable"
+        );
         let asked = Cell::new(0);
         refresh_if_stale_with(
             true,
@@ -394,12 +405,8 @@ mod tests {
             },
             &refresh,
         );
-        assert_eq!(asked.get(), 1);
-        assert_eq!(
-            refreshed.get(),
-            0,
-            "no keychain read without a terminal or while a session is live"
-        );
+        assert_eq!(asked.get(), 1, "asked exactly when it matters");
+        assert_eq!(refreshed.get(), 1);
     }
 
     #[test]
@@ -454,19 +461,19 @@ mod tests {
         let week = Duration::from_secs(7 * 24 * 60 * 60);
         let refreshed = Cell::new(0);
         let refresh = || refreshed.set(refreshed.get() + 1);
-        let no_session = || false;
+        let may_read = || true;
 
         let stale = cache_aged(dir.path(), "stale", week + Duration::from_secs(60));
-        refresh_if_stale_with(true, Some(stale), &no_session, &refresh);
+        refresh_if_stale_with(true, Some(stale), &may_read, &refresh);
         assert_eq!(refreshed.get(), 1);
 
         let fresh = cache_aged(dir.path(), "fresh", week - Duration::from_secs(60));
-        refresh_if_stale_with(true, Some(fresh), &no_session, &refresh);
+        refresh_if_stale_with(true, Some(fresh), &may_read, &refresh);
         assert_eq!(refreshed.get(), 1, "a fresh cache is left alone");
 
         let missing = cache_path_in(dir.path(), "other");
-        refresh_if_stale_with(true, Some(missing), &no_session, &refresh);
-        refresh_if_stale_with(true, None, &no_session, &refresh);
+        refresh_if_stale_with(true, Some(missing), &may_read, &refresh);
+        refresh_if_stale_with(true, None, &may_read, &refresh);
         assert_eq!(refreshed.get(), 1, "nothing to refresh without a cache");
     }
 }

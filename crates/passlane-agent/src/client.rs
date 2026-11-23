@@ -19,8 +19,8 @@ use zeroize::Zeroizing;
 
 use crate::error::AgentError;
 use crate::protocol::{
-    ChallengeResponseMaterial, Event, GrantSpec, PROTOCOL_VERSION, Request, Response, SessionInfo,
-    decode, read_frame, write_frame,
+    ChallengeResponseMaterial, Event, GrantSpec, MAX_FRAME_LEN, PROTOCOL_VERSION, Request,
+    Response, SessionInfo, decode, read_frame, write_frame,
 };
 
 /// How long a client waits for the agent's answer to one request. The
@@ -172,15 +172,11 @@ impl AgentClient {
 
     fn call(&mut self, request: Request) -> Result<Response, AgentError> {
         write_frame(&mut self.stream, &request)?;
-        let frame = match read_frame(&mut self.stream) {
-            Ok(frame) => frame,
-            // The read gave up at its deadline: the agent took the request
-            // and never answered.
-            Err(AgentError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return Err(AgentError::TimedOut(self.request_timeout));
-            }
-            Err(e) => return Err(e),
-        };
+        // One deadline for the whole answer, not per read: a peer that
+        // delivers a byte at a time would otherwise stretch a frame out
+        // indefinitely, each read inside its own timeout.
+        let deadline = std::time::Instant::now() + self.request_timeout;
+        let frame = read_frame_deadlined(&mut self.stream, deadline, self.request_timeout)?;
         match decode(&frame)? {
             Response::Error { code, message } => Err(AgentError::Server { code, message }),
             response => Ok(response),
@@ -401,6 +397,72 @@ fn answer_within<T: Send + 'static>(
         })
         .ok()?;
     rx.recv_timeout(bound).ok()
+}
+
+/// [`read_frame`] with an absolute deadline for the whole frame: every
+/// read is given only the time left, so a peer drip-feeding bytes — each
+/// read within its own slice — still ends at the deadline.
+fn read_frame_deadlined(
+    stream: &mut UnixStream,
+    deadline: std::time::Instant,
+    timeout: Duration,
+) -> Result<Zeroizing<Vec<u8>>, AgentError> {
+    let mut len_buf = [0u8; 4];
+    read_exact_deadlined(stream, &mut len_buf, deadline, timeout)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_FRAME_LEN {
+        return Err(AgentError::Protocol(format!(
+            "announced frame of {len} bytes exceeds the {MAX_FRAME_LEN}-byte limit"
+        )));
+    }
+    let mut buf = Zeroizing::new(vec![0u8; len]);
+    read_exact_deadlined(stream, &mut buf, deadline, timeout)?;
+    Ok(buf)
+}
+
+/// [`std::io::Read::read_exact`] with an absolute deadline, adjusting the
+/// socket's read timeout to the time left before every read.
+fn read_exact_deadlined(
+    stream: &mut UnixStream,
+    mut buf: &mut [u8],
+    deadline: std::time::Instant,
+    timeout: Duration,
+) -> Result<(), AgentError> {
+    use std::io::Read;
+    while !buf.is_empty() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(AgentError::TimedOut(timeout));
+        }
+        // Whole milliseconds: sub-millisecond read timeouts can be refused.
+        if let Err(e) = stream.set_read_timeout(Some(remaining.max(Duration::from_millis(1)))) {
+            // macOS refuses to set a read timeout on a socket whose peer
+            // has already closed, even with data still readable. The read
+            // below reports that state; only the deadline still guards it.
+            if e.kind() != std::io::ErrorKind::InvalidInput {
+                return Err(e.into());
+            }
+        }
+        match stream.read(buf) {
+            Ok(0) => {
+                return Err(AgentError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the agent closed the connection",
+                )));
+            }
+            Ok(n) => buf = &mut buf[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(AgentError::TimedOut(timeout));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Validate a socket path before any secret can travel over it: it must
@@ -635,6 +697,56 @@ mod tests {
         assert!(
             started.elapsed() < SHORT_TIMEOUT * 5,
             "the wait ends at the bound"
+        );
+    }
+
+    /// An agent that answers, but slowly: one byte at a time, each within
+    /// the request timeout, forever.
+    #[test]
+    fn a_slowly_delivered_answer_is_not_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(frame) = read_frame(&mut stream) else {
+                return;
+            };
+            let pong = Response::Pong {
+                version: PROTOCOL_VERSION,
+                max_session_secs: 900,
+                sessions: 0,
+            };
+            let mut answer = Vec::new();
+            write_frame(&mut answer, &pong).unwrap();
+            // Drip it out: a byte every so often, far past the deadline,
+            // always within a single read's timeout.
+            let _ = frame;
+            for byte in answer {
+                let _ = stream.write_all(&[byte]);
+                let _ = stream.flush();
+                std::thread::sleep(SHORT_TIMEOUT / 2);
+            }
+        });
+
+        let mut client = AgentClient::connect(&path).unwrap();
+        client.set_request_timeout(SHORT_TIMEOUT).unwrap();
+        let started = Instant::now();
+        match client.check_version() {
+            // The connection may also break when the test's server thread
+            // is still dribbling into a socket nobody reads — either way
+            // the wait ended at the deadline, not after the whole frame.
+            Err(AgentError::TimedOut(_)) | Err(AgentError::Io(_)) => {}
+            other => panic!("expected the deadline, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < SHORT_TIMEOUT * 4,
+            "the wait ends at the deadline: {:?}",
+            started.elapsed()
         );
     }
 
