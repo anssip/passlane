@@ -2,7 +2,7 @@
 name = "passlane-agent"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Anssi Piirainen <anssip@email.com>"]
 license = "GPL-3.0-or-later"
 description = "ssh-agent-style session agent for passlane: holds vault unlock approvals in memory only"
