@@ -602,7 +602,8 @@ mod tests {
     // socket to talk to; everything else here runs everywhere.
     #[cfg(unix)]
     use passlane_agent::server::{AgentConfig, AgentServer};
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     /// Environment variables are process-global; every test in this
     /// binary that touches them takes turns holding this. It is
@@ -865,46 +866,87 @@ mod tests {
         );
     }
 
+    /// A stand-in for the other tests: a thread that makes a temporary
+    /// directory, does a little, then writes into it by path — until it is
+    /// told to stop, and no later than the test that owns it. Dropping it
+    /// stops and joins the thread, on that test's panic included: a
+    /// stand-in left behind would churn temp files through the rest of the
+    /// run, and a failing test is exactly when that would go unnoticed.
+    struct OtherTests {
+        stop: Arc<AtomicBool>,
+        /// Temporary directories written into so far.
+        written: Arc<AtomicUsize>,
+        /// Set by the thread on its way out, a panic included.
+        finished: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl OtherTests {
+        fn start(written: Arc<AtomicUsize>) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let finished = Arc::new(AtomicBool::new(false));
+            let (watch, done, count) = (
+                Arc::clone(&stop),
+                Arc::clone(&finished),
+                Arc::clone(&written),
+            );
+            let handle = std::thread::spawn(move || {
+                struct Done(Arc<AtomicBool>);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        self.0.store(true, Ordering::Relaxed);
+                    }
+                }
+                let _done = Done(done);
+                while !watch.load(Ordering::Relaxed) {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    std::fs::write(dir.path().join("entry"), b"x").unwrap();
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            Self {
+                stop,
+                written,
+                finished,
+                handle: Some(handle),
+            }
+        }
+
+        /// Stop the stand-in and wait for it — failing the test if it could
+        /// not do what the other tests do.
+        fn finish(mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.handle
+                .take()
+                .expect("started")
+                .join()
+                .expect("the other tests' temp files survive the lookups");
+        }
+    }
+
+    impl Drop for OtherTests {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
     #[test]
     fn looking_for_an_absent_agent_never_moves_other_tests_temp_files() {
-        // While the lookup runs, another thread does what the other tests
-        // do: make a temporary directory, some work, then write into it by
-        // path. If the lookup pointed `TMPDIR` at a folder of its own, the
+        // While the lookup runs, the stand-in does what the other tests
+        // do. If the lookup pointed `TMPDIR` at a folder of its own, the
         // directory would be created inside it and vanish with it.
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let stop = Arc::new(AtomicBool::new(false));
-        let written = Arc::new(AtomicUsize::new(0));
-        let finished = Arc::new(AtomicBool::new(false));
-        let (watch, count, done) = (
-            Arc::clone(&stop),
-            Arc::clone(&written),
-            Arc::clone(&finished),
-        );
-        let other_tests = std::thread::spawn(move || {
-            // Set on the way out — a panic included, which is how a moved
-            // temp file shows up — so the loop below never waits on the dead.
-            struct Done(Arc<AtomicBool>);
-            impl Drop for Done {
-                fn drop(&mut self) {
-                    self.0.store(true, Ordering::Relaxed);
-                }
-            }
-            let _done = Done(done);
-            while !watch.load(Ordering::Relaxed) {
-                let dir = tempfile::tempdir().unwrap();
-                std::thread::sleep(std::time::Duration::from_micros(100));
-                std::fs::write(dir.path().join("entry"), b"x").unwrap();
-                count.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+        let other_tests = OtherTests::start(Arc::new(AtomicUsize::new(0)));
         // Plenty of lookups for the race to have had its chance, and on a
-        // loaded machine not one fewer than the other thread needs to get
-        // going — but never unbounded: the loop ends as soon as that thread
-        // is gone, and at a hard cap otherwise.
+        // loaded machine not one fewer than the stand-in needs to get
+        // going — but never unbounded: the loop ends as soon as the
+        // stand-in is gone, and at a hard cap otherwise.
         let mut lookups = 0;
-        while (lookups < 2_000 || written.load(Ordering::Relaxed) < 10)
-            && !finished.load(Ordering::Relaxed)
+        while (lookups < 2_000 || other_tests.written.load(Ordering::Relaxed) < 10)
+            && !other_tests.finished.load(Ordering::Relaxed)
             && lookups < 50_000
         {
             assert_eq!(
@@ -913,10 +955,32 @@ mod tests {
             );
             lookups += 1;
         }
-        stop.store(true, Ordering::Relaxed);
-        other_tests
-            .join()
-            .expect("the other tests' temp files survive the lookups");
+        other_tests.finish();
+    }
+
+    #[test]
+    fn a_failing_test_does_not_leave_the_stand_in_running() {
+        let written = Arc::new(AtomicUsize::new(0));
+        let outcome = std::panic::catch_unwind({
+            let written = Arc::clone(&written);
+            move || {
+                let _other_tests = OtherTests::start(written);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                panic!("a failing assertion in the test that owns the stand-in");
+            }
+        });
+        assert!(outcome.is_err(), "the failing test did fail");
+        let at_the_end = written.load(Ordering::Relaxed);
+        assert!(
+            at_the_end > 0,
+            "the stand-in got going before the test failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            written.load(Ordering::Relaxed),
+            at_the_end,
+            "the stand-in stopped with its test"
+        );
     }
 
     #[cfg(unix)]
