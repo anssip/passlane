@@ -20,7 +20,9 @@ use keepass_ng::ChallengeResponseKey;
 use passlane_agent::SOCKET_ENV;
 use passlane_agent::client::{AgentClient, EventStream, RevealAnswer, UnlockFactors};
 use passlane_agent::error::AgentError;
-use passlane_agent::protocol::{ChallengeResponseMaterial, ErrorCode, GrantSpec, SecretString};
+use passlane_agent::protocol::{
+    ChallengeResponseMaterial, ErrorCode, GrantInfo, GrantSpec, SecretString, SessionInfo,
+};
 use passlane_approval::message::Scope;
 use passlane_core::vault::entities::Error;
 
@@ -136,7 +138,8 @@ pub fn unlock_factors(vault: &str) -> Result<Option<UnlockFactors>, AgentError> 
 /// What a live session-agent session holds for a vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFactors {
-    /// No session for this vault.
+    /// No session for this vault — also the answer when no agent is
+    /// running: it is optional infrastructure.
     None,
     /// The master password only.
     PasswordOnly,
@@ -145,25 +148,43 @@ pub enum SessionFactors {
     WithKeyFactor,
 }
 
-/// What a live session holds for the vault. An agent that cannot be used
-/// is reported: a session that may exist must not pass for absent.
-pub fn session_factors(vault: &str) -> Result<SessionFactors, Error> {
-    unlock_factors(vault)
-        .map(|held| match held {
-            None => SessionFactors::None,
-            Some(factors) if factors.challenge_response.is_none() => SessionFactors::PasswordOnly,
-            Some(_) => SessionFactors::WithKeyFactor,
-        })
-        .map_err(to_error)
+impl SessionFactors {
+    /// From the secret-free session listing, which asks for nothing and
+    /// consumes nothing: a `once`-scoped grant must not be spent by a
+    /// look.
+    fn from_listing(vault: &str, sessions: &[SessionInfo]) -> Self {
+        let mut held = Self::None;
+        for session in sessions.iter().filter(|s| s.vault == vault) {
+            held = match session.grant {
+                GrantInfo::Unlock {
+                    challenge_response: true,
+                } => Self::WithKeyFactor,
+                GrantInfo::Unlock {
+                    challenge_response: false,
+                } if held == Self::None => Self::PasswordOnly,
+                _ => held,
+            };
+        }
+        held
+    }
 }
 
-/// Whether a live session holds the vault's unlock factors, so the vault
-/// can be used with no keychain and no prompt. An agent that cannot be
-/// reached counts as "no": callers only use this to skip something.
-pub fn holds_unlock_session(vault: &str) -> bool {
-    session_factors(vault)
-        .map(|held| held != SessionFactors::None)
-        .unwrap_or(false)
+/// What a live session holds for the vault — asked without consuming
+/// anything, so it is safe to call for presence checks (an unlock through
+/// the chain is what spends a `once`-scoped grant). No agent running is
+/// simply no session; a socket that cannot be used is the caller's error.
+pub fn session_factors(vault: &str) -> Result<SessionFactors, Error> {
+    let mut client = match connect_result() {
+        Ok(client) => client,
+        Err(AgentError::NotRunning(_)) => return Ok(SessionFactors::None),
+        Err(e) => return Err(to_error(e)),
+    };
+    let sessions = client
+        .list_sessions()
+        .map_err(to_error)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    Ok(SessionFactors::from_listing(vault, &sessions))
 }
 
 /// What a session can hold of the challenge-response key a vault was
@@ -531,6 +552,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_presence_check_consumes_nothing() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let server = AgentServer::bind(
+            AgentConfig::new(&socket).with_sweep_interval(std::time::Duration::from_millis(20)),
+        )
+        .unwrap();
+        let handle = server.handle();
+        let served = std::thread::spawn(move || server.serve().unwrap());
+        let env = SocketEnv::point_at(&socket);
+
+        // One once-scoped grant holding the key factor: the rarest thing
+        // the agent can hold. Asking what is held must not spend it.
+        let mut owner = AgentClient::connect(&socket).unwrap();
+        owner
+            .create_session(
+                "keyed",
+                GrantSpec::Unlock {
+                    master_password: SecretString::new("pw"),
+                    challenge_response: Some(ChallengeResponseMaterial::Secret {
+                        secret_hex: SecretString::new("aabb"),
+                    }),
+                },
+                Scope::Once,
+            )
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                session_factors("keyed").unwrap(),
+                SessionFactors::WithKeyFactor
+            );
+        }
+        let mut user = AgentClient::connect(&socket).unwrap();
+        let factors = user.get_unlock_factors("keyed").unwrap();
+        assert!(
+            factors.challenge_response.is_some(),
+            "the once grant survived the presence checks"
+        );
+
+        // And the tri-state is right for the other kinds.
+        owner
+            .create_session(
+                "plain",
+                GrantSpec::Unlock {
+                    master_password: SecretString::new("pw"),
+                    challenge_response: None,
+                },
+                Scope::Timed { seconds: 300 },
+            )
+            .unwrap();
+        assert_eq!(
+            session_factors("plain").unwrap(),
+            SessionFactors::PasswordOnly
+        );
+        assert_eq!(
+            session_factors("other").unwrap(),
+            SessionFactors::None,
+            "another vault's session does not count"
+        );
+
+        drop(env);
+        handle.stop();
+        served.join().unwrap();
+    }
+
+    #[test]
+    fn with_no_agent_at_all_there_is_simply_no_session() {
+        // An absent agent is optional infrastructure: not an error, and
+        // not a reason to stop a hardware-key command that can use the
+        // key on its device.
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let saved_sock = std::env::var_os(SOCKET_ENV);
+        let saved_tmpdir = std::env::var_os("TMPDIR");
+        // SAFETY: test hygiene — this test holds `ENV_MUTEX` and restores
+        // both variables before it returns. A fresh private TMPDIR means
+        // discovery finds no socket at all.
+        unsafe {
+            std::env::remove_var(SOCKET_ENV);
+            std::env::set_var("TMPDIR", dir.path());
+        }
+        let held = session_factors("work");
+        // SAFETY: see above.
+        unsafe {
+            match saved_sock {
+                Some(value) => std::env::set_var(SOCKET_ENV, value),
+                None => std::env::remove_var(SOCKET_ENV),
+            }
+            match saved_tmpdir {
+                Some(value) => std::env::set_var("TMPDIR", value),
+                None => std::env::remove_var("TMPDIR"),
+            }
+        }
+        assert_eq!(held.unwrap(), SessionFactors::None);
     }
 
     #[cfg(unix)]

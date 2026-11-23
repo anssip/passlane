@@ -29,6 +29,9 @@ use crate::protocol::{
 /// subject to it — they wait for events by design.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long establishing a connection to the agent may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A connection to a running agent.
 pub struct AgentClient {
     #[cfg(unix)]
@@ -125,10 +128,15 @@ impl AgentClient {
     /// configured shared-directory paths (nothing is transmitted during
     /// `connect`, so a mismatch is closed before any secret can leak),
     /// and metadata errors fail closed instead of skipping validation.
+    ///
+    /// Establishing the connection is bounded like every exchange with
+    /// the agent: a daemon wedged with a full listen queue would
+    /// otherwise hold the command inside `connect` forever.
     pub fn connect(path: &Path) -> Result<AgentClient, AgentError> {
         socket_is_trusted(path)?;
-        match UnixStream::connect(path) {
-            Ok(stream) => {
+        let owned_path = path.to_path_buf();
+        match answer_within(CONNECT_TIMEOUT, move || UnixStream::connect(&owned_path)) {
+            Some(Ok(stream)) => {
                 // The connection is established; make sure the path we
                 // connected to is still the one we validated.
                 socket_is_trusted(path)?;
@@ -141,7 +149,7 @@ impl AgentClient {
                     request_timeout: REQUEST_TIMEOUT,
                 })
             }
-            Err(e)
+            Some(Err(e))
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
@@ -149,7 +157,8 @@ impl AgentClient {
             {
                 Err(AgentError::NotRunning(path.display().to_string()))
             }
-            Err(e) => Err(e.into()),
+            Some(Err(e)) => Err(e.into()),
+            None => Err(AgentError::TimedOut(CONNECT_TIMEOUT)),
         }
     }
 
@@ -376,6 +385,24 @@ impl EventStream {
     }
 }
 
+/// Run `work` on its own thread and wait for its answer at most `bound`.
+/// `None` when it has not answered by then (the thread is left to finish
+/// or linger on its own). Used to bound things std offers no timeout for,
+/// like connecting to a socket whose peer stopped accepting.
+fn answer_within<T: Send + 'static>(
+    bound: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("passlane-agent-connect".into())
+        .spawn(move || {
+            let _ = tx.send(work());
+        })
+        .ok()?;
+    rx.recv_timeout(bound).ok()
+}
+
 /// Validate a socket path before any secret can travel over it: it must
 /// be a socket, carry no group/other permission bits, and be owned by
 /// the connecting user. Ownership is established without libc by
@@ -594,6 +621,21 @@ mod tests {
             drop(stream);
         });
         (dir, path)
+    }
+
+    #[test]
+    fn a_wait_is_bounded_even_when_the_work_never_answers() {
+        let started = Instant::now();
+        assert_eq!(
+            answer_within(SHORT_TIMEOUT, || {
+                std::thread::sleep(SHORT_TIMEOUT * 20);
+            }),
+            None
+        );
+        assert!(
+            started.elapsed() < SHORT_TIMEOUT * 5,
+            "the wait ends at the bound"
+        );
     }
 
     #[test]

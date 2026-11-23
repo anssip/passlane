@@ -143,6 +143,56 @@ impl Fixture {
         self.passlane_with_socket(args, &self.socket)
     }
 
+    /// Run the CLI with the agent undiscoverable: no configured socket,
+    /// a `TMPDIR` with no socket in it — the machine where no agent runs.
+    fn passlane_without_agent(&self, args: &[&str]) -> (Output, Duration) {
+        let started = Instant::now();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_passlane"))
+            .args(args)
+            .env("HOME", self.home.path())
+            .env("TMPDIR", self.foreign_tmp.path())
+            .env_remove("PASSLANE_AGENT_SOCK")
+            .env_remove("PASSLANE_VAULT")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn passlane");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.try_wait().expect("wait for passlane") {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                child
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_end(&mut stdout)
+                    .unwrap();
+                child
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_end(&mut stderr)
+                    .unwrap();
+                return (
+                    Output {
+                        status,
+                        stdout,
+                        stderr,
+                    },
+                    started.elapsed(),
+                );
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("passlane {} did not finish within 60s", args.join(" "));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn passlane_with_socket(&self, args: &[&str], socket: &Path) -> (Output, Duration) {
         let started = Instant::now();
         let mut child = Command::new(env!("CARGO_BIN_EXE_passlane"))
@@ -582,6 +632,26 @@ fn a_session_holding_the_key_factor_lets_the_key_be_removed_unattended() {
     let registry =
         std::fs::read_to_string(fixture.home.path().join(".passlane").join("vaults.json")).unwrap();
     assert!(!registry.contains("hwkey"), "{registry}");
+}
+
+#[test]
+fn with_no_agent_at_all_a_hardware_key_command_reports_the_key_not_the_agent() {
+    // The agent is optional: `hwkey remove` must not fail on a
+    // session-agent error when none is running — it needs the key, and
+    // says so (at a terminal it uses it).
+    let fixture = Fixture::start();
+    fixture.add_vault("keyed", true);
+
+    let (output, elapsed) =
+        fixture.passlane_without_agent(&["--vault", "keyed", "hwkey", "remove"]);
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("hardware key"), "{stderr}");
+    assert!(
+        !stderr.contains("session agent"),
+        "an absent agent is not the problem: {stderr}"
+    );
+    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
 }
 
 #[test]

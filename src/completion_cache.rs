@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime};
 use log::debug;
 
 use crate::keychain;
+use crate::session_agent::{SessionFactors, session_factors};
 use crate::vault_registry;
+use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::Vault;
 
@@ -149,12 +151,22 @@ pub fn refresh_if_stale() {
         std::io::stdin().is_terminal(),
         current_cache_path(),
         &|| {
-            vault_registry::current()
-                .ok()
-                .is_some_and(|config| crate::session_agent::holds_unlock_session(&config.name))
+            match vault_registry::current() {
+                Ok(config) => refresh_may_read_keychain(session_factors(&config.name)),
+                // No vault to speak of: nothing holds it open.
+                Err(_) => true,
+            }
         },
         &create_cache_from_keychain,
     );
+}
+
+/// Whether the optional stale-cache refresh may read the keychain: only
+/// when no session serves the vault *and* the agent's state is known. An
+/// agent that cannot be used is the command's error to report — not a
+/// reason to go waiting on a keychain dialog in front of it.
+fn refresh_may_read_keychain(held: Result<SessionFactors, Error>) -> bool {
+    matches!(held, Ok(SessionFactors::None))
 }
 
 /// [`refresh_if_stale`] with what reaches outside the process injected, so
@@ -329,6 +341,20 @@ mod tests {
         let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_modified(SystemTime::now() - age).unwrap();
         path
+    }
+
+    #[test]
+    fn an_agent_that_cannot_be_used_blocks_the_optional_refresh_too() {
+        // The refresh must not step in front of the error the command is
+        // about to report for the agent.
+        assert!(refresh_may_read_keychain(Ok(SessionFactors::None)));
+        assert!(!refresh_may_read_keychain(Ok(SessionFactors::PasswordOnly)));
+        assert!(!refresh_may_read_keychain(Ok(
+            SessionFactors::WithKeyFactor
+        )));
+        assert!(!refresh_may_read_keychain(Err(Error::new(
+            "no passlane-agent is listening"
+        ))));
     }
 
     #[test]
