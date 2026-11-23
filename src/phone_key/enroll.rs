@@ -7,7 +7,9 @@
 //! 2. Ask the holder to create a key for the vault (`EnrollKey`). The
 //!    holder answers only once the recovery sheet has been scanned back, so
 //!    this step returning *is* the scan-back confirmation the CLI waits
-//!    for. Nothing has been re-keyed while it was pending.
+//!    for. Nothing has been re-keyed while it was pending. The challenge
+//!    is the vault file's current KDF seed, so an enrollment that exited
+//!    with the link resumes on the answer approved elsewhere.
 //! 3. Re-key: save with the challenge-response factor. The save asks the
 //!    holder for the new seed's answer.
 //! 4. Open the saved file with that answer. This is the proof that the
@@ -92,9 +94,15 @@ pub(crate) fn enroll(
     let mut vault = KeepassVault::open(password, &config.path, config.keyfile.clone(), None)?;
 
     // 2. Create the key, and wait for the recovery sheet to be scanned
-    //    back. The challenge is a proof value; the CLI cannot check the
-    //    answer itself (it never learns the secret) — step 4 is the check.
-    let proof = fresh_challenge()?;
+    //    back. The challenge is the vault file's current KDF seed: a
+    //    proof value the CLI cannot check itself (it never learns the
+    //    secret — step 4 is the check) that is stable for as long as the
+    //    file is. That stability is what lets an enrollment resume: run
+    //    without a terminal, the command exits with the link, the owner
+    //    approves elsewhere, and the re-run finds the approved answer
+    //    by this same challenge. A save in between changes the seed, and
+    //    with it the challenge, so a stale approval is simply not found.
+    let proof = kdf_seed::read_kdf_seed(&config.path)?;
     let request = PhoneRequest {
         vault_id: config.name.clone(),
         vault_name: config.name.clone(),
@@ -172,21 +180,11 @@ fn prove_enrollment(
     }
 }
 
-/// A fresh 32-byte proof challenge.
-fn fresh_challenge() -> Result<[u8; CHALLENGE_LEN], Error> {
-    use rand::RngCore;
-    let mut challenge = [0u8; CHALLENGE_LEN];
-    rand::rngs::OsRng
-        .try_fill_bytes(&mut challenge)
-        .map_err(|e| Error::new(&format!("could not generate a proof challenge: {e}")))?;
-    Ok(challenge)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::phone_key::open_key;
-    use crate::phone_key::tests::{MockPhone, config_for};
+    use crate::phone_key::tests::{MockPhone, config_for, hmac_sha1};
     use passlane_approval::message::Operation;
     use passlane_core::vault::vault_trait::PasswordVault;
 
@@ -202,10 +200,19 @@ mod tests {
         (config, bytes)
     }
 
+    /// Open the vault with `key`; the error message if it does not open.
+    fn open_failure(path: &str, key: Option<&keepass_ng::ChallengeResponseKey>) -> String {
+        match KeepassVault::open("master-pw", path, None, key) {
+            Ok(_) => panic!("the vault opened without the right factor"),
+            Err(e) => e.message,
+        }
+    }
+
     #[test]
     fn enrollment_creates_the_key_then_re_keys_and_proves_it() {
         let dir = tempfile::tempdir().unwrap();
         let (config, before) = plain_vault(dir.path());
+        let seed_before = kdf_seed::read_kdf_seed(&config.path).unwrap();
         let phone = Arc::new(MockPhone::new(&SECRET));
 
         let enrollment = enroll(&config, "master-pw", phone.clone()).unwrap();
@@ -222,11 +229,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Operation::EnrollKey, Operation::Save]
         );
-        assert_ne!(asked[0].challenge, asked[1].challenge);
+        // The proof challenge is the file's seed as it was; the save's is
+        // the seed it wrote.
+        assert_eq!(asked[0].challenge, seed_before);
         assert_eq!(
             asked[1].challenge,
             kdf_seed::read_kdf_seed(&config.path).unwrap()
         );
+        assert_ne!(asked[0].challenge, asked[1].challenge);
 
         // The vault now needs the phone, and opens with it.
         let bytes = std::fs::read(&config.path).unwrap();
@@ -234,6 +244,82 @@ mod tests {
         assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
         let key = open_key(&config, phone.clone()).unwrap();
         assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
+    }
+
+    /// Without a terminal the command exits with the link and is re-run
+    /// after the owner approves elsewhere. The approved answer is kept by
+    /// the session agent keyed by the challenge, so the re-run must ask
+    /// with the *same* challenge to find it.
+    #[test]
+    fn an_exited_enrollment_resumes_on_the_answer_approved_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, before) = plain_vault(dir.path());
+        let phone = Arc::new(MockPhone::new(&SECRET));
+
+        // Run 1: the answer is "nowhere to be kept" — as when no session
+        // agent is running — so nothing is enrolled.
+        phone.refuse(ResponseError::Unavailable("no terminal, no agent".into()));
+        let err = enroll(&config, "master-pw", phone.clone()).unwrap_err();
+        assert_eq!(std::fs::read(&config.path).unwrap(), before);
+        let asked_run_1 = phone.asked();
+        assert_eq!(asked_run_1.len(), 1);
+        assert_eq!(asked_run_1[0].operation, Operation::EnrollKey);
+
+        // The owner approves run 1's request from elsewhere; the agent
+        // holds that answer for its challenge.
+        phone.allow();
+        let kept = HeldAnswers::new(&asked_run_1[0].challenge, &SECRET);
+
+        // Run 2 finds it without asking again, then goes on to re-key.
+        let answering = Resuming {
+            kept,
+            inner: phone.clone(),
+        };
+        enroll(&config, "master-pw", Arc::new(answering)).unwrap();
+        assert_eq!(
+            phone.asked()[1..]
+                .iter()
+                .map(|r| r.operation.clone())
+                .collect::<Vec<_>>(),
+            [Operation::Save],
+            "run 2 asked only for the re-key"
+        );
+        assert!(open_failure(&config.path, None).contains("Incorrect key"));
+    }
+
+    /// What the session agent holds after `passlane approve --response`:
+    /// one answer, for one challenge.
+    struct HeldAnswers {
+        challenge: [u8; CHALLENGE_LEN],
+        answer: Zeroizing<Vec<u8>>,
+    }
+
+    impl HeldAnswers {
+        fn new(challenge: &[u8; CHALLENGE_LEN], secret: &[u8]) -> Self {
+            Self {
+                challenge: *challenge,
+                answer: Zeroizing::new(hmac_sha1(secret, challenge).to_vec()),
+            }
+        }
+    }
+
+    /// A source like the link transport with a session agent: an answer
+    /// already held is returned without asking; anything else is asked.
+    struct Resuming {
+        kept: HeldAnswers,
+        inner: Arc<MockPhone>,
+    }
+
+    impl ResponseSource for Resuming {
+        fn respond(&self, request: &PhoneRequest) -> Result<Answer, ResponseError> {
+            if request.challenge == self.kept.challenge {
+                return Ok(Answer {
+                    response: self.kept.answer.clone(),
+                    origin: crate::phone_key::AnswerOrigin::SessionAgent,
+                });
+            }
+            self.inner.respond(request)
+        }
     }
 
     #[test]

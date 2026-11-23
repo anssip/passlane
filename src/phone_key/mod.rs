@@ -333,6 +333,11 @@ pub(crate) mod tests {
             *self.refusal.lock().unwrap() = Some(error);
         }
 
+        /// Answer normally again after [`Self::refuse`].
+        pub(crate) fn allow(&self) {
+            *self.refusal.lock().unwrap() = None;
+        }
+
         pub(crate) fn asked(&self) -> Vec<PhoneRequest> {
             self.asked.lock().unwrap().clone()
         }

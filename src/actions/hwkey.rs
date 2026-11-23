@@ -161,12 +161,6 @@ impl HwKeyAction {
         if let Some(enrolled) = enrolled(&config) {
             return Err(enrolled.already_enrolled(&config.name));
         }
-        if !std::io::stdin().is_terminal() {
-            return Err(Error::new(
-                "'passlane hwkey add --phone' needs an interactive terminal: the pairing, the \
-                 paste-back of the holder's answers and the password prompt all happen here.",
-            ));
-        }
 
         // 1. Who holds the key. An already-pinned approver is used unless
         //    told otherwise; with none pinned, pair first.
@@ -305,9 +299,30 @@ impl HwKeyAction {
 /// The pinned approver that will hold the vault's key: the one named by
 /// `--approver`, else the only one pinned, else the person's choice — and
 /// when nothing is pinned at all, the pairing ceremony runs first.
+///
+/// A terminal is needed only where a prompt cannot be avoided: pairing,
+/// or choosing between several pinned approvers. With one pinned (or
+/// `--approver`), everything else — the holder's answers and, through
+/// the session agent, even the password — can arrive without a terminal,
+/// so enrollment works over SSH or from an agent platform too.
 fn choose_holder(approver: Option<&str>, page: Option<&str>) -> Result<PeerPin, Error> {
     let peers = crate::approvals::load_peers_pinned(&crate::approvals::state_dir())
         .map_err(|e| Error::new(&e))?;
+    if approver.is_none() && peers.len() != 1 && !std::io::stdin().is_terminal() {
+        return Err(Error::new(&match peers.as_slice() {
+            [] => "nothing is pinned yet, and pairing needs an interactive terminal: run \
+                   'passlane approvals enroll' at a terminal, then re-run this command"
+                .to_string(),
+            many => format!(
+                "several approvers are pinned ({}), and choosing needs an interactive \
+                 terminal: name one with --approver <label>",
+                many.iter()
+                    .map(|peer| peer.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }));
+    }
     if let Some(label) = approver {
         return peers
             .iter()
