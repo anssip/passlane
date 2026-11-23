@@ -202,14 +202,19 @@ fn refresh_if_stale_with(
 
 /// Opens the current vault using the keychain password and writes the cache.
 /// Does nothing if the vault is locked (no password in keychain), or if the
-/// vault is protected by a hardware key: opening it needs a physical touch
-/// nobody is around to provide in this silent background path.
+/// vault is protected by a hardware key or a phone-held key: opening it
+/// needs a touch, or an approval on another device, that nobody is around
+/// to provide in this silent background path.
 fn create_cache_from_keychain() {
     let Ok(config) = vault_registry::current() else {
         return;
     };
     if config.hwkey.is_some() {
         debug!("Hardware key enrolled, skipping silent cache refresh");
+        return;
+    }
+    if config.phone_key.is_some() {
+        debug!("Phone-held key enrolled, skipping silent cache refresh");
         return;
     }
 

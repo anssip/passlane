@@ -262,6 +262,28 @@ impl AgentClient {
         }
     }
 
+    /// Fetch the challenge response a live session holds for exactly
+    /// this vault and challenge (lower-case hex). Consumes a `once`-scoped
+    /// session. Returns the answer and the serving session's expiry.
+    pub fn get_challenge_response(
+        &mut self,
+        vault: &str,
+        challenge: &str,
+    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
+        match self.call(Request::GetChallengeResponse {
+            vault: vault.to_string(),
+            challenge: challenge.to_string(),
+        })? {
+            Response::ChallengeResponse {
+                response,
+                expires_at,
+            } => Ok((response.into_inner(), expires_at)),
+            other => Err(AgentError::Protocol(format!(
+                "unexpected answer: {other:?}"
+            ))),
+        }
+    }
+
     /// Does a live reveal session cover this entry field, matched by the
     /// entry's stable UUID? An `Allowed` answer consumes a `once`-scoped
     /// approval; `Denied` means the caller falls back to the ask flow.
@@ -570,6 +592,15 @@ impl AgentClient {
     pub fn get_unlock_factors(&mut self, _vault: &str) -> Result<UnlockFactors, AgentError> {
         unsupported!()
     }
+    /// Unsupported on this platform (see [`AgentClient::connect`]).
+    pub fn get_challenge_response(
+        &mut self,
+        _vault: &str,
+        _challenge: &str,
+    ) -> Result<(Zeroizing<String>, Option<u64>), AgentError> {
+        unsupported!()
+    }
+
     /// Unsupported on this platform (see [`AgentClient::connect`]).
     pub fn check_reveal(
         &mut self,

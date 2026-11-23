@@ -257,6 +257,43 @@ The response crosses only inside the HPKE ciphertext. Sessions
 (`Scope::Timed`, passlane#54) let one approval serve until expiry while the
 vault's challenge is unchanged (it rotates on save).
 
+Three operations carry a challenge and are answered with a response:
+
+| `operation`  | Challenge            | When                                   |
+|--------------|----------------------|----------------------------------------|
+| `unlock`     | the file's KDF seed  | every vault open                       |
+| `save`       | the new KDF seed     | every save: the seed rotates each time |
+| `enroll_key` | a fresh random value | enrollment only: create the key        |
+
+**Enrollment** is those rounds in a fixed order:
+
+```text
+enroll: approval_request{ EnrollKey, challenge }
+      [create the secret, show the recovery sheet, scan it back]
+      <─ approval_response{ response = HMAC(secret, challenge) }
+re-key: approval_request{ Save, challenge = new seed }
+      <─ approval_response{ response = HMAC(secret, new seed) }
+save with the response, then open the saved file: that open proves the enrollment
+```
+
+**The scan-back is a protocol requirement.** A responder to `enroll_key`
+creates the secret, shows the recovery sheet, and must not answer before the
+sheet has been scanned back from an external copy. The CLI treats the answer as
+the scan-back confirmation: it does not re-key the vault, or record the factor,
+until the answer arrives, so an abandoned scan-back leaves the vault unchanged.
+The `enroll_key` challenge is a proof-of-possession value the CLI cannot check
+itself (it never learns the secret); the re-key and the open that follows are
+what prove the holder's key is the one the vault now needs.
+
+A holder keys its secrets by `vault_id`. It denies `unlock` and `save` requests
+for a vault it holds no key for — answering one would only produce a wrong key.
+
+On the Phase 0 page the secret is a non-extractable WebCrypto HMAC key. The
+page computes the response when the owner approves and releases it only after
+the passkey assertion. The assertion covers the envelope transcript, so the
+body (response included) has to be sealed before the assertion is made; a
+cancelled assertion discards the sealed envelope.
+
 ## 8. Threat model
 
 | Attacker | Capability | Result |

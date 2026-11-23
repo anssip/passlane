@@ -4,10 +4,11 @@
 //! A session is one granted approval. Its scope comes from the approval
 //! protocol (`passlane_approval::Scope`): `Once` dies on first use,
 //! `Timed { seconds }` is reusable until it expires. The key material a
-//! session may hold (a vault's master password and the challenge-response
-//! material a session can carry today, the phone-key's HMAC response
-//! later) lives in `zeroize`-protected buffers that are wiped the moment
-//! the session is dropped — by use, expiry, revocation, lock or shutdown.
+//! session may hold (a vault's master password, the challenge-response
+//! material a session can carry, or a phone-held key's answer for one
+//! vault file version) lives in `zeroize`-protected buffers that are
+//! wiped the moment the session is dropped — by use, expiry, revocation,
+//! lock or shutdown.
 
 use passlane_approval::message::Scope;
 use zeroize::Zeroizing;
@@ -59,6 +60,46 @@ impl Clone for KeyMaterial {
     }
 }
 
+/// A challenge response a session holds in memory, with the challenge it
+/// answers. Wiped on drop.
+#[derive(Debug)]
+pub struct ChallengeMaterial {
+    /// The vault's KDF seed the answer is for, lower-case hex. Not secret
+    /// (it sits in the vault file's header in cleartext); it is what
+    /// makes the answer useless once the vault is re-saved.
+    challenge: Zeroizing<String>,
+    /// The 20-byte HMAC-SHA1 answer, lower-case hex: a vault unlock factor.
+    response: Zeroizing<String>,
+}
+
+impl ChallengeMaterial {
+    /// Wrap an answer and its challenge. Both must already be validated
+    /// as lower-case hex of the right length.
+    pub fn new(challenge: impl Into<String>, response: impl Into<String>) -> Self {
+        Self {
+            challenge: Zeroizing::new(challenge.into()),
+            response: Zeroizing::new(response.into()),
+        }
+    }
+
+    /// The challenge the answer is for.
+    pub fn challenge(&self) -> &str {
+        &self.challenge
+    }
+
+    /// The held answer.
+    pub fn response(&self) -> &str {
+        &self.response
+    }
+}
+
+// Manual Clone so the copy is zeroizing as well.
+impl Clone for ChallengeMaterial {
+    fn clone(&self) -> Self {
+        Self::new(self.challenge.as_str(), self.response.as_str())
+    }
+}
+
 /// What a session grants.
 pub enum Grant {
     /// Vault unlock factors (the ssh-agent "key").
@@ -75,6 +116,9 @@ pub enum Grant {
         /// Field the approval covers (e.g. `password`, `code`).
         field: String,
     },
+    /// A challenge-response answer for one vault file version (a
+    /// phone-held key). Matched by the exact challenge.
+    ChallengeResponse(ChallengeMaterial),
 }
 
 impl Grant {
@@ -83,12 +127,28 @@ impl Grant {
         matches!(self, Grant::Unlock(_))
     }
 
+    /// The answer this grant holds for exactly `challenge`, if it is a
+    /// challenge-response grant for that challenge.
+    pub fn challenge_response_for(&self, challenge: &str) -> Option<&str> {
+        match self {
+            Grant::ChallengeResponse(material) if material.challenge() == challenge => {
+                Some(material.response())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this grant holds a challenge response (for any challenge).
+    pub fn is_challenge_response(&self) -> bool {
+        matches!(self, Grant::ChallengeResponse(_))
+    }
+
     /// Whether this unlock grant also holds the vault's challenge-response
     /// factor — the whole factor set a hardware-key vault needs.
     pub fn holds_challenge_response(&self) -> bool {
         match self {
             Grant::Unlock(material) => material.challenge_response.is_some(),
-            Grant::Reveal { .. } => false,
+            Grant::ChallengeResponse(_) | Grant::Reveal { .. } => false,
         }
     }
 
@@ -111,6 +171,7 @@ impl Grant {
                 entry: entry.clone(),
                 field: field.clone(),
             },
+            Grant::ChallengeResponse(_) => GrantInfo::ChallengeResponse,
         }
     }
 }
@@ -239,6 +300,43 @@ mod tests {
             Grant::Unlock(KeyMaterial::new("pw").with_challenge_response(secret_material("aabb")))
                 .holds_challenge_response()
         );
+    }
+
+    #[test]
+    fn challenge_response_matches_only_its_own_challenge() {
+        let g = Grant::ChallengeResponse(ChallengeMaterial::new("ab".repeat(32), "ef".repeat(20)));
+        assert!(g.is_challenge_response());
+        assert!(!g.is_unlock());
+        assert!(g.challenge_response_for(&"ab".repeat(32)).is_some());
+        // The seed changes on every save: an answer for the previous file
+        // version is not an answer for the current one.
+        assert!(g.challenge_response_for(&"ac".repeat(32)).is_none());
+        assert!(g.challenge_response_for("").is_none());
+        // Other grant kinds hold no answer.
+        assert!(
+            Grant::Unlock(KeyMaterial::new("pw"))
+                .challenge_response_for(&"ab".repeat(32))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn challenge_material_clones_and_lists_without_leaking() {
+        let session = Session::new(
+            "work",
+            Grant::ChallengeResponse(ChallengeMaterial::new("ab".repeat(32), "canary-answer")),
+            Scope::Timed { seconds: 60 },
+            1_000,
+        );
+        assert_eq!(session.info().grant, GrantInfo::ChallengeResponse);
+        let json = serde_json::to_string(&session.info()).unwrap();
+        assert!(!json.contains("canary"), "{json}");
+        let Grant::ChallengeResponse(material) = session.grant else {
+            panic!()
+        };
+        let clone = material.clone();
+        assert_eq!(clone.response(), "canary-answer");
+        assert_eq!(clone.challenge(), &"ab".repeat(32));
     }
 
     #[test]

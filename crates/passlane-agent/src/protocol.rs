@@ -22,9 +22,12 @@ use crate::error::AgentError;
 
 /// Protocol dialect version (returned by [`Request::Ping`]). Dialect 2
 /// added the challenge-response material an unlock session may hold
-/// ([`ChallengeResponseMaterial`]); a client refuses an agent that speaks
-/// another dialect rather than work with silently incomplete factors.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// ([`ChallengeResponseMaterial`]); dialect 3 added the single-challenge
+/// answer sessions a phone-held key's approvals become
+/// ([`GrantSpec::ChallengeResponse`]). A client refuses an agent that
+/// speaks another dialect rather than work with silently incomplete
+/// factors.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Hard limit on one frame; every message here is far smaller.
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -37,6 +40,19 @@ pub const MAX_ENTRY_NAME_LEN: usize = 512;
 pub const MAX_FIELD_NAME_LEN: usize = 128;
 /// Sanity limit on an entry id (a KeePass UUID is 36 bytes).
 pub const MAX_ID_LEN: usize = 128;
+/// A challenge (a vault's 32-byte KDF seed) as lower-case hex.
+pub const CHALLENGE_HEX_LEN: usize = 64;
+/// A challenge response (20-byte HMAC-SHA1) as lower-case hex.
+pub const RESPONSE_HEX_LEN: usize = 40;
+
+/// `value` is exactly `len` lower-case hex characters.
+pub fn is_hex_of_len(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+}
+
 /// Sanity limit on a challenge-response secret (an HMAC-SHA1 slot secret
 /// is 40 hex characters).
 pub const MAX_SECRET_LEN: usize = 256;
@@ -139,6 +155,19 @@ pub enum GrantSpec {
         /// Field the approval covers (e.g. `password`, `code`).
         field: String,
     },
+    /// A challenge-response answer for one vault file version (a
+    /// phone-held key, passlane#53). Both fields are lower-case hex:
+    /// `challenge` is the vault's 32-byte KDF seed the answer is for, and
+    /// `response` the 20-byte HMAC-SHA1 answer. The seed changes on every
+    /// save, so an answer is keyed to the exact file version it opens and
+    /// can never be reused after a re-save. Held in memory exactly like a
+    /// master password.
+    ChallengeResponse {
+        /// The challenge, 64 hex characters.
+        challenge: SecretString,
+        /// The answer, 40 hex characters.
+        response: SecretString,
+    },
 }
 
 /// A request from a CLI client to the agent.
@@ -165,6 +194,15 @@ pub enum Request {
     GetUnlockFactors {
         /// Vault name.
         vault: String,
+    },
+    /// Fetch the challenge response a live session holds for this vault
+    /// and challenge (both keyed exactly; the challenge is 64 hex
+    /// characters). Consumes a `once`-scoped session.
+    GetChallengeResponse {
+        /// Vault name.
+        vault: String,
+        /// The challenge the answer must be for, 64 hex characters.
+        challenge: String,
     },
     /// Does a live reveal session cover this entry field? Consumes
     /// `once`-scoped reveal sessions. Matching is by the entry's stable
@@ -252,6 +290,8 @@ pub enum GrantInfo {
         /// Field name.
         field: String,
     },
+    /// A challenge-response answer for one vault file version.
+    ChallengeResponse,
 }
 
 /// A response from the agent to a CLI client.
@@ -285,6 +325,14 @@ pub enum Response {
         /// a `once` session was just consumed). Long-running callers
         /// revalidate against this after subscribing to events, so an
         /// expiry that fires during vault decryption is not missed.
+        expires_at: Option<u64>,
+    },
+    /// Answer to [`Request::GetChallengeResponse`].
+    ChallengeResponse {
+        /// The held answer, 40 hex characters.
+        response: SecretString,
+        /// When the serving session expires, unix seconds (`None` when a
+        /// `once` session was just consumed).
         expires_at: Option<u64>,
     },
     /// Answer to [`Request::CheckReveal`].
@@ -539,6 +587,73 @@ mod tests {
         assert_eq!(timed, serde_json::json!({"kind": "timed", "seconds": 900}));
         let back: Scope = serde_json::from_value(timed).unwrap();
         assert_eq!(back, Scope::Timed { seconds: 900 });
+    }
+
+    #[test]
+    fn challenge_response_frames_roundtrip_and_validate() {
+        let grant = GrantSpec::ChallengeResponse {
+            challenge: SecretString::new("ab".repeat(32)),
+            response: SecretString::new("cd".repeat(20)),
+        };
+        let back = roundtrip(Request::CreateSession {
+            vault: "work".into(),
+            grant,
+            scope: Scope::Once,
+        });
+        match back {
+            Request::CreateSession {
+                grant:
+                    GrantSpec::ChallengeResponse {
+                        challenge,
+                        response,
+                    },
+                ..
+            } => {
+                assert_eq!(challenge.expose(), "ab".repeat(32));
+                assert_eq!(response.expose(), "cd".repeat(20));
+                // Secrets never reach Debug output.
+                let debug = format!(
+                    "{:?}",
+                    Request::CreateSession {
+                        vault: "work".into(),
+                        grant: GrantSpec::ChallengeResponse {
+                            challenge: SecretString::new("ab".repeat(32)),
+                            response: SecretString::new("cd".repeat(20)),
+                        },
+                        scope: Scope::Once,
+                    }
+                );
+                assert!(!debug.contains("cdcd"), "{debug}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let answer = roundtrip(Response::ChallengeResponse {
+            response: SecretString::new("cd".repeat(20)),
+            expires_at: Some(42),
+        });
+        assert!(matches!(
+            answer,
+            Response::ChallengeResponse {
+                ref response,
+                expires_at: Some(42)
+            } if response.expose() == "cd".repeat(20)
+        ));
+    }
+
+    #[test]
+    fn hex_length_check() {
+        assert!(is_hex_of_len(&"ab".repeat(32), CHALLENGE_HEX_LEN));
+        assert!(is_hex_of_len(&"cd".repeat(20), RESPONSE_HEX_LEN));
+        assert!(
+            !is_hex_of_len(&"AB".repeat(32), CHALLENGE_HEX_LEN),
+            "upper case"
+        );
+        assert!(!is_hex_of_len(&"ab".repeat(31), CHALLENGE_HEX_LEN), "short");
+        assert!(!is_hex_of_len(&"ab".repeat(33), CHALLENGE_HEX_LEN), "long");
+        assert!(
+            !is_hex_of_len(&"gz".repeat(32), CHALLENGE_HEX_LEN),
+            "not hex"
+        );
     }
 
     #[test]

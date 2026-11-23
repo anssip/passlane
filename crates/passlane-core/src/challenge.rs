@@ -26,6 +26,20 @@ use crate::vault::entities::Error;
 /// slot holds, as `ykman otp chalresp` prints it.
 const SECRET_HEX_LEN: usize = 20 * 2;
 
+/// What answers the challenges of a [`ChallengeFactor::External`]: called
+/// synchronously with the challenge exactly where a local secret or a
+/// YubiKey would be challenged — on open, with the KDF seed from the file's
+/// outer header, and once per save, with the freshly generated seed — and
+/// may block while it obtains the answer (a hardware key blocks on a touch
+/// in the same place). The secret itself never passes through this crate.
+///
+/// Structurally identical to keepass-ng's `ChallengeResponseKey::External`
+/// payload (passlane#53), which keepass-ng does not itself export: the
+/// same `Arc` fits both, and its error type is re-exported.
+pub type ChallengeResponder = std::sync::Arc<
+    dyn Fn(&[u8]) -> Result<Vec<u8>, keepass_ng::ChallengeResponseKeyError> + Send + Sync,
+>;
+
 /// A challenge-response factor of a vault's composite key.
 ///
 /// The factor answers the vault's challenges itself, so callers never see a
@@ -44,6 +58,19 @@ pub enum ChallengeFactor {
     /// that is not a 20-byte key in hex can still open a vault, but it
     /// cannot be enrolled on one.
     Virtual { secret_hex: String },
+    /// An externally-answered factor (passlane#53): the challenge goes to
+    /// `responder`, and the answer comes from somewhere this crate knows
+    /// nothing about — the CLI's phone-held key works this way, the answer
+    /// arriving from another device over an approval link while the
+    /// responder blocks. Nothing here is zeroized: a responder is shared,
+    /// and whatever it holds is its own to scrub when it drops. Its
+    /// validity has no rule to check up front — the save that enrolls it
+    /// proves it, by needing the answer to its own fresh seed.
+    External {
+        /// Skipped by zeroization: shared, and owns its own hygiene.
+        #[zeroize(skip)]
+        responder: ChallengeResponder,
+    },
     /// A YubiKey's HMAC-SHA1 challenge-response `slot` (1 or 2). `serial`
     /// identifies the key, or is `None` for whichever single key is
     /// connected when the factor answers. A vault pins such a factor to the
@@ -131,10 +158,11 @@ impl ChallengeFactor {
 
     /// Whether answering a challenge waits for the user to touch a physical
     /// key. Only a YubiKey does. A virtual key answers instantly and
-    /// silently, on every open and save.
+    /// silently, on every open and save; an external one waits on whatever
+    /// supplies it, which is not this crate's business to describe.
     pub fn requires_touch(&self) -> bool {
         match self {
-            Self::Virtual { .. } => false,
+            Self::Virtual { .. } | Self::External { .. } => false,
             #[cfg(feature = "usb")]
             Self::Yubikey { .. } => true,
         }
@@ -157,6 +185,9 @@ impl ChallengeFactor {
             Self::Virtual { secret_hex } => {
                 Ok(ChallengeResponseKey::LocalChallenge(secret_hex.clone()))
             }
+            Self::External { responder } => Ok(ChallengeResponseKey::External(
+                std::sync::Arc::clone(responder),
+            )),
             #[cfg(feature = "usb")]
             Self::Yubikey { slot, serial } => {
                 validate_slot(*slot)?;
@@ -203,6 +234,9 @@ impl TryFrom<&ChallengeResponseKey> for ChallengeFactor {
                     serial: Some(device.serial_number),
                 })
             }
+            ChallengeResponseKey::External(responder) => Ok(Self::External {
+                responder: std::sync::Arc::clone(responder),
+            }),
             // Unreachable unless keepass-ng's USB feature is on and this
             // crate's `usb` feature is off.
             #[allow(unreachable_patterns)]
@@ -229,6 +263,8 @@ impl fmt::Debug for ChallengeFactor {
                 .field("slot", slot)
                 .field("serial", serial)
                 .finish(),
+            // A responder is opaque by design, and never printable.
+            Self::External { .. } => f.write_str("External(<responder>)"),
         }
     }
 }
@@ -244,6 +280,11 @@ pub(crate) fn validate_for_enrollment(factor: &ChallengeFactor) -> Result<(), Er
         ChallengeFactor::Virtual { secret_hex } => validate_secret_hex(secret_hex),
         #[cfg(feature = "usb")]
         ChallengeFactor::Yubikey { slot, .. } => validate_slot(*slot),
+        // Nothing to check up front: the enrollment's own save challenges
+        // the responder with a seed that did not exist before it, and a
+        // responder that cannot answer it fails the save — and the
+        // enrollment — right there.
+        ChallengeFactor::External { .. } => Ok(()),
     }
 }
 
@@ -327,6 +368,7 @@ mod tests {
             ChallengeFactor::Virtual { secret_hex } => secret_hex,
             #[cfg(feature = "usb")]
             ChallengeFactor::Yubikey { .. } => panic!("expected a virtual factor"),
+            ChallengeFactor::External { .. } => panic!("expected a virtual factor"),
         }
     }
 
@@ -354,6 +396,84 @@ mod tests {
         assert_eq!(secret_of(&factor), SECRET);
     }
 
+    // -- the externally-answered factor (passlane#53) ---------------------------
+
+    /// The challenge a vault's KDF seed is: arbitrary bytes.
+    const CHALLENGE: &[u8] = b"the vault file's seed, as keepass-ng passes it";
+
+    /// A responder with a fixed answer, plus how often it was called.
+    /// keepass-ng's `perform_challenge` is pub(crate) there, so calling the
+    /// responder directly is as close to a real challenge as a test gets;
+    /// the CLI's phone-key tests exercise the whole path through the key.
+    fn answering(
+        answer: &'static [u8],
+    ) -> (
+        ChallengeResponder,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        let responder: ChallengeResponder = std::sync::Arc::new(move |challenge: &[u8]| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(challenge, CHALLENGE);
+            Ok(answer.to_vec())
+        });
+        (responder, calls)
+    }
+
+    #[test]
+    fn an_external_factor_round_trips_its_responder() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        let (responder, calls) = answering(b"an answer from elsewhere");
+        let factor = ChallengeFactor::External {
+            responder: Arc::clone(&responder),
+        };
+        // The key the vault would be opened with carries the very same
+        // responder — shared, not copied apart — so its state (here: the
+        // call count) travels with it.
+        let key = factor.challenge_response_key().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            responder(CHALLENGE).expect("the responder answers"),
+            b"an answer from elsewhere"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        match &ChallengeFactor::try_from(&key).expect("the key converts back") {
+            ChallengeFactor::External { responder: kept } => {
+                assert!(Arc::ptr_eq(kept, &responder));
+            }
+            _ => panic!("the factor stays external"),
+        }
+    }
+
+    #[test]
+    fn an_external_factor_needs_no_touch_and_may_be_enrolled() {
+        let (responder, _calls) = answering(b"an answer");
+        let factor = ChallengeFactor::External { responder };
+        assert!(!factor.requires_touch());
+        // No up-front rule to fail: the enrollment's save is the check.
+        super::validate_for_enrollment(&factor).unwrap();
+        // And nothing printable exists to leak.
+        assert_eq!(format!("{factor:?}"), "External(<responder>)");
+    }
+
+    #[test]
+    fn an_external_factors_refusal_travels_as_its_error() {
+        let responder: ChallengeResponder = std::sync::Arc::new(|_: &[u8]| {
+            Err(keepass_ng::ChallengeResponseKeyError::External(
+                "the holder refused".into(),
+            ))
+        });
+        let factor = ChallengeFactor::External {
+            responder: std::sync::Arc::clone(&responder),
+        };
+        let _key = factor.challenge_response_key().unwrap();
+        let err = responder(CHALLENGE).expect_err("the refusal travels");
+        assert!(err.to_string().contains("the holder refused"), "{err}");
+    }
+
     #[test]
     fn normalization_never_outgrows_its_allocation() {
         // The normalized secret must be built in one fixed allocation: a
@@ -370,6 +490,7 @@ mod tests {
                 ChallengeFactor::Virtual { secret_hex } => secret_hex,
                 #[cfg(feature = "usb")]
                 ChallengeFactor::Yubikey { .. } => panic!("expected a virtual factor"),
+                ChallengeFactor::External { .. } => panic!("expected a virtual factor"),
             };
             assert!(
                 secret_hex.capacity() <= input.len(),

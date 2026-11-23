@@ -233,8 +233,8 @@ is *not* a cryptographic boundary:
 ### When you need real enforcement
 
 Put the sensitive entries in a **separate vault gated by a phone-held
-hardware key** (a YubiKey or the phone-as-key factor, see the passlane-ios
-plan §3.1) **with no session caching**: then every open of that vault
+key** (`passlane hwkey add --phone`, see [phone-held-key.md](phone-held-key.md))
+**with no session caching**: then every open of that vault
 requires a human approval with the second factor, regardless of what the
 agent does. Passlane's multi-vault model already supports this — keep an
 "agent vault" with only the entries a workflow needs (`agent = allow`),

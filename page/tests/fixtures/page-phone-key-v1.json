@@ -1,0 +1,23 @@
+{
+  "note": "Produced by page/tests/run.mjs --write-fixture driving page/js/phonekey.js and envelope.js with node WebCrypto. The Rust test opens the envelope with passlane-approval and recomputes HMAC-SHA1(secret, challenge) itself.",
+  "version": 1,
+  "now": 1760000050,
+  "rid": "d13451de7160efa2b23076fd782de967",
+  "secret_hex": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+  "challenge_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+  "envelope_base64url": "UExBUAEEArIAeyJ2IjoxLCJ0Ijo0LCJuIjoiZWE5ZjExZjhkZmIwY2EwOGE4ODEwZjllYTM5YzNhNmEiLCJ0cyI6MTc2MDAwMDA1MCwiZXhwIjoxNzYwMDAwMzUwLCJza2lkIjoiY2NjNDViZDU0MDE5NmVjMyIsInJraWQiOiI4YWVkODI2ZGI2Yzg2YTJhIiwicmlkIjoiZDEzNDUxZGU3MTYwZWZhMmIyMzA3NmZkNzgyZGU5NjcifUEABPZHTOkhyFdJzzBI2ycpKzEupZW7A8QBYMGkMTNGwPDPicIRp77cLp4z8PvaTG6nf1VmC271y0ZWoGHYv5c0QF2NAAAA4xb6kNgMqH7e7JfpFa9LMYpsYzDAOtabwdPoOmrQzvTCHauO72uxBPZ9URDrx7wVp5ZvoqJD7TF2_KFWPFBUezml6jsKsE24SWBGeOcLDZBXI3YdD5x59MrKlupBo5M8YzPfQzaFq45JMRzoSGeIUSV4X7efQiPWdA2zwhRsQg9g0TICDNDHmjXBuWZhcgF7ImF1dGhlbnRpY2F0b3JfZGF0YSI6Ik9wSHhrQmNQaHZUNEpyZTBuUldtMEx6dzJOVkJoVmJ4MnQ1bXVFZXp4cDRCQUFBQUFBIiwiY2xpZW50X2RhdGFfanNvbiI6ImV5SjBlWEJsSWpvaWQyVmlZWFYwYUc0dVoyVjBJaXdpWTJoaGJHeGxibWRsSWpvaWMwSktaVEIxVURFdFdHMU1ZMk5DZDJ4c1dUUlRaM1o0V25GZlpGaFdlbmR3UVdSNGRrZzFOVzFpYnlJc0ltOXlhV2RwYmlJNkltaDBkSEJ6T2k4dllYQndjbTkyWlM1d1lYTnpiR0Z1WlM1MFpYTjBJbjAiLCJzaWduYXR1cmUiOiJNRVVDSUNBYUtDSHpVWTlMYWN3eXlKODl4MXBQZVVWd3FmMnR0U0U0V0NkZ2RVX3RBaUVBX0d0U2gxR3laZzR6SlRWMzkyVmVnRUNtdHFmY0tkZll4V3hNOHd2U1BFcyJ9",
+  "recipient": {
+    "enc_secret": "611830d3641a68f94a690dcc25d1f4b0dac948325ac18f6dd32564371735f32c",
+    "sig_secret": "54743dc5e24d2a413b159584c1226df6eccfc4caa8cd7b63c7cb56ff66cd60b5"
+  },
+  "sender_pin": {
+    "label": "approval-page",
+    "enc_pub": "043cf509826fd9bcb398c0f3278c4d5d930c3b1c11624693c9b27748f7967052da7d86f1bca861c839fede8a22980da8bfa45fde7376190a1b57da72d76cdceaf4",
+    "sig_pub": "0447531e2243d5510fdd0b217b71be6e7ba7007a9d09b70a3e0e876c039e8a8b42ac2a33801dc4a8b3392ec542d3a03c9b56424cfe90fabc4925bd324c09b83d89",
+    "paired_at": 1760000050,
+    "webauthn": {
+      "rp_id": "approve.passlane.test",
+      "origin": "https://approve.passlane.test"
+    }
+  }
+}

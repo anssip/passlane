@@ -236,6 +236,23 @@ passlane hwkey remove --secret
 The vault remains usable in other Keepass compatible applications: register the same challenge-response slot in e.g.
 KeepassXC's database security settings. On Linux, USB access to the key requires libusb to be installed.
 
+### Phone-held key unlock
+
+Instead of a USB key, the challenge-response secret can live on your phone — or, until the iOS app ships, on the device
+running the [approval page](https://github.com/anssip/passlane/tree/master/page) you paired with `passlane approvals
+enroll`. The secret is generated there and never exists on this computer; every open and save of the vault asks that
+device for an approval (a QR code to scan, or a link to relay), answered from anywhere:
+
+```bash
+passlane hwkey add --phone
+```
+
+The device shows a recovery sheet during enrollment and the key is not enrolled until its secret has been read back
+from a copy of that sheet — losing the device without the sheet loses the vault. The sheet secret also recovers a lost
+device (`passlane hwkey remove --secret`) and can be programmed into a YubiKey as a physical fallback. See
+[docs/features/phone-held-key.md](docs/features/phone-held-key.md) for the full flow, including how answers are held in
+memory by the session agent and never written to disk.
+
 ### Locking and unlocking the vault
 
 Use the unlock command to store the active vault's master password in your computer's keychain. This way you don't have to enter the

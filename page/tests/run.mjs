@@ -179,9 +179,210 @@ if (process.argv.includes("--write-fixture")) {
     blob,
     expected: { enc_pub: blob.enc_pub },
   };
+  // The phone-held-key fixture: the page's real phonekey.js answers a
+  // challenge with HMAC-SHA1 under a fixed secret, and the Rust test
+  // verifies the envelope AND recomputes the answer itself — the JS↔Rust
+  // leg of the phone-key proof.
+  {
+    const hpkeMod = await import(join(page, "js", "hpke.js"));
+    const { importSecret, computeResponse } = await import(join(page, "js", "phonekey.js"));
+    const { buildApprovalResponse, attachAssertion, assertionToJson } = await import(
+      join(page, "js", "envelope.js")
+    );
+    const secretHex = "3c".repeat(20);
+    const challengeHex = "2a".repeat(32);
+    const bytesOf = (hex) => new Uint8Array(hex.match(/.{2}/g).map((b) => parseInt(b, 16)));
+    const key = await importSecret(bytesOf(secretHex));
+    const answer = await computeResponse(key, bytesOf(challengeHex));
+
+    const rid = "d13451de7160efa2b23076fd782de967";
+    const now2 = 1_760_000_050;
+    const built = await buildApprovalResponse({
+      rid,
+      senderKid: await hpkeMod.kid("enc", bytesOf(pagePublic)),
+      recipientKid: await hpkeMod.kid("enc", bytesOf(cliPublic)),
+      decision: "Allow",
+      scope: { kind: "once" },
+      response: toHex(answer),
+      recipientPublicSec1: bytesOf(cliPublic),
+      seal: hpkeMod.hpkeSeal,
+      now: now2,
+      ttl: 300,
+      nonceHex: "ea9f11f8dfb0ca08a8810f9ea39c3a6a",
+    });
+
+    // The passkey (an ECDSA WebCrypto key stands in for the authenticator,
+    // exactly like the other fixtures) signs the transcript challenge.
+    const rpHash = await sha256(utf8(rpId));
+    const authData = concatU8(rpHash, new Uint8Array([0x01, 0, 0, 0, 0]));
+    const clientDataJson = JSON.stringify({
+      type: "webauthn.get",
+      challenge: built.challenge,
+      origin: `https://${rpId}`,
+    });
+    const raw = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        passkey.privateKey,
+        concatU8(authData, await sha256(utf8(clientDataJson))),
+      ),
+    );
+    const finalBytes = attachAssertion(
+      built.transcript,
+      assertionToJson({
+        authenticator_data: toBase64Url(authData),
+        client_data_json: toBase64Url(utf8(clientDataJson)),
+        signature: toBase64Url(ecdsaRawToDer(raw)),
+      }),
+    );
+
+    const phoneFixture = {
+      note: "Produced by page/tests/run.mjs --write-fixture driving page/js/phonekey.js and envelope.js with node WebCrypto. The Rust test opens the envelope with passlane-approval and recomputes HMAC-SHA1(secret, challenge) itself.",
+      version: 1,
+      now: now2,
+      rid,
+      secret_hex: secretHex,
+      challenge_hex: challengeHex,
+      envelope_base64url: toBase64Url(finalBytes),
+      recipient: cliKeys,
+      sender_pin: {
+        label: "approval-page",
+        enc_pub: pagePublic,
+        sig_pub: toHex(passkeyPub),
+        paired_at: now2,
+        webauthn: { rp_id: rpId, origin: `https://${rpId}` },
+      },
+    };
+    const phonePath = join(fixtureDir, "page-phone-key-v1.json");
+    writeFileSync(phonePath, JSON.stringify(phoneFixture, null, 2) + "\n");
+    console.log(`fixture written: ${phonePath}`);
+  }
+
   const enrollPath = join(fixtureDir, "page-enrollment-v1.json");
   writeFileSync(enrollPath, JSON.stringify(enrollFixture, null, 2) + "\n");
   console.log(`fixture written: ${enrollPath}`);
+}
+
+// Pure phone-key lifecycle tests (the staged-key rules and the
+// deny-carries-no-answer rule): the wiring-level flows they drive are
+// exercised by the CLI's Rust integration tests against this page's
+// protocol output.
+{
+  const pk = await import(join(page, "js", "phonekey.js"));
+  const pure = [];
+  const pureTest = (name, fn) => {
+    try {
+      fn();
+      pure.push({ ok: true, name });
+    } catch (e) {
+      pure.push({ ok: false, name, error: String(e && e.message ? e.message : e) });
+    }
+  };
+  const assertNotEq = (a, b, msg) => {
+    if (a === b) throw new Error(`${msg ?? "values must differ"}: ${JSON.stringify(a)}`);
+  };
+  const assertEq = (a, b, msg) => {
+    if (a !== b) throw new Error(`${msg ?? "values differ"}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
+  };
+  const assert = (cond, msg) => {
+    if (!cond) throw new Error(msg ?? "assertion failed");
+  };
+
+  const VAULT = "3f7a2c9180e64b25a1d0f3c87592e641";
+  const held = pk.newKeyRecord(VAULT, "work", "held-key");
+  const staged = pk.newKeyRecord(VAULT, "work", "staged-key");  // must run after held for distinct ids
+  if (held.id === staged.id) throw new Error("key records carry distinct generation ids");
+  const save = { vault_id: VAULT, operation: { kind: "save" } };
+  const unlock = { vault_id: VAULT, operation: { kind: "unlock" } };
+
+  pureTest("staging leaves the held key untouched until promotion", () => {
+    const record = { rkid: "k1", keys: { [VAULT]: held } };
+    const next = pk.stageKey(record, VAULT, staged);
+    assertEq(pk.heldKeyOf(next, VAULT), held, "the held key is unchanged");
+    assertEq(pk.stagedKey(next, VAULT), staged, "the staged key sits beside it");
+    assertEq(pk.heldKeyOf(record, VAULT), held, "pure: the input record is untouched");
+    assert(!pk.stagedKey(record, VAULT), "pure: nothing staged in the input");
+  });
+
+  pureTest("the enrollment's save answers with the staged key and promotes it", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, staged, "the staged key answers the save");
+    assertEq(which.promote, true, "and is promoted by it");
+    const next = pk.promoteStagedKey(record, VAULT, staged.id);
+    assertEq(pk.heldKeyOf(next, VAULT), staged, "the staged key is now held");
+    assert(!pk.stagedKey(next, VAULT), "nothing stays staged");
+  });
+
+  pureTest("promote and drop bind to the generation they were decided about", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    // Another tab replaced the staged key before the decision persisted.
+    const newer = pk.newKeyRecord(VAULT, "work", "newer-key");
+    const replaced = pk.stageKey(record, VAULT, newer);
+    const promoted = pk.promoteStagedKey(replaced, VAULT, staged.id);
+    assertEq(pk.heldKeyOf(promoted, VAULT), held, "an older decision promotes nothing");
+    assertEq(pk.stagedKey(promoted, VAULT), newer, "the newer generation stays staged");
+    const dropped = pk.dropStagedKey(replaced, VAULT, staged.id);
+    assertEq(pk.stagedKey(dropped, VAULT), newer, "an older decision drops nothing");
+    // The generation's own decision still applies.
+    const ok = pk.dropStagedKey(replaced, VAULT, newer.id);
+    assert(!pk.stagedKey(ok, VAULT), "the matching generation is dropped");
+  });
+
+  pureTest("an unlock answers with the held key and drops a staged one", () => {
+    const record = pk.stageKey({ rkid: "k1", keys: { [VAULT]: held } }, VAULT, staged);
+    const which = pk.keyDecision(record, unlock);
+    assertEq(which.key, held, "the held key answers the unlock");
+    assertEq(which.dropStaged, true, "the staged one is dead: the vault opened with the old key");
+    // The drop binds to the staged generation's id — which is NOT the
+    // answering (held) key's id.
+    assertEq(which.stagedId, staged.id, "the decision carries the staged generation");
+    assertNotEq(which.stagedId, which.key.id, "a different id than the answering key's");
+    const next = pk.dropStagedKey(record, VAULT, which.stagedId);
+    assertEq(pk.heldKeyOf(next, VAULT), held, "the held key survives");
+    assert(!pk.stagedKey(next, VAULT), "the staged key is gone");
+  });
+
+  pureTest("a save without a staged key is the held key's, unpromoted", () => {
+    const record = { rkid: "k1", keys: { [VAULT]: held } };
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, held, "the held key answers");
+    assertEq(which.promote, false, "nothing to promote");
+  });
+
+  pureTest("a vault with only a staged key has nothing to answer an unlock with", () => {
+    const record = pk.stageKey({ rkid: "k1" }, VAULT, staged);
+    assertEq(pk.keyDecision(record, unlock), null, "an unlock is not the staged key's to answer");
+  });
+
+  pureTest("the gate lets a staged key finish a first enrollment's save", () => {
+    // No held key yet: the enrollment created and staged one. Its save
+    // must be approvable — through the same rules the answer uses.
+    const record = pk.stageKey({ rkid: "k1" }, VAULT, staged);
+    const which = pk.keyDecision(record, save);
+    assertEq(which.key, staged, "the save is the staged key's to answer");
+    assertEq(which.promote, true, "and it is its promotion");
+  });
+
+  pureTest("a deny never carries an answer, however it was computed", () => {
+    assertEq(pk.answerForDecision("deny", "abcd1234"), null, "a deny strips the answer");
+    assertEq(pk.answerForDecision("allow", "abcd1234"), "abcd1234", "an allow carries it");
+    assertEq(pk.answerForDecision("allow", null), null, "an allow without an answer carries none");
+  });
+
+  let purePassed = 0;
+  let pureFailed = 0;
+  for (const r of pure) {
+    if (r.ok) {
+      purePassed++;
+      console.log(`ok   ${r.name}`);
+    } else {
+      pureFailed++;
+      console.log(`FAIL ${r.name}\n     ${r.error}`);
+    }
+  }
+  domOut.passed += purePassed;
+  domOut.failed += pureFailed;
 }
 
 function concatU8(...parts) {

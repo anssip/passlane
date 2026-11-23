@@ -173,6 +173,125 @@ fn phone_held_key_unlock_flow() {
 }
 
 #[test]
+fn phone_held_key_enrollment_flow() {
+    // Enrollment (SPEC §7, passlane#53) in the order the issue requires:
+    // the holder creates the key, answers the EnrollKey request only once
+    // the recovery sheet is scanned back, and the CLI does not re-key the
+    // vault before that answer arrives. Re-keying and every later open are
+    // then ordinary challenge rounds against the one held secret.
+    let mut rng = OsRng;
+    let policy = Policy::default();
+    let now = 1_760_000_000;
+    let cli = IdentityKeys::generate(&mut rng).unwrap();
+    let phone = IdentityKeys::generate(&mut rng).unwrap();
+    let cli_pin = PeerPin::new(
+        "cli",
+        PublicKey(cli.encryption_public()),
+        PublicKey::from_bytes(&cli.verifying_key().to_sec1_bytes()).unwrap(),
+        now,
+    );
+    let phone_pin = PeerPin::new(
+        "phone",
+        PublicKey(phone.encryption_public()),
+        PublicKey::from_bytes(&phone.verifying_key().to_sec1_bytes()).unwrap(),
+        now,
+    );
+    let mut store = InMemoryNonceStore::default();
+
+    // One round trip: the CLI asks, the holder answers from `secret`.
+    let mut round_trip = |sent: Operation, challenge: &[u8; 32], secret: &[u8]| {
+        let request = seal(
+            &mut rng,
+            &cli,
+            &phone_pin,
+            Body::ApprovalRequest {
+                vault_id: "work".into(),
+                vault_name: "work".into(),
+                operation: sent.clone(),
+                requester: "anssi@macbook-pro".into(),
+                scope: Scope::Once,
+                challenge: Some(SecretHex::from_bytes(challenge)),
+            },
+            now,
+            &policy,
+        )
+        .unwrap();
+        let opened = open(
+            &phone,
+            std::slice::from_ref(&cli_pin),
+            &request,
+            now + 1,
+            &policy,
+            &mut store,
+        )
+        .unwrap();
+        let Body::ApprovalRequest {
+            operation,
+            challenge: got,
+            ..
+        } = &*opened
+        else {
+            panic!("expected approval request");
+        };
+        // The holder sees exactly the operation and challenge the CLI sent.
+        assert_eq!(operation, &sent);
+        assert_eq!(
+            got.as_ref().unwrap().as_bytes().unwrap().as_slice(),
+            challenge
+        );
+        let answer = seal_reply(
+            &mut rng,
+            &phone,
+            &cli_pin,
+            Body::ApprovalResponse {
+                decision: Decision::Allow,
+                scope: Scope::Once,
+                response: Some(SecretHex::from_bytes(&hmac_sha1(
+                    secret,
+                    got.as_ref().unwrap().as_bytes().unwrap().as_slice(),
+                ))),
+            },
+            &request.header().rid,
+            now + 1,
+            &policy,
+        )
+        .unwrap();
+        let body = open(
+            &cli,
+            std::slice::from_ref(&phone_pin),
+            &answer,
+            now + 2,
+            &policy,
+            &mut store,
+        )
+        .unwrap();
+        let Body::ApprovalResponse { response, .. } = &*body else {
+            panic!("expected approval response");
+        };
+        response.as_ref().unwrap().as_bytes().unwrap().to_vec()
+    };
+
+    // -- enrollment: create the key, scan the sheet back, then answer --
+    let proof_challenge = [0x11u8; 32];
+    let held_secret = [0xa1u8; 20];
+    let proof = round_trip(Operation::EnrollKey, &proof_challenge, &held_secret);
+    assert_eq!(proof, hmac_sha1(&held_secret, &proof_challenge).to_vec());
+
+    // -- re-key: the response to the new KDF seed --
+    let new_seed = [0x22u8; 32];
+    let save_response = round_trip(Operation::Save, &new_seed, &held_secret);
+    // -- and the open that follows answers the same seed identically --
+    let unlock_response = round_trip(Operation::Unlock, &new_seed, &held_secret);
+    assert_eq!(save_response, unlock_response);
+    assert_eq!(save_response, hmac_sha1(&held_secret, &new_seed).to_vec());
+
+    // A holder with a different secret (or the wrong sheet) answers
+    // differently: the vault would not open.
+    let wrong_sheet = round_trip(Operation::Unlock, &new_seed, &[0xa2u8; 20]);
+    assert_ne!(wrong_sheet, unlock_response);
+}
+
+#[test]
 fn file_backed_replay_across_instances() {
     let mut rng = OsRng;
     let policy = Policy::default();

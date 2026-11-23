@@ -47,6 +47,52 @@ pub struct VaultConfig {
     pub keyfile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwkey: Option<HwKeyConfig>,
+    /// The phone-held challenge-response factor (passlane#53): the vault's
+    /// HMAC-SHA1 secret lives on a pinned approver, never here, so this
+    /// records only which holder to ask. Mutually exclusive with `hwkey`
+    /// (a KDBX file has one challenge-response slot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_key: Option<PhoneKeyConfig>,
+}
+
+/// Which pinned approver holds a vault's challenge-response secret
+/// (passlane#53). Nothing secret is stored: the CLI asks the holder over
+/// the link transport and receives only per-file answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhoneKeyConfig {
+    /// Encryption key id (16 hex characters) of the pinned approver that
+    /// holds the secret. Requests for the vault are sealed to that pin;
+    /// a label would not do, since re-enrolling a label replaces its keys.
+    pub holder_kid: String,
+    /// The vault's holder-side identity (32 lower-case hex characters):
+    /// what the request body's `vault_id` carries and the approver keys
+    /// its held key under. Assigned once at enrollment and never changed —
+    /// the registry name is mutable ('passlane vault rename'), but the
+    /// holder's copy of "which vault is this" must not be. Absent only in
+    /// registries from before the field existed; then the name is used,
+    /// and stays correct until the vault is renamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_uid: Option<String>,
+    /// Unix time the vault was re-keyed to the holder's key.
+    #[serde(default)]
+    pub enrolled_at: u64,
+}
+
+impl PhoneKeyConfig {
+    /// The holder-side identity for an enrollment of `holder_kid` with
+    /// the vault at `path`: deterministic, so a resumed enrollment (a
+    /// re-run that consumes an approval given to the first) asks the
+    /// holder under the same id the first one did — and a renamed vault
+    /// keeps it, since the path does not move. 32 hex characters.
+    pub fn assigned_vault_uid(holder_kid: &str, path: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"passlane phone-held-key vault uid v1");
+        hasher.update(holder_kid.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(path.as_bytes());
+        passlane_approval::encoding::hex_encode(&hasher.finalize()[..16])
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -199,6 +245,36 @@ fn validate_entries(path: &Path, vaults: &[VaultConfig]) -> Result<(), Error> {
                     path.display(),
                     vault.name,
                     hwkey.slot
+                )));
+            }
+        }
+        if let Some(phone_key) = &vault.phone_key {
+            if !is_kid(&phone_key.holder_kid) {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has an invalid phone-held key holder '{}' (must be 16 \
+                     lower-case hex characters, the approver's key id).",
+                    path.display(),
+                    vault.name,
+                    phone_key.holder_kid
+                )));
+            }
+            if let Some(uid) = &phone_key.vault_uid
+                && !is_holder_vault_uid(uid)
+            {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' has an invalid phone-held key vault id '{}' (must be 32 \
+                     lower-case hex characters).",
+                    path.display(),
+                    vault.name,
+                    uid
+                )));
+            }
+            if vault.hwkey.is_some() {
+                return Err(Error::new(&format!(
+                    "{}: vault '{}' lists both a hardware key and a phone-held key; a \
+                     vault file has one challenge-response slot. Remove one of them.",
+                    path.display(),
+                    vault.name
                 )));
             }
         }
@@ -440,6 +516,21 @@ pub fn set_hwkey_to(dir: &Path, vault_name: &str, hwkey: Option<HwKeyConfig>) ->
     save_to(dir, &vaults)
 }
 
+/// Update the phone-held-key enrollment stored for a vault.
+pub fn set_phone_key_to(
+    dir: &Path,
+    vault_name: &str,
+    phone_key: Option<PhoneKeyConfig>,
+) -> Result<(), Error> {
+    let mut vaults = load_from(dir)?;
+    if find(&vaults, vault_name).is_none() {
+        return Err(unknown_vault_error(vault_name, &vaults));
+    }
+    let vault = vaults.iter_mut().find(|v| v.name == vault_name).unwrap();
+    vault.phone_key = phone_key;
+    save_to(dir, &vaults)
+}
+
 /// Pick the vault a command operates on: an explicit `--vault`/`PASSLANE_VAULT`
 /// name first, then the active vault, then the only registered vault.
 pub fn resolve_from(dir: &Path, explicit: Option<&str>) -> Result<VaultConfig, Error> {
@@ -493,6 +584,15 @@ static CURRENT: RwLock<Option<VaultConfig>> = RwLock::new(None);
 
 pub fn set_current(vault: VaultConfig) {
     *CURRENT.write().unwrap() = Some(vault);
+}
+
+/// Test-only: forget the process-global current vault again.
+#[cfg(test)]
+pub fn clear_current_for_tests() {
+    let mut current = CURRENT
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *current = None;
 }
 
 pub fn current() -> Result<VaultConfig, Error> {
@@ -566,6 +666,7 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 .as_deref()
                 .map(absolutize),
             hwkey: read_legacy_hwkey(dir)?,
+            phone_key: None,
         });
     }
     if totp_configured {
@@ -579,6 +680,7 @@ fn migrate_files_from(dir: &Path) -> Result<Option<Vec<String>>, Error> {
                 .as_deref()
                 .map(absolutize),
             hwkey: None,
+            phone_key: None,
         });
     }
 
@@ -677,6 +779,27 @@ pub fn set_hwkey(vault_name: &str, hwkey: Option<HwKeyConfig>) -> Result<(), Err
     set_hwkey_to(&store::dir_path(), vault_name, hwkey)
 }
 
+pub fn set_phone_key(vault_name: &str, phone_key: Option<PhoneKeyConfig>) -> Result<(), Error> {
+    set_phone_key_to(&store::dir_path(), vault_name, phone_key)
+}
+
+/// A protocol key id: 16 lower-case hex characters (the first 8 bytes of a
+/// SHA-256, hex-encoded, as `passlane_approval::keys::kid` produces).
+/// A holder-side vault identity: 32 lower-case hex characters.
+pub(crate) fn is_holder_vault_uid(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+}
+
+pub(crate) fn is_kid(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+}
+
 pub fn resolve(explicit: Option<&str>) -> Result<VaultConfig, Error> {
     resolve_from(&store::dir_path(), explicit)
 }
@@ -692,6 +815,7 @@ mod tests {
             path: format!("/tmp/{}.kdbx", name),
             keyfile: None,
             hwkey: None,
+            phone_key: None,
         }
     }
 
@@ -713,6 +837,7 @@ mod tests {
                     slot: 2,
                     serial: Some(42),
                 }),
+                phone_key: None,
             },
         ];
         save_to(dir.path(), &vaults).unwrap();
@@ -778,6 +903,41 @@ mod tests {
         .unwrap();
         let err = load_from(dir.path()).unwrap_err();
         assert!(err.message.contains("slot 7"), "{}", err.message);
+
+        // A phone-held key holder that is not a key id.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","phone_key":{"holder_kid":"my phone"}}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(
+            err.message
+                .contains("invalid phone-held key holder 'my phone'"),
+            "{}",
+            err.message
+        );
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","phone_key":{"holder_kid":"ABCDEF0123456789"}}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(err.message.contains("lower-case hex"), "{}", err.message);
+
+        // Both challenge-response factors at once: one KDBX slot.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","hwkey":{"slot":1},"phone_key":{"holder_kid":"0123456789abcdef"}}]}"#,
+        )
+        .unwrap();
+        let err = load_from(dir.path()).unwrap_err();
+        assert!(
+            err.message
+                .contains("both a hardware key and a phone-held key"),
+            "{}",
+            err.message
+        );
 
         // Relative paths resolve against the working directory — rejected.
         std::fs::write(
@@ -927,6 +1087,163 @@ mod tests {
         assert_eq!(find(&vaults, "b").unwrap().hwkey, Some(hwkey));
     }
 
+    const PHONE_KID: &str = "0123456789abcdef";
+
+    fn phone_key() -> PhoneKeyConfig {
+        PhoneKeyConfig {
+            holder_kid: PHONE_KID.to_string(),
+            vault_uid: None,
+            enrolled_at: 1_760_000_000,
+        }
+    }
+
+    #[test]
+    fn a_phone_key_roundtrips_its_holder_side_vault_id() {
+        let dir = tempfile::tempdir().unwrap();
+        add_vault_to(
+            dir.path(),
+            VaultConfig {
+                name: "a".into(),
+                path: "/a.kdbx".into(),
+                keyfile: None,
+                hwkey: None,
+                phone_key: Some(PhoneKeyConfig {
+                    holder_kid: "0123456789abcdef".into(),
+                    vault_uid: Some(PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx")),
+                    enrolled_at: 9,
+                }),
+            },
+        )
+        .unwrap();
+        let loaded = load_from(dir.path()).unwrap();
+        let recorded = find(&loaded, "a").unwrap().phone_key.clone().unwrap();
+        assert_eq!(
+            recorded.vault_uid.as_deref(),
+            Some(PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx").as_str()),
+            "the assigned id is the derived one"
+        );
+        // The shape: 32 lower-case hex characters, and fresh each call.
+        let uid = find(&loaded, "a")
+            .unwrap()
+            .phone_key
+            .as_ref()
+            .unwrap()
+            .vault_uid
+            .clone()
+            .unwrap();
+        assert!(
+            is_holder_vault_uid(&uid),
+            "a generated id is 32 lower-case hex characters: {uid}"
+        );
+        assert_ne!(
+            uid,
+            PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/other.kdbx"),
+            "the path is part of the identity"
+        );
+        assert_eq!(
+            PhoneKeyConfig::assigned_vault_uid(PHONE_KID, "/a.kdbx"),
+            find(&loaded, "a")
+                .unwrap()
+                .phone_key
+                .as_ref()
+                .unwrap()
+                .vault_uid
+                .clone()
+                .unwrap(),
+            "deterministic: the same holder and path derive the same id"
+        );
+        assert!(!is_holder_vault_uid(&uid.to_uppercase()), "case matters");
+    }
+
+    #[test]
+    fn an_invalid_holder_side_vault_id_is_refused() {
+        // The registry is written the way a hand edit would leave it, and
+        // must be refused on load — not half-accepted.
+        for uid in ["not hex!", "abcd", &"a".repeat(33)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = sample_vault("a");
+            config.phone_key = Some(PhoneKeyConfig {
+                holder_kid: PHONE_KID.to_string(),
+                vault_uid: Some(uid.to_string()),
+                enrolled_at: 1,
+            });
+            std::fs::write(
+                dir.path().join("vaults.json"),
+                serde_json::to_string(&vec![config]).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                load_from(dir.path()).is_err(),
+                "the id '{uid}' is refused on load"
+            );
+        }
+    }
+
+    #[test]
+    fn phone_key_roundtrips_and_updates_the_right_vault() {
+        let dir = tempdir().unwrap();
+        add_vault_to(dir.path(), sample_vault("a")).unwrap();
+        add_vault_to(dir.path(), sample_vault("b")).unwrap();
+
+        set_phone_key_to(dir.path(), "b", Some(phone_key())).unwrap();
+        let vaults = load_from(dir.path()).unwrap();
+        assert_eq!(find(&vaults, "a").unwrap().phone_key, None);
+        assert_eq!(find(&vaults, "b").unwrap().phone_key, Some(phone_key()));
+
+        // ...and is removed the same way.
+        set_phone_key_to(dir.path(), "b", None).unwrap();
+        assert_eq!(
+            find(&load_from(dir.path()).unwrap(), "b")
+                .unwrap()
+                .phone_key,
+            None
+        );
+
+        // An unknown vault is refused with the standard guidance.
+        let err = set_phone_key_to(dir.path(), "nope", Some(phone_key())).unwrap_err();
+        assert!(
+            err.message.contains("No vault named 'nope'"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn registry_written_before_phone_keys_still_loads() {
+        // `phone_key` is optional on the wire: a registry from an older
+        // passlane must keep loading, byte for byte.
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            REGISTRY_FILENAME,
+            r#"{"version":1,"vaults":[{"name":"a","path":"/a.kdbx","hwkey":{"slot":2,"serial":7}}]}"#,
+        );
+        let vaults = load_from(dir.path()).unwrap();
+        assert_eq!(vaults.len(), 1);
+        assert_eq!(vaults[0].phone_key, None);
+        assert_eq!(vaults[0].hwkey.as_ref().unwrap().serial, Some(7));
+    }
+
+    #[test]
+    fn nothing_secret_is_recorded_for_a_phone_key() {
+        // The registry entry names the holder; the secret never reaches
+        // this machine, so the serialized form is exactly two fields.
+        let json = serde_json::to_value(phone_key()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "holder_kid": PHONE_KID, "enrolled_at": 1_760_000_000 })
+        );
+    }
+
+    #[test]
+    fn kid_shape() {
+        assert!(is_kid(PHONE_KID));
+        assert!(!is_kid("0123456789ABCDEF"), "upper case");
+        assert!(!is_kid("0123456789abcde"), "short");
+        assert!(!is_kid("0123456789abcdef0"), "long");
+        assert!(!is_kid("0123456789abcde "), "space");
+    }
+
     #[test]
     fn migrate_full_legacy_config() {
         let dir = tempdir().unwrap();
@@ -1020,6 +1337,7 @@ mod tests {
                 path: "some/vault.kdbx".to_string(),
                 keyfile: None,
                 hwkey: None,
+                phone_key: None,
             },
         )
         .unwrap();
@@ -1038,6 +1356,7 @@ mod tests {
                 path: "/abs/vault.kdbx".to_string(),
                 keyfile: Some("keys/keyfile".to_string()),
                 hwkey: None,
+                phone_key: None,
             },
         )
         .unwrap();

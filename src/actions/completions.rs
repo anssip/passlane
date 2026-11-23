@@ -77,7 +77,6 @@ fn rc_file(shell: Shell) -> &'static str {
 fn generate_cache() -> Result<usize, Error> {
     use crate::keychain;
     use crate::ui::input::ask_master_password;
-    use passlane_core::challenge::ChallengeFactor;
     use passlane_core::vault::keepass_vault::KeepassVault;
     use passlane_core::vault::vault_trait::{PasswordVault, Vault};
 
@@ -93,11 +92,9 @@ fn generate_cache() -> Result<usize, Error> {
             ask_master_password(None)
         }
     };
-    let challenge_factor = config
-        .hwkey
-        .as_ref()
-        .map(|hwkey| ChallengeFactor::yubikey(hwkey.slot, hwkey.serial))
-        .transpose()?;
+    // The enrolled factor, whichever kind it is (a connected YubiKey or a
+    // phone-held key's link transport).
+    let challenge_factor = crate::actions::enrolled_challenge_factor(&config)?;
 
     println!(
         "Opening vault '{}' to build completion cache...",

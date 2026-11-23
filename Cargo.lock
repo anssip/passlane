@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "keepass-ng"
 version = "0.11.12"
-source = "git+https://github.com/anssip/keepass-ng.git?branch=challenge-response-usb#53ab0e8d07b282301776b4de34054f6aaddd993d"
+source = "git+https://github.com/anssip/keepass-ng.git?branch=challenge-response-external#7594660016397701eadcf342da245bbf2b032f3d"
 dependencies = [
  "aes 0.9.4",
  "base32",
@@ -2314,6 +2314,7 @@ dependencies = [
  "erased-serde",
  "fs4",
  "hex",
+ "hmac 0.12.1",
  "inquire",
  "keepass-ng",
  "keyring",
@@ -2331,6 +2332,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "tempfile",
  "uuid",

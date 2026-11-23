@@ -169,6 +169,18 @@ pub(crate) struct UnlockSources<'a> {
     pub(crate) session: &'a dyn Fn(&str) -> Result<Option<UnlockFactors>, AgentError>,
     /// The vault's enrolled hardware key, as the connected factor.
     pub(crate) hardware_key: &'a dyn Fn(&HwKeyConfig) -> Result<ChallengeFactor, Error>,
+    /// The phone-held key's answer a live session-agent session holds for
+    /// the vault's current challenge: an external factor answering that
+    /// one challenge, when the vault is phone-gated and the agent holds
+    /// one. Reading the challenge from the vault file is prompt-free, so
+    /// this may be consulted anywhere.
+    pub(crate) phone_answer:
+        &'a dyn Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError>,
+    /// The phone-held key as the link transport: answers come from the
+    /// holder, pasted here or deposited with the agent. Building it asks
+    /// nothing; it answers (or refuses with guidance) when keepass-ng
+    /// issues the challenge.
+    pub(crate) phone_transport: &'a dyn Fn(&VaultConfig) -> Result<ChallengeFactor, Error>,
     /// Ask for the master password.
     pub(crate) prompt: &'a dyn Fn(&str) -> String,
     /// Tell the user which source is about to open the vault.
@@ -180,6 +192,9 @@ pub(crate) struct UnlockSources<'a> {
 struct Candidate {
     master_password: Zeroizing<String>,
     held_challenge_factor: Option<ChallengeFactor>,
+    /// A phone-held key's answer from the session, when the vault is
+    /// phone-gated and a session holds one for its current challenge.
+    held_phone_answer: Option<ChallengeFactor>,
     source: PasswordSource,
 }
 
@@ -209,6 +224,16 @@ impl Candidate {
     ) -> Result<VaultFactors, Error> {
         let challenge_factor = match (key, &config.hwkey, self.held_challenge_factor) {
             (ChallengeKey::Given(key), _, _) => key.cloned(),
+            // A phone-gated vault: the session's answer when it holds one,
+            // else the link transport — which prompts at a terminal and
+            // refuses with guidance (after emitting the request) without
+            // one, exactly where keepass-ng issues the challenge.
+            (ChallengeKey::Enrolled, _, _) if config.phone_key.is_some() => {
+                Some(match self.held_phone_answer {
+                    Some(held) => held,
+                    None => (sources.phone_transport)(config)?,
+                })
+            }
             (ChallengeKey::Enrolled, None, _) => None,
             (ChallengeKey::Enrolled, Some(_), Some(held)) => Some(held),
             (ChallengeKey::Enrolled, Some(hwkey), None) => Some((sources.hardware_key)(hwkey)?),
@@ -254,6 +279,9 @@ enum Stage {
 
 impl<'a> Candidates<'a> {
     fn new(config: &'a VaultConfig, sources: &'a UnlockSources<'a>, key: ChallengeKey<'a>) -> Self {
+        // A fresh attempt: whether a phone answer backed the previous one
+        // describes that one, not this.
+        crate::session_agent::reset_phone_answer_backing();
         Self {
             config,
             sources,
@@ -291,6 +319,10 @@ impl<'a> Candidates<'a> {
     }
 
     fn session_candidate(&self) -> Result<Option<Candidate>, Error> {
+        // A phone-gated vault's answer comes from the same agent, keyed by
+        // the vault's current challenge. An agent that is running but
+        // cannot serve it is the same error as one that cannot serve the
+        // password.
         let factors = match (self.sources.session)(&self.config.name) {
             Ok(factors) => factors,
             // No agent is running: it is optional infrastructure.
@@ -306,6 +338,21 @@ impl<'a> Candidates<'a> {
             self.check_unattended_hardware_key(false)?;
             return Ok(None);
         };
+        // A held phone answer is fetched only now that a session password
+        // exists to use it with, and only for the enrolled key: fetching
+        // consumes a single-use approval, and one fetched with no password
+        // candidate to pair with (or for a caller-chosen recovery key)
+        // would be burned for nothing — the next source asks again.
+        let held_phone_answer =
+            if self.config.phone_key.is_some() && matches!(self.key, ChallengeKey::Enrolled) {
+                match (self.sources.phone_answer)(self.config) {
+                    Ok(answer) => answer,
+                    Err(AgentError::NotRunning(_)) => None,
+                    Err(e) => return Err(crate::session_agent::to_error(e)),
+                }
+            } else {
+                None
+            };
         let held_challenge_factor = match factors.challenge_response {
             Some(ChallengeResponseMaterial::Secret { secret_hex }) => Some(
                 ChallengeFactor::from_existing_secret_hex(secret_hex.expose())?,
@@ -320,6 +367,7 @@ impl<'a> Candidates<'a> {
         Ok(Some(Candidate {
             master_password: factors.master_password,
             held_challenge_factor,
+            held_phone_answer,
             source: PasswordSource::SessionAgent,
         }))
     }
@@ -330,6 +378,7 @@ impl<'a> Candidates<'a> {
             PasswordLookup::Found(master_password) => Ok(Some(Candidate {
                 master_password,
                 held_challenge_factor: None,
+                held_phone_answer: None,
                 source: PasswordSource::Keychain,
             })),
             PasswordLookup::Absent => Ok(None),
@@ -371,6 +420,7 @@ impl<'a> Candidates<'a> {
         Ok(Some(Candidate {
             master_password: Zeroizing::new((self.sources.prompt)(&self.config.name)),
             held_challenge_factor: None,
+            held_phone_answer: None,
             source: PasswordSource::Prompt,
         }))
     }
@@ -416,8 +466,8 @@ impl<'a> Candidates<'a> {
 /// Whether opening this vault means waiting for someone to touch a
 /// hardware key. The registry's hardware key is a device-backed one,
 /// which always does; a secret-backed factor recorded in the registry
-/// (passlane#43, passlane#48) answers its challenge without a touch and
-/// would be excluded here.
+/// (passlane#43, passlane#48) and a phone-held key (#53) answer their
+/// challenge elsewhere and are excluded here.
 fn hardware_key_needs_a_touch(config: &VaultConfig) -> bool {
     config.hwkey.is_some()
 }
@@ -510,6 +560,8 @@ fn with_real_sources<T>(interactive: bool, use_sources: impl FnOnce(&UnlockSourc
     let keychain = move |vault: &str| keychain::lookup_master_password(vault, keychain_bound);
     let session = |vault: &str| crate::session_agent::unlock_factors(vault);
     let hardware_key = |hwkey: &HwKeyConfig| ChallengeFactor::yubikey(hwkey.slot, hwkey.serial);
+    let phone_answer = |config: &VaultConfig| crate::session_agent::held_phone_answer(config);
+    let phone_transport = |config: &VaultConfig| crate::phone_key::transport_key(config);
     let prompt = |vault: &str| {
         ask_master_password(Some(&format!(
             "Please enter master password of vault '{}'",
@@ -528,6 +580,8 @@ fn with_real_sources<T>(interactive: bool, use_sources: impl FnOnce(&UnlockSourc
         keychain: &keychain,
         session: &session,
         hardware_key: &hardware_key,
+        phone_answer: &phone_answer,
+        phone_transport: &phone_transport,
         prompt: &prompt,
         announce: &announce,
     };
@@ -581,6 +635,26 @@ pub(crate) fn unlock_reporting_factors() -> Result<Unlocked<Box<dyn Vault>>, Err
                 .map(|vault| Box::new(vault) as Box<dyn Vault>)
         },
     )
+}
+
+/// The vault's enrolled challenge-response factor, resolved directly: the
+/// hardware key as a connected device, the phone-held key as the link
+/// transport. For the commands that open the vault themselves (`passwd`,
+/// the completion-cache build) rather than through the unlock chain.
+/// The vault's enrolled challenge-response factor, resolved directly: the
+/// hardware key as a connected YubiKey, the phone-held key as the link
+/// transport. For the commands that open the vault themselves (`passwd`,
+/// the completion-cache build) rather than through the unlock chain.
+pub(crate) fn enrolled_challenge_factor(
+    config: &VaultConfig,
+) -> Result<Option<ChallengeFactor>, Error> {
+    if let Some(hwkey) = &config.hwkey {
+        return ChallengeFactor::yubikey(hwkey.slot, hwkey.serial).map(Some);
+    }
+    if config.phone_key.is_some() {
+        return Ok(Some(crate::phone_key::transport_key(config)?));
+    }
+    Ok(None)
 }
 
 /// The current vault as the concrete [`KeepassVault`], opened through the
@@ -736,17 +810,35 @@ mod tests {
     }
 
     /// Make the test vault current; hold the guard for the test's length.
+    /// `phone` makes it phone-gated instead of hardware-key gated (the
+    /// same vault file: the factor is the slot secret either way, and the
+    /// phone key's answers are computed from it in the tests).
     fn use_vault(keyed: bool) -> MutexGuard<'static, ()> {
+        use_vault_as(keyed, false)
+    }
+
+    fn use_vault_as(keyed: bool, phone: bool) -> MutexGuard<'static, ()> {
+        assert!(
+            !(keyed && phone),
+            "a vault has one challenge-response factor: use keyed or phone, not both"
+        );
         let guard = CURRENT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         set_current(VaultConfig {
             name: "chain-test".to_string(),
-            path: vault_file(keyed).to_string(),
+            // A phone-gated vault is the keyed file with the registry
+            // saying the factor is held elsewhere.
+            path: vault_file(keyed || phone).to_string(),
             keyfile: None,
             hwkey: keyed.then_some(HwKeyConfig {
                 slot: 1,
                 serial: None,
+            }),
+            phone_key: phone.then_some(crate::vault_registry::PhoneKeyConfig {
+                holder_kid: "0123456789abcdef".to_string(),
+                vault_uid: None,
+                enrolled_at: 1,
             }),
         });
         guard
@@ -763,7 +855,7 @@ mod tests {
         sources: &UnlockSources,
     ) -> Result<Unlocked<Box<dyn Vault>>, Error> {
         let config = vault_registry::current().unwrap();
-        let path = vault_file(config.hwkey.is_some());
+        let path = vault_file(config.hwkey.is_some() || config.phone_key.is_some());
         let open = |factors: &VaultFactors| {
             KeepassVault::open_with_challenge_factor(
                 &factors.master_password,
@@ -834,6 +926,44 @@ mod tests {
         |_| {}
     }
 
+    /// No session-held phone answer: what most tests want.
+    fn no_phone_answer() -> impl Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError> {
+        |_| Ok(None)
+    }
+
+    /// A session's held phone answer: computed from the slot secret, the
+    /// way the real source computes it from the agent's stored answer.
+    fn held_phone_answer() -> impl Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError> {
+        move |config| {
+            let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
+                .map_err(|e| AgentError::Protocol(e.message))?;
+            let answer = crate::phone_key::tests::hmac_sha1(&slot_secret_bytes(), &seed);
+            Ok(Some(crate::phone_key::fixed_key(
+                config,
+                crate::phone_key::FixedAnswer::new(seed, zeroize::Zeroizing::new(answer.to_vec())),
+            )))
+        }
+    }
+
+    /// The phone-held key as the link transport would give it: a
+    /// fixed-answer key computed from the slot secret, so the tests can
+    /// open with it wherever the chain reaches for the transport.
+    fn phone_transport() -> impl Fn(&VaultConfig) -> Result<ChallengeFactor, Error> {
+        move |config| {
+            let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)?;
+            let answer = crate::phone_key::tests::hmac_sha1(&slot_secret_bytes(), &seed);
+            Ok(crate::phone_key::fixed_key(
+                config,
+                crate::phone_key::FixedAnswer::new(seed, zeroize::Zeroizing::new(answer.to_vec())),
+            ))
+        }
+    }
+
+    /// The slot secret as key bytes: the hex string keepass decodes.
+    fn slot_secret_bytes() -> Vec<u8> {
+        passlane_approval::encoding::hex_decode(SLOT_SECRET).expect("valid hex")
+    }
+
     /// The vault's key as a connected device would give it — simulated,
     /// counting how often the chain reaches for it.
     fn device_key(calls: &Cell<usize>) -> impl Fn(&HwKeyConfig) -> Result<ChallengeFactor, Error> {
@@ -853,6 +983,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("a live session must not be shadowed by the keychain"),
             session: &session_with(true),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("the session holds the key factor: no device is needed"),
             prompt: &no_prompt(),
             announce: &|source| assert_eq!(source, PasswordSource::SessionAgent),
@@ -873,6 +1005,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("a live session must not be shadowed by the keychain"),
             session: &session_with(false),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -891,6 +1025,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("a live session must not be shadowed by the keychain"),
             session: &session_with(true),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -907,6 +1043,8 @@ mod tests {
             interactive: true,
             keychain: &|_| panic!("a live session must not be shadowed by the keychain"),
             session: &session_with(false),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &device_key(&device_calls),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -923,6 +1061,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("nothing may wait on the keychain: the key cannot be had"),
             session: &session_with(false),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("nobody can touch the key: the device must not be asked"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -948,6 +1088,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("the stored password cannot open the vault without the key"),
             session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("nobody can touch the key"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -968,6 +1110,8 @@ mod tests {
             interactive: false,
             keychain: &|_| PasswordLookup::Absent,
             session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1001,6 +1145,8 @@ mod tests {
             interactive: false,
             keychain: &|_| PasswordLookup::TimedOut,
             session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1023,6 +1169,8 @@ mod tests {
             interactive: false,
             keychain: &stored(PASSWORD),
             session: &wrong_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1038,6 +1186,8 @@ mod tests {
             interactive: true,
             keychain: &stored("changed-elsewhere"),
             session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &|_| PASSWORD.to_string(),
             announce: &nothing_announced(),
@@ -1070,6 +1220,8 @@ mod tests {
                 interactive: false,
                 keychain: &|_| panic!("a configured agent is not silently skipped"),
                 session: &|_| Err(broken()),
+                phone_answer: &no_phone_answer(),
+                phone_transport: &phone_transport(),
                 hardware_key: &|_| panic!("no hardware key is enrolled"),
                 prompt: &no_prompt(),
                 announce: &nothing_announced(),
@@ -1091,6 +1243,8 @@ mod tests {
             interactive: false,
             keychain: &stored(PASSWORD),
             session: &no_agent(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &|source| assert_eq!(source, PasswordSource::Keychain),
@@ -1106,6 +1260,8 @@ mod tests {
             interactive: false,
             keychain: &|_| PasswordLookup::Failed(Error::new("keychain locked")),
             session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1133,6 +1289,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("nothing may wait on the keychain"),
             session: &session_with(false),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("nobody can touch the key"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1154,6 +1312,8 @@ mod tests {
             interactive: false,
             keychain: &|_| panic!("a live session supplies the password"),
             session: &session_with(false),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("the given key is used: no device is needed"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1172,6 +1332,8 @@ mod tests {
             interactive: false,
             keychain: &stored(PASSWORD),
             session: &wrong_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
             hardware_key: &|_| panic!("no hardware key is enrolled yet"),
             prompt: &no_prompt(),
             announce: &nothing_announced(),
@@ -1179,5 +1341,155 @@ mod tests {
         let unlocked = unlock_test_with(ChallengeKey::Given(None), &sources)
             .expect("the keychain opens the vault");
         assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    // -- a phone-gated vault through the same chain (#53) -----------------------
+
+    #[test]
+    fn a_held_phone_answer_opens_the_vault_from_any_context() {
+        let _guard = use_vault_as(false, true);
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &|_| panic!("a held answer plus the session's password must suffice"),
+            session: &session_with(false),
+            phone_answer: &held_phone_answer(),
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test(&sources).expect("the held answer opens the vault");
+        assert_eq!(unlocked.source, PasswordSource::SessionAgent);
+        assert_eq!(
+            unlocked.vault.grep(None).len(),
+            1,
+            "the vault really opened"
+        );
+    }
+
+    #[test]
+    fn without_a_held_answer_the_phone_is_asked_where_the_challenge_happens() {
+        // Interactive: the transport (here: a fixed-answer stand-in) is
+        // built by the chain and answers inside the open.
+        let _guard = use_vault_as(false, true);
+        let sources = UnlockSources {
+            interactive: true,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test(&sources).expect("the phone answers the challenge");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    #[test]
+    fn an_answer_without_a_session_password_stays_held_for_the_next_source() {
+        // No session at all (so no password from it), but the agent holds
+        // an answer: the chain must not even FETCH it — fetching consumes
+        // a single-use approval, and with no session password to pair it
+        // with, the fetch would burn it for nothing. The keychain's
+        // password plus the transport (which takes the held answer
+        // exactly once) opens the vault without a terminal.
+        let _guard = use_vault_as(false, true);
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &|_| panic!("no answer may be fetched without a password to use it with"),
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test(&sources).expect("the held answer serves the keychain too");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    #[test]
+    fn a_caller_given_key_never_fetches_a_held_answer() {
+        // Recovery chose its own factor — the backed-up secret — so the
+        // open uses exactly it: a held answer must not be fetched (and
+        // so cannot fail it); the fetch is for the enrolled key alone.
+        let _guard = use_vault_as(false, true);
+        let recovery = ChallengeFactor::from_existing_secret_hex(SLOT_SECRET).unwrap();
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &|_| panic!("a given key fetches no held answer"),
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked = unlock_test_with(ChallengeKey::Given(Some(&recovery)), &sources)
+            .expect("the keychain opens the vault with the given recovery key");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    #[test]
+    fn a_stale_held_answer_falls_through_to_the_next_source() {
+        // The vault was re-keyed since the answer was approved: it no
+        // longer opens anything, and the chain moves on exactly as for a
+        // stale session password.
+        let _guard = use_vault_as(false, true);
+        let stale = |config: &VaultConfig| {
+            let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
+                .map_err(|e| AgentError::Protocol(e.message))?;
+            let wrong = crate::phone_key::tests::hmac_sha1(b"not the slot secret", &seed);
+            Ok(Some(crate::phone_key::fixed_key(
+                config,
+                crate::phone_key::FixedAnswer::new(seed, zeroize::Zeroizing::new(wrong.to_vec())),
+            )))
+        };
+        let sources = UnlockSources {
+            interactive: true,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &stale,
+            phone_transport: &phone_transport(),
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let unlocked =
+            unlock_test(&sources).expect("the stale answer falls through to the transport");
+        assert_eq!(unlocked.source, PasswordSource::Keychain);
+    }
+
+    #[test]
+    fn a_phone_gated_vault_never_waits_for_a_hardware_key_touch() {
+        // The unattended fail-fast is about device-backed keys; a
+        // phone-gated vault's factor comes over the link transport, which
+        // refuses with guidance instead of blocking.
+        let _guard = use_vault_as(false, true);
+        let sources = UnlockSources {
+            interactive: false,
+            keychain: &stored(PASSWORD),
+            session: &no_session(),
+            phone_answer: &no_phone_answer(),
+            phone_transport: &|_| {
+                Err(Error::new(
+                    "the phone-held key needs an approval; re-run this command",
+                ))
+            },
+            hardware_key: &|_| panic!("no hardware key is enrolled"),
+            prompt: &no_prompt(),
+            announce: &nothing_announced(),
+        };
+        let error = unlock_error(&sources, "the transport's refusal is the chain's error");
+        assert!(
+            error.message.contains("re-run this command"),
+            "{}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("hardware key"),
+            "a phone-gated vault is not a hardware-key vault: {error}"
+        );
     }
 }

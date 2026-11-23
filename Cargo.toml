@@ -2,10 +2,13 @@
 resolver = "2"
 members = ["crates/*"]
 
-# Interim pin until the challenge_response/challenge_response_usb feature split
-# is released on crates.io (passlane#47, upstream PR ssrlive/keepass-ng#2).
+# Interim pin until the challenge_response/challenge_response_usb feature
+# split (passlane#47, upstream PR ssrlive/keepass-ng#2) and the
+# ChallengeResponseKey::External variant (passlane#53) are released on
+# crates.io. The branch is that PR's branch plus the External commit, so
+# one pin carries both.
 [patch.crates-io]
-keepass-ng = { git = "https://github.com/anssip/keepass-ng.git", branch = "challenge-response-usb" }
+keepass-ng = { git = "https://github.com/anssip/keepass-ng.git", branch = "challenge-response-external" }
 
 [package]
 name = "passlane"
@@ -72,11 +75,17 @@ qrcode = "0.14"
 rand = "0.8"
 # Session-agent client for unlock/approval sessions (issue #54).
 passlane-agent = { path = "crates/passlane-agent", version = "0.1.0" }
+# The registry derives the phone-held key's holder-side vault id with it
+# (same version as passlane-approval's, so the workspace unifies).
+sha2 = "0.10"
 
 [dev-dependencies]
-tempfile = "3.24.0"
 # Same versions as passlane-approval's, so the workspace unifies: the
-# approval-transport tests build mocked passkeys with p256 and mirror the
-# enrollment challenge with sha2.
+# approval-transport tests build mocked passkeys with p256.
 p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
-sha2 = "0.10"
+tempfile = "3.24.0"
+# The mocked phone of the phone-held-key tests computes HMAC-SHA1 answers
+# exactly as keepass-ng's LocalChallenge (a YubiKey slot) does. Same
+# versions as passlane-approval's, so the workspace unifies.
+hmac = "0.12"
+sha1 = "0.10"

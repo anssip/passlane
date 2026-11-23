@@ -2,7 +2,6 @@ use crate::actions::Action;
 use crate::keychain;
 use crate::ui::input::{ask_master_password, ask_new_master_password};
 use crate::vault_registry;
-use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 
@@ -21,13 +20,9 @@ impl Action for ChangePasswordAction {
             "Please enter current master password of vault '{}'",
             config.name
         )));
-        let challenge_factor = match config.hwkey {
-            Some(ref hwkey_config) => Some(ChallengeFactor::yubikey(
-                hwkey_config.slot,
-                hwkey_config.serial,
-            )?),
-            None => None,
-        };
+        // The enrolled factor, whichever kind it is: a connected YubiKey,
+        // or the phone-held key's link transport for a phone-gated vault.
+        let challenge_factor = crate::actions::enrolled_challenge_factor(&config)?;
 
         let mut vault = KeepassVault::open_with_challenge_factor(
             &current_pwd,

@@ -4,6 +4,7 @@ mod approvals;
 mod completion_cache;
 mod hwkey;
 mod keychain;
+mod phone_key;
 mod repl;
 mod session_agent;
 mod store;
@@ -239,30 +240,50 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("hwkey")
-                .about("Manage the hardware key (e.g. a YubiKey) that protects a vault with challenge-response.")
+                .about("Manage the vault's second factor: a hardware key (e.g. a YubiKey) or a phone-held key, protecting the vault with challenge-response.")
                 .subcommand_required(true)
                 .arg_required_else_help(true)
                 .subcommand(
                     Command::new("add")
-                        .about("Enroll a hardware key as an additional unlock factor for the main vault.")
-                        .long_about("Enrolls one of the key's HMAC-SHA1 challenge-response slots (program it first with e.g. 'ykman otp chalresp'). The vault then opens only with the master password (and keyfile) plus this key; every save needs a touch.")
+                        .about("Enrol a second factor for the vault: a hardware key, or with --phone a key held by another device.")
+                        .long_about(
+                            "Without --phone, enrolls one of the connected key's HMAC-SHA1 challenge-response slots \
+                             (program it first with e.g. 'ykman otp chalresp'). The vault then opens only with the master \
+                             password (and keyfile) plus that key; every save needs a touch.\n\nWith --phone, another device creates and holds the challenge-response secret — it never \
+                             exists on this computer — and every open and save asks that device for an approval over the \
+                             link transport (a QR code to scan, or a link to relay). The device shows a recovery sheet; \
+                             the key is not enrolled until you scan that sheet back on the device. Pair the device first \
+                             with 'passlane approvals enroll', or let this command pair it. See \
+                             docs/features/phone-held-key.md."
+                        )
+                        .arg(
+                            arg!(
+                                --phone "Enrol a key held by another device instead of a hardware key: the pinned approver, paired first when none is."
+                            ).action(ArgAction::SetTrue).conflicts_with_all(["slot", "serial"])
+                        )
                         .arg(arg!(
                             --slot <SLOT> "Challenge-response slot to use (1 or 2)."
                         ).value_parser(["1", "2"]))
                         .arg(arg!(
                             --serial <SERIAL> "Serial number of the key to enroll, when several are connected."
                         ).value_parser(clap::value_parser!(u32)))
+                        .arg(arg!(
+                            --page <URL> "Approval page base URL, used when --phone has to pair the device first. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.passlane.app."
+                        ).conflicts_with_all(["slot", "serial"]).requires("phone"))
+                        .arg(arg!(
+                            --approver <LABEL> "Label of the pinned approver that should hold the key. Defaults to the only pinned approver; with several, you are asked."
+                        ).conflicts_with_all(["slot", "serial"]).requires("phone"))
                 )
                 .subcommand(
                     Command::new("remove")
-                        .about("Remove the hardware key from the main vault.")
+                        .about("Remove the second factor from the vault: the hardware key or the phone-held key.")
                         .arg(arg!(
-                            --secret "Recover with the backed-up HMAC-SHA1 slot secret instead of the (lost) hardware key."
+                            --secret "Recover with a backed-up secret instead of the enrolled factor: the HMAC-SHA1 slot secret of the hardware key, or the secret on the phone-held key's recovery sheet (lost key or phone)."
                         ).action(ArgAction::SetTrue))
                 )
                 .subcommand(
                     Command::new("status")
-                        .about("Show the enrolled hardware key configuration and connected keys.")
+                        .about("Show the enrolled second factor (hardware key or phone-held key) and connected keys.")
                 )
         )
         .subcommand(
@@ -296,7 +317,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("approvals")
-                .about("Manage approvers for the link transport: enroll the approval page (ECDH + passkey), list pins, inspect pending requests.")
+                .about("Manage approvers for the link transport: enroll the approval page (ECDH + passkey) or the device holding a vault's phone key, list pins, inspect pending requests.")
                 .subcommand_required(true)
                 .arg_required_else_help(true)
                 .subcommand(
@@ -314,6 +335,11 @@ pub fn cli() -> Command {
                 .subcommand(
                     Command::new("pending")
                         .about("List pending approval requests and their state.")
+                )
+                .subcommand(
+                    Command::new("link")
+                        .about("Print the link of a still-pending request again, to relay it to the approver (unlock and save requests of a phone-held key included).")
+                        .arg(arg!(<RID> "Request id, or its first characters as 'approvals pending' shows them."))
                 )
                 .subcommand(
                     Command::new("remove")

@@ -67,13 +67,25 @@ pub fn configured_socket_path() -> Option<PathBuf> {
 /// unless `PASSLANE_AGENT_SOCK` is set (for symmetry; the client still
 /// refuses to connect).
 pub fn default_socket_path() -> Option<PathBuf> {
-    if let Some(p) = configured_socket_path() {
-        return Some(p);
+    socket_path_from(|name| std::env::var_os(name))
+}
+
+/// [`default_socket_path`] with the environment injected. Tests drive
+/// this instead of changing the process environment, which every other
+/// thread in the process — including the ones creating temporary
+/// directories — reads concurrently.
+pub fn socket_path_from(
+    mut getenv: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(p) = getenv(SOCKET_ENV)
+        && !p.is_empty()
+    {
+        return Some(PathBuf::from(p));
     }
     #[cfg(unix)]
     {
         for var in ["XDG_RUNTIME_DIR", "TMPDIR"] {
-            if let Some(dir) = std::env::var_os(var)
+            if let Some(dir) = getenv(var)
                 && !dir.is_empty()
                 && runtime_dir_is_private(&dir)
             {

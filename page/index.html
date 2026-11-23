@@ -25,7 +25,10 @@
         sent to this site.</li>
       <li><code>/approve.html#…</code> — an approval request sealed to the key
         enrolled here. Approve with the passkey, paste the reply back into the
-        terminal.</li>
+        terminal. Requests to open, save or enroll a phone-held key
+        (<code>passlane hwkey add --phone</code> on the computer) are answered
+        with the HMAC this device holds for that vault; enrollment shows a
+        recovery sheet first.</li>
     </ul>
     <p>
       No secrets reach this site's server: everything sensitive travels in the

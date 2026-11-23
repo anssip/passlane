@@ -69,6 +69,8 @@ fn render_grant(grant: &GrantInfo) -> String {
             challenge_response: true,
         } => "unlock + hwkey".to_string(),
         GrantInfo::Reveal { entry, field, .. } => format!("reveal {entry}/{field}"),
+        // The answer itself is never listed; the grant says it exists.
+        GrantInfo::ChallengeResponse => "challenge-response".to_string(),
     }
 }
 

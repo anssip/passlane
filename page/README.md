@@ -10,7 +10,14 @@ do the ECDH that HPKE needs:
   `extractable: false` and stored in IndexedDB (non-extractable keys
   survive reloads and cannot be read out by script);
 - a **signing identity** — a WebAuthn passkey on this page's domain (the
-  hardware-backed, human-present factor).
+  hardware-backed, human-present factor);
+- per vault, a **phone-held key** (passlane#53) — a non-extractable
+  HMAC-SHA1 key, created when the computer runs `passlane hwkey add
+  --phone`. Unlock and save requests for that vault are answered with the
+  20-byte HMAC of the challenge they carry; the raw secret exists only
+  once, printed on the recovery sheet the enrollment shows, and the
+  request is not answered until that secret has been typed back from a
+  copy of the sheet.
 
 Enrollment binds the two, and binds them to *your* terminal: the passkey
 signs `SHA-256(enrollment_nonce ‖ ECDH_public_key ‖ both CLI keys)` via a
@@ -34,7 +41,7 @@ runs the exact same files.
 | Path                | Purpose                                                            |
 | ------------------- | ------------------------------------------------------------------ |
 | `/enroll.html#…`    | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying public key hex>`. |
-| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. |
+| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. |
 | `/test.html`        | In-browser self-test of the protocol layer against pinned vectors. |
 | `/`                 | Landing page for people who paste the domain.                      |
 
@@ -91,8 +98,11 @@ mocked-assertion paths are identical to the real ones up to
 
 - Approvals over a chat-relayed link carry no proximity signal; the page
   says so on every approval screen (BLE adds it in protocol v1.1).
-- Unlock requests (`Operation::Unlock`) need the HMAC-SHA1 answer the
-  phone-held-key app holds (passlane#53); this page can record consent
-  but cannot compute the answer.
+- The recovery sheet is text (`passlane hwkey remove --secret` reads it
+  back the same way). No QR: iOS Safari has no `BarcodeDetector`, so
+  nothing on the phone could scan one, and the page does not vendor a
+  decoder. When the iOS app lands, its sheet gets the QR.
+- On browsers without WebCrypto HMAC-SHA1 (none known), phone-held keys
+  cannot be held here; the approval card says so.
 
 [approval protocol]: ../crates/passlane-approval/SPEC.md

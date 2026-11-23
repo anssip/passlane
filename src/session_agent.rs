@@ -25,6 +25,7 @@ use passlane_agent::protocol::{
 use passlane_approval::message::Scope;
 use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
+use zeroize::Zeroizing;
 
 /// How long an "Approve for this session" choice in the ask flow is
 /// held. Mirrors the approval protocol's default session cap; a unit
@@ -203,6 +204,186 @@ pub(crate) fn challenge_response_material(
     }
 }
 
+/// Whether a session agent is reachable at all.
+pub fn agent_running() -> bool {
+    connect_result().is_ok()
+}
+
+/// The phone-held key's answer a live session-agent session holds for the
+/// vault's **current** challenge, as the key the unlock chain opens with
+/// (passlane#53). Reads the challenge from the vault file — prompt-free,
+/// so this may run anywhere — and asks the agent for an answer to exactly
+/// it. `Ok(None)` when no agent is running or nothing is held for that
+/// challenge; an agent that is configured but cannot be used is an error,
+/// like any other unusable source in the chain. The key serves only that
+/// one challenge: the fresh seed a save issues goes back to the link
+/// transport, so saving still asks the holder.
+pub fn held_phone_answer(
+    config: &crate::vault_registry::VaultConfig,
+) -> Result<Option<passlane_core::challenge::ChallengeFactor>, AgentError> {
+    let Some(answer) = try_challenge_response_current(config)? else {
+        return Ok(None);
+    };
+    let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
+        .map_err(|e| AgentError::Protocol(e.message))?;
+    // The key answers this seed with the held answer and hands the fresh
+    // seed a save issues back to the link transport (resolved only then)
+    // — a save always asks the holder again.
+    Ok(Some(crate::phone_key::held_answer_key(
+        config, seed, answer,
+    )))
+}
+
+/// [`held_phone_answer`]'s agent lookup, separated so the transport's
+/// warn-and-skip rule is not forced on the chain's error rule.
+fn try_challenge_response_current(
+    config: &crate::vault_registry::VaultConfig,
+) -> Result<Option<Zeroizing<Vec<u8>>>, AgentError> {
+    let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
+        .map_err(|e| AgentError::Protocol(e.message))?;
+    let challenge_hex = passlane_approval::encoding::hex_encode(&seed);
+    let mut client = connect_result()?;
+    match client.get_challenge_response(&config.name, &challenge_hex) {
+        Ok((response, expiry)) => {
+            // Only a timed answer backs a view: a single-use one is
+            // consumed by this very fetch, so nothing live remains to
+            // watch — claiming backing would fail the view's liveness
+            // check before any code is shown.
+            if (expiry.is_some()) {
+                note_phone_answer_backing();
+            }
+            let bytes = passlane_approval::encoding::hex_decode(&response).map_err(|e| {
+                AgentError::Protocol(format!("the agent returned a malformed answer: {e}"))
+            })?;
+            if bytes.len() != passlane_approval::message::CHALLENGE_RESPONSE_LEN {
+                return Err(AgentError::Protocol(format!(
+                    "the agent returned a {}-byte answer, not 20",
+                    bytes.len()
+                )));
+            }
+            Ok(Some(Zeroizing::new(bytes)))
+        }
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a phone-answer session backed this process's current open:
+/// set the moment an answer is fetched (from the chain or the transport),
+/// reset when the next unlock attempt begins. The continuous TOTP view
+/// reads it to watch a session that supplied the second factor while the
+/// password came from elsewhere (the keychain, say) — and, unlike an
+/// expiry comparison, it cannot turn false between the fetch and the
+/// view, so the session is always revalidated and never silently
+/// unwatched.
+static PHONE_ANSWER_BACKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a phone-answer session backed the current open.
+pub fn phone_answer_backed() -> bool {
+    PHONE_ANSWER_BACKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Begin a fresh unlock attempt: nothing has backed it yet.
+pub fn reset_phone_answer_backing() {
+    PHONE_ANSWER_BACKED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note_phone_answer_backing() {
+    PHONE_ANSWER_BACKED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The answer a live session holds for a phone-held key (passlane#53):
+/// exactly this vault and challenge (lower-case hex), consumed when the
+/// session is single-use. `None` when the agent is absent or holds
+/// nothing for that challenge — a vault that was saved since has a new
+/// seed, and answers for the old one are not answers for it.
+pub fn try_challenge_response(vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let mut client = try_connect()?;
+    match client.get_challenge_response(vault, challenge_hex) {
+        Ok((response, expiry)) => {
+            // Only a timed answer backs a view: a single-use one is
+            // consumed by this very fetch, so nothing live remains to
+            // watch — claiming backing would fail the view's liveness
+            // check before any code is shown.
+            if (expiry.is_some()) {
+                note_phone_answer_backing();
+            }
+            let bytes = match passlane_approval::encoding::hex_decode(&response) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("Warning: the session agent returned a malformed answer: {e}");
+                    return None;
+                }
+            };
+            if bytes.len() != passlane_approval::message::CHALLENGE_RESPONSE_LEN {
+                eprintln!(
+                    "Warning: the session agent returned a {}-byte answer, not 20",
+                    bytes.len()
+                );
+                return None;
+            }
+            Some(Zeroizing::new(bytes))
+        }
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        }) => None,
+        Err(AgentError::NotRunning(_)) => None,
+        // Never silent: an agent that is running but cannot serve is
+        // reported, so the next request is not mistaken for the first.
+        Err(e) => {
+            eprintln!("Warning: the session agent errored and was skipped: {e}");
+            None
+        }
+    }
+}
+
+/// Hold a phone-held key's answer in the agent (memory only) for one
+/// vault file version. Returns the session's expiry (unix seconds; 0 for
+/// a single-use one).
+pub fn create_challenge_response_session(
+    vault: &str,
+    challenge_hex: &str,
+    response_hex: &str,
+    scope: Scope,
+) -> Result<u64, Error> {
+    let mut client = connect_or_error()?;
+    let grant = GrantSpec::ChallengeResponse {
+        challenge: SecretString::new(challenge_hex),
+        response: SecretString::new(response_hex),
+    };
+    // The agent refuses anything past its own cap with an explanation.
+    match client.create_session(vault, grant, scope) {
+        Ok(created) => Ok(created.expires_at.unwrap_or(0)),
+        Err(AgentError::Server {
+            code: ErrorCode::TooLong,
+            message,
+        }) => Err(Error::new(&format!(
+            "{message}. Restart passlane-agent with a higher --max-session-secs if you \
+             really need a longer session (the hard cap is 28800s)."
+        ))),
+        Err(e) => Err(to_error(e)),
+    }
+}
+
+/// The session agent as a source of phone-held-key answers for the link
+/// transport.
+pub(crate) struct AgentAnswerStore;
+
+impl crate::phone_key::transport::AnswerStore for AgentAnswerStore {
+    fn take(&self, vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
+        try_challenge_response(vault, challenge_hex)
+    }
+
+    fn is_running(&self) -> bool {
+        agent_running()
+    }
+}
+
 /// Revalidate, after subscribing to agent events, that the sessions
 /// backing the current action are still live — closing the gap between
 /// the unlock (or reveal gate) and the subscription, where a
@@ -213,6 +394,7 @@ pub(crate) fn challenge_response_material(
 pub fn session_access_live(
     unlock_backed: bool,
     reveal_backed: bool,
+    phone_backed: bool,
     vault: &str,
     entry_id: &str,
     field: &str,
@@ -225,7 +407,21 @@ pub fn session_access_live(
         client.get_unlock_factors(vault).is_ok()
     };
     let reveal_live = !reveal_backed || check_reveal(vault, entry_id, field).is_some();
-    unlock_live && reveal_live
+    // The phone-answer session is watched on its own: it can back an
+    // open whose password came from the keychain, and its death (expiry,
+    // revoke, lock) must end the view it funded. Probing is non-consuming
+    // for timed sessions, which is what a view is backed by — a
+    // single-use answer was spent by the open itself and nothing live
+    // remains to watch.
+    let phone_live = !phone_backed || {
+        let config = crate::vault_registry::current().ok();
+        config.is_some_and(|config| {
+            try_challenge_response_current(&config)
+                .map(|answer| answer.is_some())
+                .unwrap_or(false)
+        })
+    };
+    unlock_live && reveal_live && phone_live
 }
 
 /// Hold a vault's unlock factors in the agent for `secs` seconds (memory
@@ -381,7 +577,7 @@ pub fn event_ends_access(event: &passlane_agent::protocol::Event, vault: &str) -
     }
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -391,6 +587,15 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Forget the process-global current vault when the test ends.
+    struct ResetCurrentVault;
+
+    impl Drop for ResetCurrentVault {
+        fn drop(&mut self) {
+            crate::vault_registry::clear_current_for_tests();
+        }
+    }
+
     use passlane_approval::policy::Policy;
 
     // The agent's server is Unix-only, and so are the tests that need a
@@ -658,6 +863,141 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_phone_answer_session_backs_access_on_its_own_and_is_watched() {
+        // The TOTP view's third backing: a timed phone-answer session can
+        // fund an open whose password came from the keychain, so its
+        // death must end the view without any unlock session existing.
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = tempfile::tempdir().unwrap();
+        // A real-enough vault file: only its KDF seed matters here.
+        passlane_core::vault::keepass_vault::KeepassVault::new(
+            state.path().join("v.kdbx").to_str().unwrap(),
+            "pw",
+            None,
+            None,
+        )
+        .unwrap();
+        crate::vault_registry::set_current(crate::vault_registry::VaultConfig {
+            name: "phone-watch".into(),
+            path: state.path().join("v.kdbx").to_str().unwrap().to_string(),
+            keyfile: None,
+            hwkey: None,
+            phone_key: Some(crate::vault_registry::PhoneKeyConfig {
+                holder_kid: "0123456789abcdef".into(),
+                vault_uid: None,
+                enrolled_at: 1,
+            }),
+        });
+        let _reset_current = ResetCurrentVault;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let server = AgentServer::bind(
+            AgentConfig::new(&socket).with_sweep_interval(std::time::Duration::from_millis(20)),
+        )
+        .unwrap();
+        let handle = server.handle();
+        let served = std::thread::spawn(move || server.serve().unwrap());
+        let env = SocketEnv::point_at(&socket);
+
+        let config = crate::vault_registry::current().unwrap();
+        let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path).unwrap();
+        let challenge_hex = passlane_approval::encoding::hex_encode(&seed);
+        let answer = passlane_approval::encoding::hex_encode(&[0x5au8; 20]);
+        let mut client = AgentClient::connect(&socket).unwrap();
+        client
+            .create_session(
+                &config.name,
+                GrantSpec::ChallengeResponse {
+                    challenge: SecretString::new(challenge_hex.clone()),
+                    response: SecretString::new(answer.clone()),
+                },
+                Scope::Timed { seconds: 300 },
+            )
+            .unwrap();
+
+        // The fetch records what the view needs to watch.
+        assert!(
+            crate::session_agent::held_phone_answer(&config)
+                .expect("the agent holds the answer")
+                .is_some()
+        );
+        // The fetch records what the view needs to watch: that this open
+        // was phone-backed — set by the fetch, not derived from an
+        // expiry, so it survives a session that dies right after.
+        assert!(phone_answer_backed(), "the fetch backs the open");
+        reset_phone_answer_backing();
+        assert!(!phone_answer_backed(), "a fresh unlock attempt clears it");
+        // And the liveness probe sees it again once re-fetched.
+        assert!(
+            crate::session_agent::held_phone_answer(&config)
+                .expect("the agent still holds the answer")
+                .is_some()
+        );
+        assert!(phone_answer_backed());
+
+        assert!(
+            session_access_live(false, false, true, &config.name, "entry", "code"),
+            "the phone-answer session alone backs the access"
+        );
+        client.revoke_vault(&config.name).unwrap();
+        assert!(
+            !session_access_live(false, false, true, &config.name, "entry", "code"),
+            "a revoked phone-answer session no longer does"
+        );
+        assert!(
+            session_access_live(false, false, false, &config.name, "entry", "code"),
+            "nothing phone-backed is claimed: nothing to be live"
+        );
+
+        // A single-use answer does NOT back a view: the fetch consumes
+        // it, so nothing live remains to watch, and claiming backing
+        // would fail the view's liveness check before any code shows.
+        client
+            .create_session(
+                &config.name,
+                GrantSpec::ChallengeResponse {
+                    challenge: SecretString::new(challenge_hex.clone()),
+                    response: SecretString::new(answer.clone()),
+                },
+                Scope::Once,
+            )
+            .unwrap();
+        reset_phone_answer_backing();
+        // The timed session still holds its answer, so the single-use one
+        // is not what the fetch below serves... revoke the timed one to
+        // force it.
+        client.revoke_vault(&config.name).unwrap();
+        client
+            .create_session(
+                &config.name,
+                GrantSpec::ChallengeResponse {
+                    challenge: SecretString::new(challenge_hex.clone()),
+                    response: SecretString::new(answer.clone()),
+                },
+                Scope::Once,
+            )
+            .unwrap();
+        assert!(
+            crate::session_agent::held_phone_answer(&config)
+                .expect("the single-use answer is served")
+                .is_some(),
+            "the single-use answer is fetched"
+        );
+        assert!(
+            !phone_answer_backed(),
+            "a single-use answer backs nothing: it died with this fetch"
+        );
+
+        drop(env);
+        handle.stop();
+        served.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn session_backed_access_is_live_exactly_while_the_session_is() {
         let _guard = ENV_MUTEX
             .lock()
@@ -684,20 +1024,20 @@ mod tests {
             )
             .unwrap();
         assert!(
-            session_access_live(true, false, "work", "entry", "code"),
+            session_access_live(true, false, false, "work", "entry", "code"),
             "a live session backs the access"
         );
         assert!(
-            !session_access_live(true, false, "other", "entry", "code"),
+            !session_access_live(true, false, false, "other", "entry", "code"),
             "a session for another vault does not"
         );
         client.revoke_vault("work").unwrap();
         assert!(
-            !session_access_live(true, false, "work", "entry", "code"),
+            !session_access_live(true, false, false, "work", "entry", "code"),
             "a revoked session no longer does"
         );
         assert!(
-            session_access_live(false, false, "work", "entry", "code"),
+            session_access_live(false, false, false, "work", "entry", "code"),
             "nothing is session-backed: nothing to be live"
         );
 

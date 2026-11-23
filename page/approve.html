@@ -25,6 +25,28 @@
         <button id="deny" class="secondary">Deny</button>
       </div>
     </section>
+    <section id="sheet" hidden>
+      <h2>Recovery sheet</h2>
+      <pre></pre>
+      <p class="instructions"></p>
+      <p>
+        <button onclick="window.print()">Print</button>
+        This is the only other copy of the vault's key. Print it or write
+        the secret down now.
+      </p>
+    </section>
+    <div id="sheet-readback" hidden>
+      <p>
+        <label for="sheet-secret">
+          Type the secret from your copy of the sheet to confirm it exists:
+        </label>
+        <input id="sheet-secret" type="password" autocomplete="off" spellcheck="false">
+        <button>Confirm</button>
+      </p>
+      <p class="note">
+        The sheet on this screen is hidden — the secret must come from your copy.
+      </p>
+    </div>
     <div id="response-wrap" hidden>
       <p>Paste this response into the terminal:</p>
       <textarea id="response" rows="6" readonly></textarea>
