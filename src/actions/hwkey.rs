@@ -197,7 +197,10 @@ impl HwKeyAction {
              the session agent for repeated use. Keep the recovery sheet offline: without \
              that device, it is the only way in ('passlane hwkey remove --secret').",
             config.name,
-            crate::actions::approvals::describe_holder(&enrolled, Ok(Vec::new()))
+            crate::actions::approvals::describe_holder(
+                &enrolled,
+                crate::approvals::load_peers_pinned(&crate::approvals::state_dir()),
+            )
         ))
     }
 
