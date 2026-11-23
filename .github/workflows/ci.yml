@@ -49,3 +49,11 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Informational "unmaintained" advisories only — no fix exists
+          # at our end for any of them: chrono is used across the codebase
+          # and inside keepass-ng (the advisory recommends an ecosystem
+          # migration, RUSTSEC-2026-0543); humantime is pulled by
+          # env_logger and wraps chrono (RUSTSEC-2026-0542); fxhash by
+          # inquire (RUSTSEC-2025-0057); proc-macro-error2 by a transitive
+          # derive (RUSTSEC-2026-0173). Vulnerabilities stay loud.
+          ignore: RUSTSEC-2026-0543,RUSTSEC-2026-0542,RUSTSEC-2025-0057,RUSTSEC-2026-0173
