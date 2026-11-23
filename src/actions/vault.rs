@@ -319,36 +319,36 @@ pub fn setup_vault(name_arg: Option<String>) -> Result<String, Error> {
         )));
         // The vault may already be protected by a hardware key (e.g.
         // registered on another machine): record the factor and verify all
-        // unlock factors together — opening without the challenge-response
+        // unlock factors together — opening without the challenge factor
         // would fail with a misleading wrong-password error.
-        let mut challenge_response = None;
+        let mut challenge_factor = None;
         if ask_existing_vault_uses_hwkey() {
-            let (cr, config) = crate::hwkey::resolve_new_key(None, None)?;
-            challenge_response = Some(cr);
+            let (factor, config) = crate::hwkey::resolve_new_key(None, None)?;
+            challenge_factor = Some(factor);
             hwkey_config = Some(config);
         }
         println!("Verifying that the vault opens with the given password and factors...");
-        KeepassVault::open(
+        KeepassVault::open_with_challenge_factor(
             &password,
             &path,
             keyfile.clone(),
-            challenge_response.as_ref(),
+            challenge_factor.as_ref(),
         )?;
     } else {
-        let (hwkey_key, config) = if ask_store_hwkey() {
-            let (key, config) = crate::hwkey::resolve_new_key(None, None)?;
-            (Some(key), Some(config))
+        let (hwkey_factor, config) = if ask_store_hwkey() {
+            let (factor, config) = crate::hwkey::resolve_new_key(None, None)?;
+            (Some(factor), Some(config))
         } else {
             (None, None)
         };
         hwkey_config = config;
         println!("Initializing new vault '{}' at {}...", name, path);
         password = ask_new_master_password();
-        created_vault = Some(KeepassVault::new(
+        created_vault = Some(KeepassVault::new_with_challenge_factor(
             &path,
             &password,
             keyfile.as_deref(),
-            hwkey_key.as_ref(),
+            hwkey_factor.as_ref(),
         )?);
     }
 
@@ -365,7 +365,7 @@ pub fn setup_vault(name_arg: Option<String>) -> Result<String, Error> {
         // the vault would be unreachable.
         if let Some(mut vault) = created_vault {
             if hwkey_config.is_some() {
-                if let Err(rollback) = vault.update_challenge_response(None) {
+                if let Err(rollback) = vault.update_challenge_factor(None) {
                     eprintln!(
                         "Warning: failed to roll back the hardware key enrollment: {}",
                         rollback

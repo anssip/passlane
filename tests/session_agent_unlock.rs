@@ -18,11 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use keepass_ng::ChallengeResponseKey;
 use passlane_agent::client::AgentClient;
 use passlane_agent::protocol::{ChallengeResponseMaterial, GrantSpec, SecretString};
 use passlane_agent::server::{AgentConfig, AgentServer, ServerHandle};
 use passlane_approval::message::Scope;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Credential;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::PasswordVault;
@@ -81,7 +81,8 @@ impl Fixture {
         let file = file.to_str().unwrap();
         let factor = with_hardware_key.then(local_challenge);
         let mut vault =
-            KeepassVault::new(file, PASSWORD, None, factor.as_ref()).expect("create the vault");
+            KeepassVault::new_with_challenge_factor(file, PASSWORD, None, factor.as_ref())
+                .expect("create the vault");
         vault
             .save_one_credential(
                 Credential::new(None, ENTRY_PASSWORD, "github.com", "alice", None, None)
@@ -262,8 +263,8 @@ impl Drop for Fixture {
     }
 }
 
-fn local_challenge() -> ChallengeResponseKey {
-    ChallengeResponseKey::LocalChallenge(SLOT_SECRET.to_string())
+fn local_challenge() -> ChallengeFactor {
+    ChallengeFactor::from_existing_secret_hex(SLOT_SECRET).expect("a valid slot secret")
 }
 
 fn stdout_of(output: &Output) -> &str {
@@ -736,7 +737,8 @@ fn verification_fixture() {
         let path = Path::new(&dir).join("keyed.kdbx");
         let path = path.to_str().unwrap();
         let mut vault =
-            KeepassVault::new(path, PASSWORD, None, Some(&local_challenge())).expect("vault");
+            KeepassVault::new_with_challenge_factor(path, PASSWORD, None, Some(&local_challenge()))
+                .expect("vault");
         vault
             .save_one_credential(
                 Credential::new(None, ENTRY_PASSWORD, "github.com", "alice", None, None)

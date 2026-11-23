@@ -27,10 +27,10 @@ use crate::ui::input::ask_master_password;
 use crate::vault_registry::{self, VaultConfig};
 use arboard::Clipboard;
 use clap::ArgMatches;
-use keepass_ng::ChallengeResponseKey;
 use passlane_agent::client::UnlockFactors;
 use passlane_agent::error::AgentError;
 use passlane_agent::protocol::ChallengeResponseMaterial;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::hwkey::HwKeyConfig;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
@@ -134,10 +134,10 @@ fn set_last_unlock_source(source: PasswordSource) {
 static LAST_UNLOCK_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Everything that opens a vault except its file: the master password and,
-/// for a hardware-key vault, the challenge-response key.
+/// for a hardware-key vault, the challenge-response factor.
 pub(crate) struct VaultFactors {
     pub(crate) master_password: Zeroizing<String>,
-    pub(crate) challenge_response: Option<ChallengeResponseKey>,
+    pub(crate) challenge_factor: Option<ChallengeFactor>,
 }
 
 /// Opens the vault with the given factors — the real open, or whatever a
@@ -167,19 +167,20 @@ pub(crate) struct UnlockSources<'a> {
     pub(crate) keychain: &'a dyn Fn(&str) -> PasswordLookup,
     /// The unlock factors a live session-agent session holds for the vault.
     pub(crate) session: &'a dyn Fn(&str) -> Result<Option<UnlockFactors>, AgentError>,
-    /// The vault's enrolled hardware key, as a connected device.
-    pub(crate) hardware_key: &'a dyn Fn(&HwKeyConfig) -> Result<ChallengeResponseKey, Error>,
+    /// The vault's enrolled hardware key, as the connected factor.
+    pub(crate) hardware_key: &'a dyn Fn(&HwKeyConfig) -> Result<ChallengeFactor, Error>,
     /// The phone-held key's answer a live session-agent session holds for
-    /// the vault's current challenge: a fixed-answer key, when the vault
-    /// is phone-gated and the agent holds one. Reading the challenge from
-    /// the vault file is prompt-free, so this may be consulted anywhere.
+    /// the vault's current challenge: an external factor answering that
+    /// one challenge, when the vault is phone-gated and the agent holds
+    /// one. Reading the challenge from the vault file is prompt-free, so
+    /// this may be consulted anywhere.
     pub(crate) phone_answer:
-        &'a dyn Fn(&VaultConfig) -> Result<Option<ChallengeResponseKey>, AgentError>,
+        &'a dyn Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError>,
     /// The phone-held key as the link transport: answers come from the
     /// holder, pasted here or deposited with the agent. Building it asks
     /// nothing; it answers (or refuses with guidance) when keepass-ng
     /// issues the challenge.
-    pub(crate) phone_transport: &'a dyn Fn(&VaultConfig) -> Result<ChallengeResponseKey, Error>,
+    pub(crate) phone_transport: &'a dyn Fn(&VaultConfig) -> Result<ChallengeFactor, Error>,
     /// Ask for the master password.
     pub(crate) prompt: &'a dyn Fn(&str) -> String,
     /// Tell the user which source is about to open the vault.
@@ -190,10 +191,10 @@ pub(crate) struct UnlockSources<'a> {
 /// hardware-key factor it may hold.
 struct Candidate {
     master_password: Zeroizing<String>,
-    held_challenge_response: Option<ChallengeResponseKey>,
+    held_challenge_factor: Option<ChallengeFactor>,
     /// A phone-held key's answer from the session, when the vault is
     /// phone-gated and a session holds one for its current challenge.
-    held_phone_answer: Option<ChallengeResponseKey>,
+    held_phone_answer: Option<ChallengeFactor>,
     source: PasswordSource,
 }
 
@@ -206,7 +207,7 @@ pub(crate) enum ChallengeKey<'a> {
     /// This key, whatever the registry or a session says — for the
     /// hardware-key commands, which choose the key themselves: the
     /// recovery secret, or none while the first key is enrolled.
-    Given(Option<&'a ChallengeResponseKey>),
+    Given(Option<&'a ChallengeFactor>),
 }
 
 impl Candidate {
@@ -221,31 +222,25 @@ impl Candidate {
         sources: &UnlockSources,
         key: ChallengeKey,
     ) -> Result<VaultFactors, Error> {
-        let challenge_response = match (key, &config.hwkey) {
-            (ChallengeKey::Given(key), _) => key.cloned(),
+        let challenge_factor = match (key, &config.hwkey, self.held_challenge_factor) {
+            (ChallengeKey::Given(key), _, _) => key.cloned(),
             // A phone-gated vault: the session's answer when it holds one,
             // else the link transport — which prompts at a terminal and
             // refuses with guidance (after emitting the request) without
             // one, exactly where keepass-ng issues the challenge.
-            (ChallengeKey::Enrolled, _) if config.phone_key.is_some() => {
+            (ChallengeKey::Enrolled, _, _) if config.phone_key.is_some() => {
                 Some(match self.held_phone_answer {
                     Some(held) => held,
                     None => (sources.phone_transport)(config)?,
                 })
             }
-            (ChallengeKey::Enrolled, None) => None,
-            (ChallengeKey::Enrolled, Some(_)) => match self.held_challenge_response {
-                Some(held) => Some(held),
-                None => {
-                    Some((sources.hardware_key)(config.hwkey.as_ref().expect(
-                        "the match arm checked the vault is hardware-key gated",
-                    ))?)
-                }
-            },
+            (ChallengeKey::Enrolled, None, _) => None,
+            (ChallengeKey::Enrolled, Some(_), Some(held)) => Some(held),
+            (ChallengeKey::Enrolled, Some(hwkey), None) => Some((sources.hardware_key)(hwkey)?),
         };
         Ok(VaultFactors {
             master_password: self.master_password,
-            challenge_response,
+            challenge_factor,
         })
     }
 }
@@ -349,9 +344,9 @@ impl<'a> Candidates<'a> {
             self.check_unattended_hardware_key(false)?;
             return Ok(None);
         };
-        let held_challenge_response = match factors.challenge_response {
+        let held_challenge_factor = match factors.challenge_response {
             Some(ChallengeResponseMaterial::Secret { secret_hex }) => Some(
-                ChallengeResponseKey::LocalChallenge(secret_hex.expose().to_string()),
+                ChallengeFactor::from_existing_secret_hex(secret_hex.expose())?,
             ),
             // The session holds the password only — a physical key's factor
             // cannot be held — so the key has to come from the device.
@@ -362,7 +357,7 @@ impl<'a> Candidates<'a> {
         };
         Ok(Some(Candidate {
             master_password: factors.master_password,
-            held_challenge_response,
+            held_challenge_factor,
             held_phone_answer,
             source: PasswordSource::SessionAgent,
         }))
@@ -373,7 +368,7 @@ impl<'a> Candidates<'a> {
         match (self.sources.keychain)(&self.config.name) {
             PasswordLookup::Found(master_password) => Ok(Some(Candidate {
                 master_password,
-                held_challenge_response: None,
+                held_challenge_factor: None,
                 held_phone_answer: None,
                 source: PasswordSource::Keychain,
             })),
@@ -415,7 +410,7 @@ impl<'a> Candidates<'a> {
         }
         Ok(Some(Candidate {
             master_password: Zeroizing::new((self.sources.prompt)(&self.config.name)),
-            held_challenge_response: None,
+            held_challenge_factor: None,
             held_phone_answer: None,
             source: PasswordSource::Prompt,
         }))
@@ -555,8 +550,7 @@ fn with_real_sources<T>(interactive: bool, use_sources: impl FnOnce(&UnlockSourc
     let keychain_bound = (!interactive).then_some(KEYCHAIN_TIMEOUT);
     let keychain = move |vault: &str| keychain::lookup_master_password(vault, keychain_bound);
     let session = |vault: &str| crate::session_agent::unlock_factors(vault);
-    let hardware_key =
-        |hwkey: &HwKeyConfig| passlane_core::hwkey::configured_challenge_response_key(hwkey);
+    let hardware_key = |hwkey: &HwKeyConfig| ChallengeFactor::yubikey(hwkey.slot, hwkey.serial);
     let phone_answer = |config: &VaultConfig| crate::session_agent::held_phone_answer(config);
     let phone_transport = |config: &VaultConfig| crate::phone_key::transport_key(config);
     let prompt = |vault: &str| {
@@ -598,7 +592,7 @@ pub(crate) fn at_a_terminal() -> bool {
 /// into whatever the caller needs.
 fn open_through_chain<T>(
     key: ChallengeKey<'_>,
-    open: impl Fn(&str, &str, Option<String>, Option<&ChallengeResponseKey>) -> Result<T, Error>,
+    open: impl Fn(&str, &str, Option<String>, Option<&ChallengeFactor>) -> Result<T, Error>,
 ) -> Result<Unlocked<T>, Error> {
     let config = vault_registry::current()?;
     with_real_sources(at_a_terminal(), |sources| {
@@ -607,7 +601,7 @@ fn open_through_chain<T>(
                 &factors.master_password,
                 &config.path,
                 config.keyfile.clone(),
-                factors.challenge_response.as_ref(),
+                factors.challenge_factor.as_ref(),
             )
         };
         unlock_with(&config, sources, key, &open)
@@ -627,8 +621,8 @@ pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
 pub(crate) fn unlock_reporting_factors() -> Result<Unlocked<Box<dyn Vault>>, Error> {
     open_through_chain(
         ChallengeKey::Enrolled,
-        |password, path, keyfile, challenge_response| {
-            KeepassVault::open(password, path, keyfile, challenge_response)
+        |password, path, keyfile, challenge_factor| {
+            KeepassVault::open_with_challenge_factor(password, path, keyfile, challenge_factor)
                 .map(|vault| Box::new(vault) as Box<dyn Vault>)
         },
     )
@@ -638,11 +632,15 @@ pub(crate) fn unlock_reporting_factors() -> Result<Unlocked<Box<dyn Vault>>, Err
 /// hardware key as a connected device, the phone-held key as the link
 /// transport. For the commands that open the vault themselves (`passwd`,
 /// the completion-cache build) rather than through the unlock chain.
-pub(crate) fn enrolled_challenge_response(
+/// The vault's enrolled challenge-response factor, resolved directly: the
+/// hardware key as a connected YubiKey, the phone-held key as the link
+/// transport. For the commands that open the vault themselves (`passwd`,
+/// the completion-cache build) rather than through the unlock chain.
+pub(crate) fn enrolled_challenge_factor(
     config: &VaultConfig,
-) -> Result<Option<ChallengeResponseKey>, Error> {
+) -> Result<Option<ChallengeFactor>, Error> {
     if let Some(hwkey) = &config.hwkey {
-        return passlane_core::hwkey::configured_challenge_response_key(hwkey).map(Some);
+        return ChallengeFactor::yubikey(hwkey.slot, hwkey.serial).map(Some);
     }
     if config.phone_key.is_some() {
         return Ok(Some(crate::phone_key::transport_key(config)?));
@@ -655,7 +653,7 @@ pub(crate) fn enrolled_challenge_response(
 /// the hardware-key commands, which re-key it. Every source gets its turn
 /// until one opens the vault, as for any command.
 pub(crate) fn unlock_keepass(key: ChallengeKey<'_>) -> Result<Unlocked<KeepassVault>, Error> {
-    open_through_chain(key, KeepassVault::open)
+    open_through_chain(key, KeepassVault::open_with_challenge_factor)
 }
 
 pub fn copy_to_clipboard(value: &str) {
@@ -782,10 +780,12 @@ mod tests {
             let dir: &'static tempfile::TempDir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
             let path: PathBuf = dir.path().join("vault.kdbx");
             let path = path.to_str().unwrap().to_string();
-            let factor =
-                keyed.then(|| ChallengeResponseKey::LocalChallenge(SLOT_SECRET.to_string()));
+            let factor = keyed.then(|| {
+                ChallengeFactor::from_secret_hex(SLOT_SECRET).expect("a valid slot secret")
+            });
             let mut vault =
-                KeepassVault::new(&path, PASSWORD, None, factor.as_ref()).expect("create vault");
+                KeepassVault::new_with_challenge_factor(&path, PASSWORD, None, factor.as_ref())
+                    .expect("create vault");
             vault
                 .save_one_credential(Credential::new(
                     None,
@@ -847,11 +847,11 @@ mod tests {
         let config = vault_registry::current().unwrap();
         let path = vault_file(config.hwkey.is_some() || config.phone_key.is_some());
         let open = |factors: &VaultFactors| {
-            KeepassVault::open(
+            KeepassVault::open_with_challenge_factor(
                 &factors.master_password,
                 path,
                 config.keyfile.clone(),
-                factors.challenge_response.as_ref(),
+                factors.challenge_factor.as_ref(),
             )
             .map(|vault| Box::new(vault) as Box<dyn Vault>)
         };
@@ -917,15 +917,13 @@ mod tests {
     }
 
     /// No session-held phone answer: what most tests want.
-    fn no_phone_answer() -> impl Fn(&VaultConfig) -> Result<Option<ChallengeResponseKey>, AgentError>
-    {
+    fn no_phone_answer() -> impl Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError> {
         |_| Ok(None)
     }
 
     /// A session's held phone answer: computed from the slot secret, the
     /// way the real source computes it from the agent's stored answer.
-    fn held_phone_answer()
-    -> impl Fn(&VaultConfig) -> Result<Option<ChallengeResponseKey>, AgentError> {
+    fn held_phone_answer() -> impl Fn(&VaultConfig) -> Result<Option<ChallengeFactor>, AgentError> {
         move |config| {
             let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
                 .map_err(|e| AgentError::Protocol(e.message))?;
@@ -940,7 +938,7 @@ mod tests {
     /// The phone-held key as the link transport would give it: a
     /// fixed-answer key computed from the slot secret, so the tests can
     /// open with it wherever the chain reaches for the transport.
-    fn phone_transport() -> impl Fn(&VaultConfig) -> Result<ChallengeResponseKey, Error> {
+    fn phone_transport() -> impl Fn(&VaultConfig) -> Result<ChallengeFactor, Error> {
         move |config| {
             let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)?;
             let answer = crate::phone_key::tests::hmac_sha1(&slot_secret_bytes(), &seed);
@@ -958,15 +956,13 @@ mod tests {
 
     /// The vault's key as a connected device would give it — simulated,
     /// counting how often the chain reaches for it.
-    fn device_key(
-        calls: &Cell<usize>,
-    ) -> impl Fn(&HwKeyConfig) -> Result<ChallengeResponseKey, Error> {
+    fn device_key(calls: &Cell<usize>) -> impl Fn(&HwKeyConfig) -> Result<ChallengeFactor, Error> {
         move |hwkey| {
             assert_eq!(hwkey.slot, 1);
             calls.set(calls.get() + 1);
-            Ok(ChallengeResponseKey::LocalChallenge(
-                SLOT_SECRET.to_string(),
-            ))
+            Ok(ChallengeFactor::Virtual {
+                secret_hex: SLOT_SECRET.to_string(),
+            })
         }
     }
 
@@ -1026,7 +1022,7 @@ mod tests {
             announce: &nothing_announced(),
         };
         let unlocked = unlock_test(&sources).expect("the password alone opens the vault");
-        assert!(unlocked.factors.challenge_response.is_none());
+        assert!(unlocked.factors.challenge_factor.is_none());
     }
 
     #[test]
@@ -1301,7 +1297,7 @@ mod tests {
         // `hwkey remove --secret` opens with the recovery secret the owner
         // typed in: no device is involved, whatever the registry says.
         let _guard = use_vault(true);
-        let recovery = ChallengeResponseKey::LocalChallenge(SLOT_SECRET.to_string());
+        let recovery = ChallengeFactor::from_existing_secret_hex(SLOT_SECRET).unwrap();
         let sources = UnlockSources {
             interactive: false,
             keychain: &|_| panic!("a live session supplies the password"),

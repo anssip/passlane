@@ -16,7 +16,6 @@
 
 use std::path::PathBuf;
 
-use keepass_ng::ChallengeResponseKey;
 use passlane_agent::SOCKET_ENV;
 use passlane_agent::client::{AgentClient, EventStream, RevealAnswer, UnlockFactors};
 use passlane_agent::error::AgentError;
@@ -24,6 +23,7 @@ use passlane_agent::protocol::{
     ChallengeResponseMaterial, ErrorCode, GrantInfo, GrantSpec, SecretString, SessionInfo,
 };
 use passlane_approval::message::Scope;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
 use zeroize::Zeroizing;
 
@@ -188,20 +188,18 @@ pub fn session_factors(vault: &str) -> Result<SessionFactors, Error> {
     Ok(SessionFactors::from_listing(vault, &sessions))
 }
 
-/// What a session can hold of the challenge-response key a vault was
-/// opened with: the secret of a secret-backed key (a recovery secret, a
+/// What a session can hold of the challenge-response factor a vault was
+/// opened with: the secret of a secret-backed factor (a recovery secret, a
 /// virtual key). A physical hardware key's secret never leaves the
 /// device, so there is nothing to hold — every use of such a vault still
 /// needs the key, and a session covers its master password only.
 pub(crate) fn challenge_response_material(
-    key: Option<&ChallengeResponseKey>,
+    factor: Option<&ChallengeFactor>,
 ) -> Option<ChallengeResponseMaterial> {
-    match key {
-        Some(ChallengeResponseKey::LocalChallenge(secret_hex)) => {
-            Some(ChallengeResponseMaterial::Secret {
-                secret_hex: SecretString::new(secret_hex.clone()),
-            })
-        }
+    match factor {
+        Some(ChallengeFactor::Virtual { secret_hex }) => Some(ChallengeResponseMaterial::Secret {
+            secret_hex: SecretString::new(secret_hex.clone()),
+        }),
         _ => None,
     }
 }
@@ -222,7 +220,7 @@ pub fn agent_running() -> bool {
 /// transport, so saving still asks the holder.
 pub fn held_phone_answer(
     config: &crate::vault_registry::VaultConfig,
-) -> Result<Option<keepass_ng::ChallengeResponseKey>, AgentError> {
+) -> Result<Option<passlane_core::challenge::ChallengeFactor>, AgentError> {
     let Some(answer) = try_challenge_response_current(config)? else {
         return Ok(None);
     };
@@ -565,18 +563,19 @@ mod tests {
     }
 
     #[test]
-    fn only_a_secret_backed_key_can_be_held_by_a_session() {
-        let held = challenge_response_material(Some(&ChallengeResponseKey::LocalChallenge(
-            "aabb".to_string(),
-        )));
+    fn only_a_secret_backed_factor_can_be_held_by_a_session() {
+        let held = challenge_response_material(Some(&ChallengeFactor::Virtual {
+            secret_hex: "aabb".to_string(),
+        }));
         assert_eq!(
             held,
             Some(ChallengeResponseMaterial::Secret {
                 secret_hex: SecretString::new("aabb")
             })
         );
-        // No key (a password-only vault): nothing to hold. A device-backed
-        // key takes the same arm — its secret never leaves the device.
+        // No factor (a password-only vault): nothing to hold. A device-
+        // backed factor takes the same arm — its secret never leaves the
+        // device.
         assert_eq!(challenge_response_material(None), None);
     }
 

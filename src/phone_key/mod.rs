@@ -32,8 +32,9 @@ pub(crate) mod transport;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use keepass_ng::{ChallengeResponseKey, ChallengeResponseKeyError};
+use keepass_ng::ChallengeResponseKeyError;
 use passlane_approval::message::Operation;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
 use zeroize::Zeroizing;
 
@@ -180,7 +181,7 @@ pub(crate) fn take_last_open_answer() -> Option<(PhoneRequest, Answer)> {
 pub(crate) fn open_key(
     config: &VaultConfig,
     source: Arc<dyn ResponseSource>,
-) -> Result<ChallengeResponseKey, Error> {
+) -> Result<ChallengeFactor, Error> {
     let seed = kdf_seed::read_kdf_seed(&config.path)?;
     Ok(responder_key(
         &config.name,
@@ -194,7 +195,7 @@ pub(crate) fn open_key(
 pub(crate) fn save_only_key(
     config: &VaultConfig,
     source: Arc<dyn ResponseSource>,
-) -> ChallengeResponseKey {
+) -> ChallengeFactor {
     responder_key(&config.name, source, Opening::AlreadyOpen)
 }
 
@@ -230,7 +231,7 @@ impl ResponseSource for HeldAnswer {
 /// nothing; it resolves the holder and the vault's challenge here, and
 /// answers (or refuses with guidance) only when keepass-ng issues the
 /// challenge.
-pub(crate) fn transport_key(config: &VaultConfig) -> Result<ChallengeResponseKey, Error> {
+pub(crate) fn transport_key(config: &VaultConfig) -> Result<ChallengeFactor, Error> {
     let source = transport_source(config)?;
     open_key(config, source)
 }
@@ -265,7 +266,7 @@ pub(crate) fn held_answer_key(
     seed: [u8; CHALLENGE_LEN],
     answer: Zeroizing<Vec<u8>>,
     transport: Arc<dyn ResponseSource>,
-) -> ChallengeResponseKey {
+) -> ChallengeFactor {
     responder_key(
         &config.name,
         Arc::new(HeldAnswer {
@@ -278,7 +279,7 @@ pub(crate) fn held_answer_key(
 }
 
 /// The challenge-response key for opening a vault with one known answer.
-pub(crate) fn fixed_key(config: &VaultConfig, fixed: FixedAnswer) -> ChallengeResponseKey {
+pub(crate) fn fixed_key(config: &VaultConfig, fixed: FixedAnswer) -> ChallengeFactor {
     let challenge = fixed.challenge;
     responder_key(
         &config.name,
@@ -297,14 +298,16 @@ fn responder_key(
     vault: &str,
     source: Arc<dyn ResponseSource>,
     opening: Opening,
-) -> ChallengeResponseKey {
+) -> ChallengeFactor {
     let responder = PhoneResponder {
         vault: vault.to_string(),
         source,
         opening,
         opened: AtomicBool::new(false),
     };
-    ChallengeResponseKey::External(Arc::new(move |seed| responder.respond(seed)))
+    ChallengeFactor::External {
+        responder: Arc::new(move |seed| responder.respond(seed)),
+    }
 }
 
 struct PhoneResponder {
@@ -481,8 +484,8 @@ pub(crate) mod tests {
     const SECRET: [u8; 20] = [0xa1; 20];
 
     /// Open the vault with `key`; the error message if it does not open.
-    fn open_failure(path: &str, key: Option<&ChallengeResponseKey>) -> String {
-        match KeepassVault::open("master-pw", path, None, key) {
+    fn open_failure(path: &str, key: Option<&ChallengeFactor>) -> String {
+        match KeepassVault::open_with_challenge_factor("master-pw", path, None, key) {
             Ok(_) => panic!("the vault opened without the right factor"),
             Err(e) => e.message,
         }
@@ -506,7 +509,7 @@ pub(crate) mod tests {
         // -- re-key: the save asks the phone for the new seed's answer --
         let mut vault = KeepassVault::open("master-pw", vault_path, None, None).unwrap();
         vault
-            .update_challenge_response(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
             .unwrap();
         drop(vault);
         assert_eq!(operations(&phone), [Operation::Save]);
@@ -514,7 +517,9 @@ pub(crate) mod tests {
         // -- open: without the factor the key is wrong; with it, it opens --
         assert!(open_failure(vault_path, None).contains("Incorrect key"));
         let key = open_key(&config, phone.clone()).unwrap();
-        let mut vault = KeepassVault::open("master-pw", vault_path, None, Some(&key)).unwrap();
+        let mut vault =
+            KeepassVault::open_with_challenge_factor("master-pw", vault_path, None, Some(&key))
+                .unwrap();
         assert_eq!(
             operations(&phone),
             [Operation::Save, Operation::Unlock],
@@ -540,7 +545,9 @@ pub(crate) mod tests {
 
         // -- and the saved file opens again, by phone --
         let key = open_key(&config, phone.clone()).unwrap();
-        let vault = KeepassVault::open("master-pw", vault_path, None, Some(&key)).unwrap();
+        let vault =
+            KeepassVault::open_with_challenge_factor("master-pw", vault_path, None, Some(&key))
+                .unwrap();
         assert_eq!(vault.grep(None).len(), 1, "the saved entry is there");
     }
 
@@ -555,7 +562,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_response(Some(save_only_key(&config, phone)))
+            .update_challenge_factor(Some(save_only_key(&config, phone)))
             .unwrap();
         drop(vault);
 
@@ -571,7 +578,10 @@ pub(crate) mod tests {
 
         let right_phone = Arc::new(MockPhone::new(&SECRET));
         let key = open_key(&config, right_phone).unwrap();
-        assert!(KeepassVault::open("master-pw", vault_path, None, Some(&key)).is_ok());
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", vault_path, None, Some(&key))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -583,7 +593,7 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_response(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
             .unwrap();
         drop(vault);
 
@@ -600,7 +610,8 @@ pub(crate) mod tests {
         let mut vault = {
             *phone.refusal.lock().unwrap() = None;
             let key = open_key(&config, phone.clone()).unwrap();
-            KeepassVault::open("master-pw", vault_path, None, Some(&key)).unwrap()
+            KeepassVault::open_with_challenge_factor("master-pw", vault_path, None, Some(&key))
+                .unwrap()
         };
         let before = std::fs::read(vault_path).unwrap();
         phone.refuse(ResponseError::Unavailable("nobody can answer".into()));
@@ -623,13 +634,13 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_response(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
             .unwrap();
         drop(vault);
 
         let key = open_key(&config, phone.clone()).unwrap();
         let other = dir.path().join("other.kdbx");
-        KeepassVault::new(
+        KeepassVault::new_with_challenge_factor(
             other.to_str().unwrap(),
             "master-pw",
             None,
@@ -676,14 +687,17 @@ pub(crate) mod tests {
         let phone = Arc::new(MockPhone::new(&SECRET).with_origin(AnswerOrigin::SessionAgent));
         let mut vault = KeepassVault::new(vault_path, "master-pw", None, None).unwrap();
         vault
-            .update_challenge_response(Some(save_only_key(&config, phone.clone())))
+            .update_challenge_factor(Some(save_only_key(&config, phone.clone())))
             .unwrap();
         drop(vault);
 
         assert!(take_last_open_answer().is_none());
         let seed = kdf_seed::read_kdf_seed(vault_path).unwrap();
         let key = open_key(&config, phone).unwrap();
-        drop(KeepassVault::open("master-pw", vault_path, None, Some(&key)).unwrap());
+        drop(
+            KeepassVault::open_with_challenge_factor("master-pw", vault_path, None, Some(&key))
+                .unwrap(),
+        );
 
         let (request, answer) = take_last_open_answer().expect("the open is recorded");
         assert_eq!(request.operation, Operation::Unlock);

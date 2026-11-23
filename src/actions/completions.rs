@@ -92,17 +92,19 @@ fn generate_cache() -> Result<usize, Error> {
             ask_master_password(None)
         }
     };
-    let challenge_response = crate::actions::enrolled_challenge_response(&config)?;
+    // The enrolled factor, whichever kind it is (a connected YubiKey or a
+    // phone-held key's link transport).
+    let challenge_factor = crate::actions::enrolled_challenge_factor(&config)?;
 
     println!(
         "Opening vault '{}' to build completion cache...",
         config.name
     );
-    let vault = KeepassVault::open(
+    let vault = KeepassVault::open_with_challenge_factor(
         &master_pwd,
         &config.path,
         config.keyfile,
-        challenge_response.as_ref(),
+        challenge_factor.as_ref(),
     )?;
     let count = vault.grep(None).len();
     let boxed: Box<dyn Vault> = Box::new(vault);

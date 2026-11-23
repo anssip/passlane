@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::hwkey::HwKeyConfig;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use zeroize::Zeroize;
@@ -134,19 +135,19 @@ impl HwKeyAction {
             )));
         }
         // Fail fast if no key is connected, before asking for the password.
-        let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
+        let (challenge_factor, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
-        // The vault takes no challenge-response key yet; the new one is
+        // The vault takes no challenge-response factor yet; the new one is
         // challenged by the save below.
         let mut vault = unlock_keepass(ChallengeKey::Given(None))?.vault;
         // The re-save challenges the new key, proving the enrollment
         // before the config is persisted.
-        vault.update_challenge_response(Some(challenge_response))?;
+        vault.update_challenge_factor(Some(challenge_factor))?;
         if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
             // The vault now requires the key but passlane would not know
             // to use it (no persisted config): roll the factor back or
             // the vault can no longer be opened via passlane.
-            if let Err(rollback) = vault.update_challenge_response(None) {
+            if let Err(rollback) = vault.update_challenge_factor(None) {
                 eprintln!(
                     "Warning: failed to roll back the hardware key enrollment: {}",
                     rollback
@@ -229,10 +230,6 @@ impl HwKeyAction {
         // in (a prompt, so a terminal); the enrolled factor otherwise —
         // the key on its device, or the holder over the link transport,
         // with a live session's held answer used first by the chain.
-        // How the vault opens for the removal: recovery types its secret
-        // in (a prompt, so a terminal); the enrolled factor otherwise —
-        // the key on its device, or the holder over the link transport,
-        // with a live session's held answer used first by the chain.
         let recovery_key;
         let key = match (&enrolled, secret) {
             (Enrolled::Phone(_), true) | (Enrolled::Hwkey(_), true) => {
@@ -243,7 +240,7 @@ impl HwKeyAction {
                         config.name
                     )));
                 }
-                recovery_key = hwkey::recovery_key_from_prompt();
+                recovery_key = hwkey::recovery_key_from_prompt()?;
                 ChallengeKey::Given(Some(&recovery_key))
             }
             (Enrolled::Hwkey(hwkey_config), false) => match session_factors(&config.name)? {
@@ -260,7 +257,7 @@ impl HwKeyAction {
                         ));
                     }
                     recovery_key =
-                        passlane_core::hwkey::configured_challenge_response_key(hwkey_config)?;
+                        ChallengeFactor::yubikey(hwkey_config.slot, hwkey_config.serial)?;
                     ChallengeKey::Given(Some(&recovery_key))
                 }
             },
@@ -275,7 +272,7 @@ impl HwKeyAction {
         // demanding a factor the vault no longer requires.
         record_factor(&config.name, None)?;
         // A save without the factor needs no challenge.
-        if let Err(e) = vault.update_challenge_response(None) {
+        if let Err(e) = vault.update_challenge_factor(None) {
             // The vault on disk still requires the factor; put the config
             // back so passlane keeps using it.
             if let Err(restore_err) = record_factor(&config.name, Some(&enrolled)) {
@@ -568,7 +565,10 @@ mod tests {
         assert_ne!(std::fs::read(&config.path).unwrap(), before);
         assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
         let key = open_key(&config, phone).unwrap();
-        assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", &config.path, None, Some(&key))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -677,11 +677,16 @@ mod tests {
     fn remove_factor(
         config: &VaultConfig,
         password: &str,
-        challenge_response: &ChallengeResponseKey,
+        challenge_response: &ChallengeFactor,
         enrolled: Enrolled,
         record: &dyn Fn(Option<&Enrolled>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut vault = KeepassVault::open(password, &config.path, None, Some(challenge_response))?;
+        let mut vault = KeepassVault::open_with_challenge_factor(
+            password,
+            &config.path,
+            None,
+            Some(challenge_response),
+        )?;
         record(None)?;
         // A save without the factor needs no challenge.
         if let Err(e) = vault.update_challenge_response(None) {
@@ -719,15 +724,23 @@ mod tests {
         // The phone is gone: opening it the normal way has no answer.
         let key = open_key(&config, Arc::new(LostPhone)).unwrap();
         assert!(
-            KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_err(),
+            KeepassVault::open_with_challenge_factor("master-pw", &config.path, None, Some(&key))
+                .is_err(),
             "a lost phone cannot open the vault"
         );
 
         // Recover with the sheet.
-        let from_sheet =
-            ChallengeResponseKey::LocalChallenge(passlane_approval::encoding::hex_encode(&SECRET));
-        let vault = KeepassVault::open("master-pw", &config.path, None, Some(&from_sheet))
-            .expect("the sheet secret opens the vault");
+        let from_sheet = ChallengeFactor::from_existing_secret_hex(
+            &passlane_approval::encoding::hex_encode(&SECRET),
+        )
+        .unwrap();
+        let vault = KeepassVault::open_with_challenge_factor(
+            "master-pw",
+            &config.path,
+            None,
+            Some(&from_sheet),
+        )
+        .expect("the sheet secret opens the vault");
         assert_eq!(vault.grep(None).len(), 0);
 
         remove_factor(
@@ -805,7 +818,10 @@ mod tests {
         assert_eq!(std::fs::read(&config.path).unwrap(), enrolled_bytes);
         assert!(KeepassVault::open("master-pw", &config.path, None, None).is_err());
         let key = open_key(&config, phone.clone()).unwrap();
-        assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", &config.path, None, Some(&key))
+                .is_ok()
+        );
         assert_eq!(
             phone.asked_since(mark).len(),
             2,

@@ -124,7 +124,7 @@ pub(crate) fn enroll(
         inner: source,
         last_save: Mutex::new(None),
     });
-    vault.update_challenge_response(Some(save_only_key(config, recording.clone())))?;
+    vault.update_challenge_factor(Some(save_only_key(config, recording.clone())))?;
 
     // 4. Prove it: open the file as it is on disk with the one answer the
     //    save obtained. Anything wrong here is undone before returning.
@@ -169,7 +169,12 @@ fn prove_enrollment(
         ));
     }
     let key = fixed_key(config, FixedAnswer::new(seed, answer));
-    match KeepassVault::open(password, &config.path, config.keyfile.clone(), Some(&key)) {
+    match KeepassVault::open_with_challenge_factor(
+        password,
+        &config.path,
+        config.keyfile.clone(),
+        Some(&key),
+    ) {
         Ok(_) => Ok(()),
         Err(e) => Err(Error::new(&format!(
             "the re-keyed vault did not open with the holder's answer: {}",
@@ -240,7 +245,10 @@ mod tests {
         // The vault now needs the phone, and opens with it.
         assert!(open_failure(&config.path, None).contains("Incorrect key"));
         let key = open_key(&config, phone.clone()).unwrap();
-        assert!(KeepassVault::open("master-pw", &config.path, None, Some(&key)).is_ok());
+        assert!(
+            KeepassVault::open_with_challenge_factor("master-pw", &config.path, None, Some(&key))
+                .is_ok()
+        );
     }
 
     #[test]

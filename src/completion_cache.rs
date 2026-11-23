@@ -226,7 +226,9 @@ fn create_cache_from_keychain() {
         }
     };
 
-    match KeepassVault::open(&master_pwd, &config.path, config.keyfile, None) {
+    let vault =
+        KeepassVault::open_with_challenge_factor(&master_pwd, &config.path, config.keyfile, None);
+    match vault {
         Ok(vault) => {
             let boxed: Box<dyn Vault> = Box::new(vault);
             update_cache(&boxed);

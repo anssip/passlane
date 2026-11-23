@@ -20,13 +20,15 @@ impl Action for ChangePasswordAction {
             "Please enter current master password of vault '{}'",
             config.name
         )));
-        let challenge_response = crate::actions::enrolled_challenge_response(&config)?;
+        // The enrolled factor, whichever kind it is: a connected YubiKey,
+        // or the phone-held key's link transport for a phone-gated vault.
+        let challenge_factor = crate::actions::enrolled_challenge_factor(&config)?;
 
-        let mut vault = KeepassVault::open(
+        let mut vault = KeepassVault::open_with_challenge_factor(
             &current_pwd,
             &config.path,
             config.keyfile,
-            challenge_response.as_ref(),
+            challenge_factor.as_ref(),
         )?;
 
         let new_pwd = ask_new_master_password();
