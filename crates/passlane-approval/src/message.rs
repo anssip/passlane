@@ -102,6 +102,13 @@ pub enum Operation {
     Unlock,
     /// Permit a save (future: v1 write path).
     Save,
+    /// Create a phone-held challenge-response key for the vault and answer
+    /// the request's challenge with it: enrollment (passlane#53, SPEC §7).
+    ///
+    /// The responder must not answer before the recovery sheet for the new
+    /// key has been scanned back, so the answer doubles as the scan-back
+    /// confirmation the CLI waits for before it re-keys the vault.
+    EnrollKey,
 }
 
 /// How long an approval may be reused by the session agent.
@@ -245,8 +252,9 @@ pub enum Body {
         requester: String,
         /// How long an approval may be reused.
         scope: Scope,
-        /// The 20-byte HMAC-SHA1 challenge (hex) when the operation needs a
-        /// challenge-response to proceed.
+        /// The vault's 32-byte KDF seed as lower-case hex (64 characters)
+        /// when the operation needs a challenge-response to proceed
+        /// (`Unlock`, `Save`, `EnrollKey`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         challenge: Option<SecretHex>,
     },
@@ -256,7 +264,8 @@ pub enum Body {
         decision: Decision,
         /// The scope actually granted (may be narrower than requested).
         scope: Scope,
-        /// The 20-byte HMAC-SHA1 response (hex) for an `Unlock` approval.
+        /// The 20-byte HMAC-SHA1 response (hex) for an `Unlock`, `Save` or
+        /// `EnrollKey` approval.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response: Option<SecretHex>,
     },
@@ -489,6 +498,34 @@ mod tests {
             .message_type(),
             MessageType::SessionRevoke
         );
+    }
+
+    #[test]
+    fn operations_keep_their_wire_tags() {
+        // The tags are the cross-implementation contract (SPEC §3): the
+        // page and the Swift port switch on them by name.
+        let tag = |operation: &Operation| {
+            serde_json::to_value(operation).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            tag(&Operation::Reveal {
+                entry: "e".into(),
+                field: "f".into()
+            }),
+            "reveal"
+        );
+        assert_eq!(tag(&Operation::Unlock), "unlock");
+        assert_eq!(tag(&Operation::Save), "save");
+        assert_eq!(tag(&Operation::EnrollKey), "enroll_key");
+        // ...and an unknown tag is refused rather than defaulted.
+        let unknown: std::result::Result<Operation, _> =
+            serde_json::from_value(serde_json::json!({
+                "kind": "enrol_key"
+            }));
+        assert!(unknown.is_err());
     }
 
     #[test]

@@ -345,6 +345,7 @@ pub fn setup_vault(name_arg: Option<String>) -> Result<String, Error> {
         path: path.clone(),
         keyfile: keyfile.clone(),
         hwkey: hwkey_config.clone(),
+        phone_key: None,
     }) {
         // When the just-created vault already demands the hardware key but
         // the enrollment could not be persisted, strip the factor again —

@@ -14,6 +14,7 @@ fn any_operation() -> impl Strategy<Value = Operation> {
             .prop_map(|(entry, field)| Operation::Reveal { entry, field }),
         Just(Operation::Unlock),
         Just(Operation::Save),
+        Just(Operation::EnrollKey),
     ]
 }
 

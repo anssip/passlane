@@ -41,7 +41,7 @@ use passlane_approval::replay::FileNonceStore;
 use passlane_approval::store::{load_or_generate_identity, load_peers, save_peers};
 use passlane_approval::webauthn::WebauthnAssertion;
 
-use pending::{PendingRequest, PendingStore, RequestState};
+use pending::{PendingRequest, PendingStore, RequestKind, RequestState};
 
 /// Default home of the static approval page. The domain later serves the
 /// app's `apple-app-site-association` so universal links route to the app
@@ -249,68 +249,57 @@ pub struct EmittedRequest {
     /// The envelope, unpadded base64url (the link's fragment).
     #[cfg_attr(not(test), allow(dead_code))]
     pub envelope: String,
+    /// Unix seconds after which the request can no longer be approved.
+    pub exp: u64,
 }
 
-/// Seal an approval request to the pinned approver and record it as
-/// pending. `entry_id` is the entry's stable UUID — grants match on it,
-/// never on the display title. Fails when no approver is pinned yet.
-pub fn emit_approval_request(
-    dir: &std::path::Path,
-    vault: &str,
-    entry: &str,
-    entry_id: &str,
-    field: &str,
-    requester: &str,
-) -> Result<EmittedRequest, String> {
-    let body = Body::ApprovalRequest {
-        vault_id: vault.to_string(),
-        vault_name: vault.to_string(),
-        operation: Operation::Reveal {
-            entry: entry.to_string(),
-            field: field.to_string(),
-        },
-        requester: requester.to_string(),
-        scope: Scope::Once,
-        challenge: None,
-    };
-    emit_request(dir, vault, entry, entry_id, field, body)
+/// What a request is about, as the pending store records it.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestTarget<'a> {
+    /// Vault the request targets (registry name).
+    pub vault: &'a str,
+    /// The entry's stable UUID — grants are matched on this, never on the
+    /// display title. Empty for challenge-bearing requests.
+    pub entry_id: &'a str,
+    /// Entry title or match string, for display only.
+    pub entry: &'a str,
+    /// The field being revealed (`password`, `code`, ...); empty for
+    /// challenge-bearing requests.
+    pub field: &'a str,
+    /// What the request asks for.
+    pub kind: RequestKind,
+    /// The challenge (lower-case hex) of an `Unlock`, `Save` or `EnrollKey`
+    /// request.
+    pub challenge: Option<&'a str>,
 }
 
-/// The unlock variant (SPEC §7): the vault's challenge travels encrypted
-/// and the approver's answer carries the HMAC-SHA1 response. The CLI
-/// consumer is `hwkey add --phone` (passlane#53); exposed now so the flow
-/// is exercised end-to-end with a mocked responder.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn emit_unlock_request(
-    dir: &std::path::Path,
-    vault: &str,
-    vault_name: &str,
-    challenge: &[u8; 32],
-    requester: &str,
-) -> Result<EmittedRequest, String> {
-    let body = Body::ApprovalRequest {
-        vault_id: vault.to_string(),
-        vault_name: vault_name.to_string(),
-        operation: Operation::Unlock,
-        requester: requester.to_string(),
-        scope: Scope::Once,
-        challenge: Some(passlane_approval::message::SecretHex::from_bytes(challenge)),
-    };
-    emit_request(dir, vault, "", "", "", body)
+impl<'a> RequestTarget<'a> {
+    /// A challenge-bearing request (SPEC §7): no entry, a challenge.
+    pub fn challenge(vault: &'a str, kind: RequestKind, challenge: &'a str) -> Self {
+        debug_assert!(kind.carries_challenge(), "{:?} carries no challenge", kind);
+        Self {
+            vault,
+            entry_id: "",
+            entry: "",
+            field: "",
+            kind,
+            challenge: Some(challenge),
+        }
+    }
 }
 
-fn emit_request(
+/// Seal an approval request for `peer` and record it as pending.
+///
+/// `entry_id` is the entry's stable UUID — grants match on it, never on
+/// the display title. `requested_timed` is the widest reuse a response may
+/// offer (`None`: single use only).
+pub fn emit_to(
     dir: &std::path::Path,
-    vault: &str,
-    entry: &str,
-    entry_id: &str,
-    field: &str,
+    peer: &PeerPin,
+    target: RequestTarget<'_>,
     body: Body,
+    requested_timed: Option<u32>,
 ) -> Result<EmittedRequest, String> {
-    let peers = load_peers_pinned(dir)?;
-    let peer = preferred_peer(&peers).ok_or_else(|| {
-        "no approver is pinned; run 'passlane approvals enroll' first".to_string()
-    })?;
     let identity = load_identity(dir)?;
     let now = now_secs();
     let envelope = passlane_approval::envelope::seal(
@@ -333,13 +322,16 @@ fn emit_request(
     PendingStore::transaction(dir, |pending| {
         pending.upsert(PendingRequest {
             rid: rid.clone(),
-            vault: vault.to_string(),
-            entry_id: entry_id.to_string(),
-            entry: entry.to_string(),
-            field: field.to_string(),
+            vault: target.vault.to_string(),
+            entry_id: target.entry_id.to_string(),
+            entry: target.entry.to_string(),
+            field: target.field.to_string(),
             created: now,
             exp,
-            requested_timed: None, // Scope::Once (see approve_response's bound)
+            requested_timed,
+            kind: target.kind,
+            challenge: target.challenge.map(str::to_string),
+            link: Some(link.clone()),
             state: RequestState::Pending,
         });
     })
@@ -348,6 +340,78 @@ fn emit_request(
         rid,
         link,
         envelope: encoded,
+        exp,
+    })
+}
+
+/// Seal a reveal request to the pinned approver and record it as
+/// pending. Fails when no approver is pinned yet.
+pub fn emit_approval_request(
+    dir: &std::path::Path,
+    vault: &str,
+    entry: &str,
+    entry_id: &str,
+    field: &str,
+    requester: &str,
+) -> Result<EmittedRequest, String> {
+    let peers = load_peers_pinned(dir)?;
+    let peer = preferred_peer(&peers).ok_or_else(|| {
+        "no approver is pinned; run 'passlane approvals enroll' first".to_string()
+    })?;
+    let body = Body::ApprovalRequest {
+        vault_id: vault.to_string(),
+        vault_name: vault.to_string(),
+        operation: Operation::Reveal {
+            entry: entry.to_string(),
+            field: field.to_string(),
+        },
+        requester: requester.to_string(),
+        scope: Scope::Once,
+        challenge: None,
+    };
+    emit_to(
+        dir,
+        peer,
+        RequestTarget {
+            vault,
+            entry_id,
+            entry,
+            field,
+            kind: RequestKind::Reveal,
+            challenge: None,
+        },
+        body,
+        None,
+    )
+}
+
+/// The body of a challenge-bearing request (SPEC §7): the operation, the
+/// 32-byte challenge it is answered for, and who is asking.
+pub fn challenge_request_body(
+    vault: &str,
+    operation: Operation,
+    challenge: &[u8],
+    requester: &str,
+) -> Result<Body, String> {
+    if !RequestKind::from_operation(&operation).carries_challenge() {
+        return Err(
+            "internal: only unlock, save and enroll_key requests carry a challenge".to_string(),
+        );
+    }
+    if challenge.len() != passlane_approval::message::CHALLENGE_LEN {
+        return Err(format!(
+            "internal: a challenge is {} bytes, not {}",
+            challenge.len(),
+            passlane_approval::message::CHALLENGE_LEN
+        ));
+    }
+    Ok(Body::ApprovalRequest {
+        vault_id: vault.to_string(),
+        vault_name: vault.to_string(),
+        operation,
+        requester: requester.to_string(),
+        scope: Scope::Once,
+        challenge: Some(passlane_approval::message::SecretHex::from_bytes(challenge)),
     })
 }
 
@@ -394,8 +458,8 @@ pub enum ApproveOutcome {
         once: bool,
         /// Unix seconds until which the grant is reusable.
         until: u64,
-        /// An unlock factor crossed (phone-held keys, passlane#53); the
-        /// CLI does not consume it yet.
+        /// The response carries a challenge response (unlock, save,
+        /// enrollment — phone-held keys, passlane#53).
         has_unlock_response: bool,
     },
     /// The approver refused the request.
@@ -408,17 +472,67 @@ pub enum ApproveOutcome {
     },
 }
 
+/// A verified response, with what must never be written to disk.
+#[derive(Debug)]
+pub struct VerifiedResponse {
+    /// What the response did.
+    pub outcome: ApproveOutcome,
+    /// The 20-byte HMAC-SHA1 answer of an `Unlock`, `Save` or `EnrollKey`
+    /// request, held zeroized: it is a vault unlock factor.
+    pub response: Option<zeroize::Zeroizing<Vec<u8>>>,
+    /// What the answered request asked for.
+    pub kind: RequestKind,
+    /// The challenge the answered request carried (lower-case hex).
+    pub challenge: Option<String>,
+}
+
+/// What happens to a request once its answer is verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// Leave it granted: the command that asked consumes it (the ask
+    /// flow's re-run), or a session holds the answer.
+    Grant,
+    /// The caller uses the answer right now; the request ends as consumed,
+    /// so the same blob presented again is recognised as spent.
+    ConsumeNow,
+}
+
+/// A challenge response, handed to the caller *before* anything is
+/// recorded — if the handoff fails, the response can be presented again.
+pub struct ResponseHandoff<'a> {
+    /// The request being answered.
+    pub rid: &'a str,
+    /// The vault the answer is for.
+    pub vault: &'a str,
+    /// What was asked.
+    pub kind: RequestKind,
+    /// The challenge the answer is for (lower-case hex).
+    pub challenge: Option<&'a str>,
+    /// The 20-byte HMAC-SHA1 answer.
+    pub response: &'a [u8],
+    /// The scope the approver granted.
+    pub scope: Scope,
+}
+
 /// Verify a pasted response blob and release (or refuse) the pending
 /// request it answers.
 ///
 /// Order (SPEC §10): parse → rid must match a still-pending request →
 /// open() (freshness, sender pinning, WebAuthn assertion, AEAD, replay
-/// recording) → grant or deny. The replay store is persisted only after
-/// full verification, and the pending record only changes state for a
-/// verified decision. Everything that reads or writes the pending store
-/// runs inside one exclusive-locked transaction (load through atomic
-/// save), so concurrent approvals and reveals serialize on the same view.
-pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutcome, String> {
+/// recording) → hand a challenge response to `handoff` → grant, consume
+/// or deny. The replay store is persisted only after full verification
+/// and — for a challenge response — only once `handoff` has accepted it,
+/// so a handoff that fails leaves the response presentable again. The
+/// pending record only changes state for a verified decision. Everything
+/// that reads or writes the pending store runs inside one exclusive-locked
+/// transaction (load through atomic save), so concurrent approvals and
+/// reveals serialize on the same view.
+pub fn verify_response(
+    dir: &std::path::Path,
+    blob: &str,
+    disposition: Disposition,
+    handoff: &dyn Fn(&ResponseHandoff<'_>) -> Result<(), String>,
+) -> Result<VerifiedResponse, String> {
     let cleaned: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
     let envelope = Envelope::from_base64url(&cleaned)
         .map_err(|e| format!("the response is not a valid envelope: {e}"))?;
@@ -433,7 +547,7 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
     let mut nonces =
         FileNonceStore::load(&nonce_store_path(dir)).map_err(|e| format!("replay store: {e}"))?;
 
-    PendingStore::transaction(dir, |pending| -> Result<ApproveOutcome, String> {
+    PendingStore::transaction(dir, |pending| -> Result<VerifiedResponse, String> {
         // The clock is read here, after both the pending-store and
         // replay-store locks are held: a timestamp captured before
         // waiting on a lock could pass a response that expired in the
@@ -485,9 +599,6 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
             &mut nonces,
         )
         .map_err(|e| format!("the approval response failed verification: {e}"))?;
-        nonces
-            .save()
-            .map_err(|e| format!("could not persist the replay store: {e}"))?;
 
         let Body::ApprovalResponse {
             decision,
@@ -509,7 +620,8 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
                 let once = matches!(scope, Scope::Once);
                 if !once && record.requested_timed.is_none() {
                     return Err(format!(
-                        "request {rid} asked for a single-use approval; the response offered a                          reusable scope, which is refused"
+                        "request {rid} asked for a single-use approval; the response offered a \
+                         reusable scope, which is refused"
                     ));
                 }
                 if let Scope::Timed { seconds } = scope
@@ -527,32 +639,103 @@ pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutc
                 } else {
                     now + scope.seconds()
                 };
-                if !pending.grant(&rid, once, until) {
-                    return Err(format!("request {rid} disappeared from the pending store"));
+
+                let answer = match record.kind.carries_challenge() {
+                    true => {
+                        // Decode and validate before anything is recorded.
+                        let answer = response.as_ref().ok_or_else(|| {
+                            format!(
+                                "request {rid} was approved, but the response carries no \
+                                 challenge response; re-run the command to ask again"
+                            )
+                        })?;
+                        let bytes = answer.as_bytes().map_err(|e| {
+                            format!("the challenge response in the response is not valid hex: {e}")
+                        })?;
+                        if bytes.len() != passlane_approval::message::CHALLENGE_RESPONSE_LEN {
+                            return Err(format!(
+                                "request {rid} was approved, but the challenge response is {} \
+                                 bytes, not {}; re-run the command to ask again",
+                                bytes.len(),
+                                passlane_approval::message::CHALLENGE_RESPONSE_LEN
+                            ));
+                        }
+                        Some(bytes)
+                    }
+                    false => None,
+                };
+
+                if let Some(bytes) = &answer {
+                    // The answer is the caller's before anything is
+                    // recorded: a handoff that fails (nowhere to keep it)
+                    // leaves the blob presentable again.
+                    handoff(&ResponseHandoff {
+                        rid: &rid,
+                        vault: &vault,
+                        kind: record.kind,
+                        challenge: record.challenge.as_deref(),
+                        response: bytes,
+                        scope: *scope,
+                    })?;
                 }
-                Ok(ApproveOutcome::Allowed {
-                    rid,
-                    vault,
-                    entry,
-                    field,
-                    once,
-                    until,
-                    has_unlock_response: response.is_some(),
+                nonces
+                    .save()
+                    .map_err(|e| format!("could not persist the replay store: {e}"))?;
+                match disposition {
+                    Disposition::Grant => {
+                        if !pending.grant(&rid, once, until) {
+                            return Err(format!("request {rid} disappeared from the pending store"));
+                        }
+                    }
+                    Disposition::ConsumeNow => {
+                        if !pending.consume(&rid) {
+                            return Err(format!("request {rid} disappeared from the pending store"));
+                        }
+                    }
+                }
+                Ok(VerifiedResponse {
+                    outcome: ApproveOutcome::Allowed {
+                        rid,
+                        vault,
+                        entry,
+                        field,
+                        once,
+                        until,
+                        has_unlock_response: answer.is_some(),
+                    },
+                    response: answer,
+                    kind: record.kind,
+                    challenge: record.challenge,
                 })
             }
             Decision::Deny { reason } => {
+                nonces
+                    .save()
+                    .map_err(|e| format!("could not persist the replay store: {e}"))?;
                 pending.deny(&rid);
-                Ok(ApproveOutcome::Denied {
-                    rid,
-                    vault,
-                    entry,
-                    field,
-                    reason: reason.clone(),
+                Ok(VerifiedResponse {
+                    outcome: ApproveOutcome::Denied {
+                        rid,
+                        vault,
+                        entry,
+                        field,
+                        reason: reason.clone(),
+                    },
+                    response: None,
+                    kind: record.kind,
+                    challenge: record.challenge,
                 })
             }
         }
     })
     .map_err(|e| format!("could not update the pending-request store: {e}"))?
+}
+
+/// [`verify_response`] leaving the request granted, for callers that do
+/// not use a challenge response themselves: `passlane approve --response`
+/// and the ask flow.
+pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutcome, String> {
+    verify_response(dir, blob, Disposition::Grant, &|_| Ok(())).map(|verified| verified.outcome)
 }
 
 // ---------------------------------------------------------------------------
@@ -859,6 +1042,21 @@ pub(crate) fn mock_page_response(
     request_rid: &str,
     decision: Decision,
 ) -> Envelope {
+    mock_page_answer(cli, page, passkey, request_rid, decision, None, Scope::Once)
+}
+
+/// [`mock_page_response`] answering a challenge-bearing request: the
+/// Allow carries the 20-byte HMAC-SHA1 `answer`, with the given scope.
+#[cfg(test)]
+pub(crate) fn mock_page_answer(
+    cli: &IdentityKeys,
+    page: &IdentityKeys,
+    passkey: &p256::ecdsa::SigningKey,
+    request_rid: &str,
+    decision: Decision,
+    answer: Option<[u8; 20]>,
+    scope: Scope,
+) -> Envelope {
     let cli_pin = PeerPin::new(
         "cli",
         PublicKey(cli.encryption_public()),
@@ -871,8 +1069,8 @@ pub(crate) fn mock_page_response(
         &cli_pin,
         Body::ApprovalResponse {
             decision,
-            scope: Scope::Once,
-            response: None,
+            scope,
+            response: answer.map(|bytes| passlane_approval::message::SecretHex::from_bytes(&bytes)),
         },
         request_rid,
         now_secs(),
@@ -1362,8 +1560,29 @@ mod tests {
         }
     }
 
+    /// Emit a challenge-bearing request to the pinned page, the way the
+    /// phone-held-key transport does.
+    fn emit_challenge(
+        dir: &std::path::Path,
+        kind: RequestKind,
+        challenge: &[u8; 32],
+    ) -> EmittedRequest {
+        let peer = load_peers_pinned(dir).unwrap().remove(0);
+        let hex = passlane_approval::encoding::hex_encode(challenge);
+        let body =
+            challenge_request_body("default", kind.operation(), challenge, "test-user").unwrap();
+        emit_to(
+            dir,
+            &peer,
+            RequestTarget::challenge("default", kind, &hex),
+            body,
+            None,
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn unlock_request_carries_the_challenge_encrypted() {
+    fn challenge_request_carries_the_challenge_encrypted() {
         let state = tempfile::tempdir().unwrap();
         let dir = state.path();
         {
@@ -1371,11 +1590,13 @@ mod tests {
             pin_approver(dir, pin, None).unwrap();
             let cli = load_identity(dir).unwrap();
             let challenge = [0x5fu8; 32];
-            let emitted =
-                emit_unlock_request(dir, "default", "Main", &challenge, "test-user").unwrap();
+            let emitted = emit_challenge(dir, RequestKind::Save, &challenge);
 
-            let envelope =
-                Envelope::from_base64url(emitted.link.split('#').nth(1).unwrap()).unwrap();
+            // The link's fragment IS the envelope, and the page can parse
+            // and open it with the CLI's pinned keys.
+            let fragment = emitted.link.split('#').nth(1).unwrap();
+            assert_eq!(fragment, emitted.envelope);
+            let envelope = Envelope::from_base64url(fragment).unwrap();
             let mut nonces = passlane_approval::replay::InMemoryNonceStore::default();
             let opened = passlane_approval::envelope::open(
                 &page,
@@ -1391,15 +1612,218 @@ mod tests {
                 &mut nonces,
             )
             .unwrap();
-            let Body::ApprovalRequest { challenge: c, .. } = &*opened else {
+            let Body::ApprovalRequest {
+                challenge: c,
+                operation,
+                ..
+            } = &*opened
+            else {
                 panic!()
             };
             assert_eq!(
                 c.as_ref().unwrap().as_bytes().unwrap().as_slice(),
                 challenge
             );
+            assert_eq!(*operation, Operation::Save);
             // The challenge never appears in the link bytes.
             assert!(!emitted.link.contains("5f5f"));
+
+            // The pending record knows what it is asking and for which
+            // challenge, and can show the link again.
+            let pending = PendingStore::load(dir).unwrap();
+            let record = &pending.records()[0];
+            assert_eq!(record.kind, RequestKind::Save);
+            assert_eq!(record.challenge.as_deref(), Some("5f".repeat(32).as_str()));
+            assert_eq!(record.link.as_deref(), Some(emitted.link.as_str()));
+            assert!(record.entry.is_empty() && record.field.is_empty());
+        }
+    }
+
+    #[test]
+    fn challenge_request_body_refuses_a_reveal_and_a_short_challenge() {
+        assert!(
+            challenge_request_body(
+                "v",
+                Operation::Reveal {
+                    entry: "e".into(),
+                    field: "f".into()
+                },
+                &[0u8; 32],
+                "r"
+            )
+            .is_err()
+        );
+        assert!(
+            challenge_request_body("v", Operation::Unlock, &[0u8; 20], "r").is_err(),
+            "the challenge is the 32-byte KDF seed"
+        );
+        assert!(challenge_request_body("v", Operation::EnrollKey, &[7u8; 32], "r").is_ok());
+    }
+
+    #[test]
+    fn verified_challenge_response_is_handed_over_and_spent() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let challenge = [0xa1u8; 32];
+            let emitted = emit_challenge(dir, RequestKind::Unlock, &challenge);
+            let answer = [0x77u8; 20];
+            let blob = mock_page_answer(
+                &cli,
+                &page,
+                &passkey,
+                &emitted.rid,
+                Decision::Allow,
+                Some(answer),
+                Scope::Once,
+            )
+            .to_base64url();
+
+            let handed = std::cell::RefCell::new(Vec::new());
+            let verified = verify_response(dir, &blob, Disposition::ConsumeNow, &|handoff| {
+                assert_eq!(handoff.rid, emitted.rid);
+                assert_eq!(handoff.vault, "default");
+                assert_eq!(handoff.kind, RequestKind::Unlock);
+                assert_eq!(handoff.challenge, Some("a1".repeat(32).as_str()));
+                assert_eq!(handoff.scope, Scope::Once);
+                *handed.borrow_mut() = handoff.response.to_vec();
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                handed.into_inner(),
+                answer,
+                "the handoff and the caller see the same bytes"
+            );
+            assert_eq!(
+                verified.response.as_deref().map(|r| r.as_slice()),
+                Some(answer.as_slice())
+            );
+            assert_eq!(verified.kind, RequestKind::Unlock);
+            assert!(matches!(
+                verified.outcome,
+                ApproveOutcome::Allowed {
+                    has_unlock_response: true,
+                    once: true,
+                    ..
+                }
+            ));
+
+            // Used the moment it arrived: the record is spent, and the
+            // same blob presented again says so.
+            let pending = PendingStore::load(dir).unwrap();
+            assert_eq!(pending.records()[0].state, RequestState::Consumed);
+            let err = approve_response(dir, &blob).unwrap_err();
+            assert!(err.contains("already approved and used"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_failed_handoff_leaves_the_response_presentable_again() {
+        // `passlane approve --response` hands the answer to the session
+        // agent. When the agent refuses it (or is not running), nothing
+        // may be recorded: the same blob must still work once it is.
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let emitted = emit_challenge(dir, RequestKind::Unlock, &[0x01; 32]);
+            let blob = mock_page_answer(
+                &cli,
+                &page,
+                &passkey,
+                &emitted.rid,
+                Decision::Allow,
+                Some([0x42; 20]),
+                Scope::Once,
+            )
+            .to_base64url();
+
+            let err = verify_response(dir, &blob, Disposition::Grant, &|_| {
+                Err("nowhere to keep it".to_string())
+            })
+            .unwrap_err();
+            assert!(err.contains("nowhere to keep it"), "{err}");
+
+            // Still pending, and not yet replayed: the blob verifies.
+            let pending = PendingStore::load(dir).unwrap();
+            assert_eq!(pending.records()[0].state, RequestState::Pending);
+            let verified = verify_response(dir, &blob, Disposition::Grant, &|_| Ok(())).unwrap();
+            assert_eq!(
+                verified.response.as_deref().map(|r| r.as_slice()),
+                Some([0x42u8; 20].as_slice())
+            );
+            let pending = PendingStore::load(dir).unwrap();
+            assert!(matches!(
+                pending.records()[0].state,
+                RequestState::Granted { once: true, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn an_approval_without_an_answer_satisfies_no_challenge_request() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let emitted = emit_challenge(dir, RequestKind::EnrollKey, &[0x0c; 32]);
+            let empty = mock_page_response(&cli, &page, &passkey, &emitted.rid, Decision::Allow)
+                .to_base64url();
+
+            let err = approve_response(dir, &empty).unwrap_err();
+            assert!(err.contains("carries no challenge response"), "{err}");
+            // Nothing was released or spent.
+            let pending = PendingStore::load(dir).unwrap();
+            assert_eq!(pending.records()[0].state, RequestState::Pending);
+            assert_eq!(
+                consume_grant(dir, "default", "", ""),
+                None,
+                "a challenge request never becomes a reveal grant"
+            );
+        }
+    }
+
+    #[test]
+    fn a_denied_challenge_request_is_refused_with_its_reason() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let emitted = emit_challenge(dir, RequestKind::Unlock, &[0x03; 32]);
+            let deny = mock_page_response(
+                &cli,
+                &page,
+                &passkey,
+                &emitted.rid,
+                Decision::Deny {
+                    reason: Some("not this vault".into()),
+                },
+            )
+            .to_base64url();
+            let verified = verify_response(dir, &deny, Disposition::ConsumeNow, &|_| {
+                panic!("a denial hands nothing over")
+            })
+            .unwrap();
+            assert!(matches!(
+                verified.outcome,
+                ApproveOutcome::Denied {
+                    ref reason,
+                    ..
+                } if reason.as_deref() == Some("not this vault")
+            ));
+            assert!(verified.response.is_none());
+            let pending = PendingStore::load(dir).unwrap();
+            assert_eq!(pending.records()[0].state, RequestState::Denied);
         }
     }
 

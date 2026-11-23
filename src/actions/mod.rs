@@ -337,6 +337,7 @@ mod tests {
             path: "/nonexistent/agent-test.kdbx".to_string(),
             keyfile: None,
             hwkey: None,
+            phone_key: None,
         });
     }
 

@@ -287,6 +287,45 @@ impl ApprovalLog {
         });
     }
 
+    /// Record a challenge-bearing request — opening or saving a vault by
+    /// phone-held key, or enrolling one (passlane#53) — correlated by the
+    /// protocol request id. `kind` is what was asked (`unlock`, `save`,
+    /// `enroll_key`); there is no entry.
+    pub fn log_challenge_request(&self, id: &str, vault: &str, kind: &str, request: &Body) {
+        self.append(&ApprovalEvent {
+            ts: Utc::now().to_rfc3339(),
+            event: "request",
+            id: Some(id),
+            vault,
+            entry: "",
+            entry_id: None,
+            field: kind,
+            policy: "phone-key",
+            requester: requester(),
+            request: Some(request.clone()),
+            decision: None,
+            session_until: None,
+        });
+    }
+
+    /// Record how a challenge-bearing request ended.
+    pub fn log_challenge_decision(&self, id: &str, vault: &str, kind: &str, approved: bool) {
+        self.append(&ApprovalEvent {
+            ts: Utc::now().to_rfc3339(),
+            event: "decision",
+            id: Some(id),
+            vault,
+            entry: "",
+            entry_id: None,
+            field: kind,
+            policy: "phone-key",
+            requester: requester(),
+            request: None,
+            decision: Some(if approved { "approved" } else { "denied" }),
+            session_until: None,
+        });
+    }
+
     /// Record that an agent-facing reveal was served from a live agent
     /// session (an earlier "Approve for this session"): the reusable
     /// form of an approval, audited like any other reveal.

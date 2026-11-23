@@ -23,9 +23,69 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use passlane_approval::error::Result;
+use passlane_approval::message::Operation;
 
 /// The store's file name inside the approvals state directory.
 const PENDING_FILENAME: &str = "approval_pending.json";
+
+/// What a recorded request asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    /// Reveal one field of one entry (the ask flow).
+    Reveal,
+    /// Supply the challenge-response that opens the vault (SPEC §7).
+    Unlock,
+    /// Supply the challenge-response for a save: the new KDF seed.
+    Save,
+    /// Create a phone-held key for the vault and prove it.
+    EnrollKey,
+}
+
+impl RequestKind {
+    /// The kind of a request body's operation.
+    pub fn from_operation(operation: &Operation) -> Self {
+        match operation {
+            Operation::Reveal { .. } => Self::Reveal,
+            Operation::Unlock => Self::Unlock,
+            Operation::Save => Self::Save,
+            Operation::EnrollKey => Self::EnrollKey,
+        }
+    }
+
+    /// The operation each kind is answered with.
+    pub fn operation(self) -> Operation {
+        match self {
+            Self::Reveal => Operation::Reveal {
+                entry: String::new(),
+                field: String::new(),
+            },
+            Self::Unlock => Operation::Unlock,
+            Self::Save => Operation::Save,
+            Self::EnrollKey => Operation::EnrollKey,
+        }
+    }
+
+    /// Whether an answer must carry a challenge response.
+    pub fn carries_challenge(self) -> bool {
+        self != Self::Reveal
+    }
+
+    /// How the request is described to the owner.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reveal => "reveal",
+            Self::Unlock => "unlock",
+            Self::Save => "save",
+            Self::EnrollKey => "enroll_key",
+        }
+    }
+}
+
+/// Records written before `kind` existed were all reveals.
+fn default_kind() -> RequestKind {
+    RequestKind::Reveal
+}
 
 /// One recorded approval request and where it stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +110,20 @@ pub struct PendingRequest {
     /// `Scope::Once` — a response may not grant anything wider than this.
     #[serde(default)]
     pub requested_timed: Option<u32>,
+    /// What the request asks for. Records from before this field existed
+    /// are reveals.
+    #[serde(default = "default_kind")]
+    pub kind: RequestKind,
+    /// The challenge the request carried, lower-case hex: the vault's KDF
+    /// seed for unlocks and saves, a proof value for enrollment. It is
+    /// public — it sits in cleartext in the vault file's header — and it
+    /// is what matches an answer to the file version it opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge: Option<String>,
+    /// The link the request was emitted as, so it can be shown again
+    /// while the request is pending. Sealed to the approver; not secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
     /// Where the request stands.
     pub state: RequestState,
 }
@@ -218,6 +292,16 @@ impl PendingStore {
         true
     }
 
+    /// End a request whose answer was used the moment it arrived (the
+    /// interactive phone-key flow). Returns false if the rid is unknown.
+    pub fn consume(&mut self, rid: &str) -> bool {
+        let Some(record) = self.records.iter_mut().find(|r| r.rid == rid) else {
+            return false;
+        };
+        record.state = RequestState::Consumed;
+        true
+    }
+
     /// Drop records that can no longer matter at `now`: past their
     /// envelope expiry and (for grants) past their reuse window.
     pub fn prune(&mut self, now: u64) {
@@ -242,8 +326,14 @@ impl PendingStore {
         let candidate = self
             .records
             .iter()
+            // Only reveals are consumed here: unlock, save and enrollment
+            // answers are handed to the caller by `verify_response`.
             .filter(|r| {
-                r.vault == vault && r.entry_id == entry_id && r.field == field && r.grant_live(now)
+                r.kind == RequestKind::Reveal
+                    && r.vault == vault
+                    && r.entry_id == entry_id
+                    && r.field == field
+                    && r.grant_live(now)
             })
             .max_by_key(|r| r.created)?;
         let rid = candidate.rid.clone();
@@ -273,6 +363,9 @@ mod tests {
             created: 1000,
             exp: 1300,
             requested_timed: None,
+            kind: RequestKind::Reveal,
+            challenge: None,
+            link: None,
             state,
         }
     }
@@ -473,6 +566,78 @@ mod tests {
 
         s.prune(2300);
         assert!(s.records().is_empty());
+    }
+
+    #[test]
+    fn challenge_bearing_grants_are_never_taken_as_reveal_grants() {
+        // An unlock record has empty entry/field; it must not be matched by
+        // a reveal lookup, and its answer is handed over by the verifier.
+        let mut unlock = record(
+            "u",
+            "",
+            RequestState::Granted {
+                once: true,
+                until: 1500,
+            },
+        );
+        unlock.kind = RequestKind::Unlock;
+        unlock.entry.clear();
+        unlock.challenge = Some("ab".repeat(32));
+        let mut s = store(vec![unlock]);
+        assert_eq!(s.take_grant("default", "", "", 1000), None);
+        // The record itself is untouched and still granted.
+        assert_eq!(
+            s.find("u").unwrap().state,
+            RequestState::Granted {
+                once: true,
+                until: 1500
+            }
+        );
+    }
+
+    #[test]
+    fn consume_ends_the_request_where_it_was_used() {
+        let mut s = store(vec![record("a", "GitHub", RequestState::Pending)]);
+        assert!(s.consume("a"));
+        assert_eq!(s.find("a").unwrap().state, RequestState::Consumed);
+        assert!(!s.consume("missing"));
+    }
+
+    #[test]
+    fn records_from_before_kinds_existed_are_reveals() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(PENDING_FILENAME),
+            r#"[{"rid":"a","vault":"default","entry_id":"uuid-x","entry":"GitHub","field":"password","created":1000,"exp":4102444800,"requested_timed":null,"state":{"kind":"pending"}}]"#,
+        )
+        .unwrap();
+        let loaded = PendingStore::load(dir.path()).unwrap();
+        assert_eq!(loaded.records()[0].kind, RequestKind::Reveal);
+        assert_eq!(loaded.records()[0].challenge, None);
+        assert_eq!(loaded.records()[0].link, None);
+    }
+
+    #[test]
+    fn kinds_map_to_and_from_operations() {
+        let reveal = Operation::Reveal {
+            entry: "GitHub".into(),
+            field: "password".into(),
+        };
+        for (operation, kind) in [
+            (reveal, RequestKind::Reveal),
+            (Operation::Unlock, RequestKind::Unlock),
+            (Operation::Save, RequestKind::Save),
+            (Operation::EnrollKey, RequestKind::EnrollKey),
+        ] {
+            assert_eq!(RequestKind::from_operation(&operation), kind);
+            assert_eq!(
+                RequestKind::from_operation(&kind.operation()),
+                kind,
+                "{} round-trips through an operation",
+                kind.label()
+            );
+            assert_eq!(kind.carries_challenge(), kind != RequestKind::Reveal);
+        }
     }
 
     #[test]

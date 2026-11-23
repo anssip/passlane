@@ -4,6 +4,7 @@ mod approvals;
 mod completion_cache;
 mod hwkey;
 mod keychain;
+mod phone_key;
 mod repl;
 mod session_agent;
 mod store;
