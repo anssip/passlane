@@ -77,6 +77,7 @@ fn rc_file(shell: Shell) -> &'static str {
 fn generate_cache() -> Result<usize, Error> {
     use crate::keychain;
     use crate::ui::input::ask_master_password;
+    use passlane_core::challenge::ChallengeFactor;
     use passlane_core::vault::keepass_vault::KeepassVault;
     use passlane_core::vault::vault_trait::{PasswordVault, Vault};
 
@@ -92,21 +93,21 @@ fn generate_cache() -> Result<usize, Error> {
             ask_master_password(None)
         }
     };
-    let challenge_response = config
+    let challenge_factor = config
         .hwkey
         .as_ref()
-        .map(passlane_core::hwkey::configured_challenge_response_key)
+        .map(|hwkey| ChallengeFactor::yubikey(hwkey.slot, hwkey.serial))
         .transpose()?;
 
     println!(
         "Opening vault '{}' to build completion cache...",
         config.name
     );
-    let vault = KeepassVault::open(
+    let vault = KeepassVault::open_with_challenge_factor(
         &master_pwd,
         &config.path,
         config.keyfile,
-        challenge_response.as_ref(),
+        challenge_factor.as_ref(),
     )?;
     let count = vault.grep(None).len();
     let boxed: Box<dyn Vault> = Box::new(vault);

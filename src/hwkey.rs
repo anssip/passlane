@@ -1,21 +1,22 @@
 //! Interactive hardware-key flows: enrollment prompts, the recovery-secret
 //! prompt and the backup reminder. The pure parts — `HwKeyConfig`, its
-//! parsing and challenge-response key resolution — live in
-//! `passlane_core::hwkey`.
+//! parsing, the challenge-response factor and the device-error messages —
+//! live in `passlane_core` (`hwkey` and `challenge`).
 
 use keepass_ng::ChallengeResponseKey;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::hwkey::{HwKeyConfig, friendly_device_error};
 
 use crate::ui::input::{ask_password, ask_with_options};
 use passlane_core::vault::entities::Error;
 
 /// List connected hardware keys and ask which slot to enroll (unless `slot`
-/// was given on the command line). Returns the key to enroll with plus the
-/// config to persist once the vault has been re-saved.
+/// was given on the command line). Returns the factor to enroll the vault
+/// with plus the config to persist once the vault has been re-saved.
 pub fn resolve_new_key(
     slot: Option<u8>,
     serial: Option<u32>,
-) -> Result<(ChallengeResponseKey, HwKeyConfig), Error> {
+) -> Result<(ChallengeFactor, HwKeyConfig), Error> {
     let device = ChallengeResponseKey::get_yubikey(serial).map_err(friendly_device_error)?;
     let config = HwKeyConfig {
         slot: match slot {
@@ -29,7 +30,10 @@ pub fn resolve_new_key(
         device.serial_number, config.slot
     );
     Ok((
-        ChallengeResponseKey::YubikeyChallenge(device, config.slot.to_string()),
+        ChallengeFactor::Yubikey {
+            slot: config.slot,
+            serial: config.serial,
+        },
         config,
     ))
 }
@@ -46,18 +50,19 @@ fn ask_slot() -> Result<u8, Error> {
 
 /// Prompt for the backed-up HMAC-SHA1 secret (hex) of an enrolled slot, for
 /// recovering a vault whose hardware key has been lost. The secret is what
-/// `ykman otp chalresp` was programmed with (or exported from). Whitespace is
-/// stripped: pasted secrets often carry trailing newlines or spaces, which
-/// would otherwise fail hex decoding.
-pub fn recovery_key_from_prompt() -> ChallengeResponseKey {
+/// `ykman otp chalresp` was programmed with (or exported from). It becomes
+/// the virtual challenge factor, which answers challenges with the same key
+/// material the lost key holds. Whitespace is stripped (pasted secrets often
+/// carry trailing newlines or spaces), and anything but a 40-character hex
+/// secret is rejected on the spot, before the master password is asked for.
+pub fn recovery_key_from_prompt() -> Result<ChallengeFactor, Error> {
     let secret = ask_password(
         "Enter the backed-up HMAC-SHA1 secret (hex) of the enrolled slot",
         Some(
             "The 40-character hex secret saved when the key's slot was programmed, e.g. with 'ykman otp chalresp'",
         ),
     );
-    let secret = secret.chars().filter(|c| !c.is_whitespace()).collect();
-    ChallengeResponseKey::LocalChallenge(secret)
+    ChallengeFactor::from_secret_hex(&secret)
 }
 
 /// Warn that without the hardware key or a backup of the slot secret, an

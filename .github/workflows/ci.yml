@@ -18,6 +18,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --locked --workspace --all-targets
       - run: cargo test --locked --workspace
+      # passlane-core without its `usb` feature is the mobile (iOS/FFI)
+      # configuration: virtual challenge-response keys in, libusb out.
+      - run: cargo test --locked -p passlane-core --no-default-features
+
+  ios:
+    # The no-USB configuration must build for iOS, where libusb does not
+    # exist: the vault still opens with password, keyfile and virtual keys.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - run: cargo build --locked -p passlane-core --no-default-features --target aarch64-apple-ios
+      - run: cargo build --locked -p passlane-core --no-default-features --target aarch64-apple-ios-sim
 
   audit:
     runs-on: ubuntu-latest

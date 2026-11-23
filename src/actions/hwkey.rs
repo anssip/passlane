@@ -1,5 +1,6 @@
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
+use passlane_core::challenge::ChallengeFactor;
 
 use crate::actions::{Action, get_vault_password};
 use crate::hwkey;
@@ -66,21 +67,25 @@ impl HwKeyAction {
             )));
         }
         // Fail fast if no key is connected, before asking for the password.
-        let (challenge_response, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
+        let (challenge_factor, hwkey_config) = hwkey::resolve_new_key(slot, serial)?;
 
         let mut password = get_vault_password(&config.name);
         let result = (|| {
             println!("Unlocking vault '{}'...", config.name);
-            let mut vault =
-                KeepassVault::open(&password, &config.path, config.keyfile.clone(), None)?;
+            let mut vault = KeepassVault::open_with_challenge_factor(
+                &password,
+                &config.path,
+                config.keyfile.clone(),
+                None,
+            )?;
             // The re-save challenges the new key, proving the enrollment
             // before the config is persisted.
-            vault.update_challenge_response(Some(challenge_response))?;
+            vault.update_challenge_factor(Some(challenge_factor))?;
             if let Err(e) = vault_registry::set_hwkey(&config.name, Some(hwkey_config.clone())) {
                 // The vault now requires the key but passlane would not know
                 // to use it (no persisted config): roll the factor back or
                 // the vault can no longer be opened via passlane.
-                if let Err(rollback) = vault.update_challenge_response(None) {
+                if let Err(rollback) = vault.update_challenge_factor(None) {
                     eprintln!(
                         "Warning: failed to roll back the hardware key enrollment: {}",
                         rollback
@@ -105,27 +110,29 @@ impl HwKeyAction {
                 config.name
             ))
         })?;
-        let challenge_response = if secret {
-            hwkey::recovery_key_from_prompt()
+        // With --secret the lost key's backed-up slot secret stands in for
+        // it; otherwise the enrolled key itself answers the challenges.
+        let challenge_factor = if secret {
+            hwkey::recovery_key_from_prompt()?
         } else {
-            passlane_core::hwkey::configured_challenge_response_key(&enrolled)?
+            ChallengeFactor::yubikey(enrolled.slot, enrolled.serial)?
         };
 
         let mut password = get_vault_password(&config.name);
         let result = (|| {
             println!("Unlocking vault '{}'...", config.name);
-            let mut vault = KeepassVault::open(
+            let mut vault = KeepassVault::open_with_challenge_factor(
                 &password,
                 &config.path,
                 config.keyfile.clone(),
-                Some(&challenge_response),
+                Some(&challenge_factor),
             )?;
             // Delete the config before touching the vault: if deletion
             // fails, abort with the vault still protected by the key,
             // rather than stripping the factor first and leaving passlane
             // demanding a key the vault no longer requires.
             vault_registry::set_hwkey(&config.name, None)?;
-            if let Err(e) = vault.update_challenge_response(None) {
+            if let Err(e) = vault.update_challenge_factor(None) {
                 // The vault on disk still requires the key; put the config
                 // back so passlane keeps using it.
                 if let Err(restore_err) =

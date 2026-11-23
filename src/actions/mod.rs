@@ -23,7 +23,7 @@ use crate::keychain;
 use crate::ui::input::ask_master_password;
 use arboard::Clipboard;
 use clap::ArgMatches;
-use keepass_ng::ChallengeResponseKey;
+use passlane_core::challenge::ChallengeFactor;
 use passlane_core::vault::entities::Error;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::Vault;
@@ -117,7 +117,7 @@ pub(crate) fn get_vault_password(vault_name: &str) -> String {
     .0
 }
 
-type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
+type VaultProperties = (String, String, Option<String>, Option<ChallengeFactor>);
 
 fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
     get_vault_properties_with(&|name| keychain::get_master_password(name).ok(), &|name| {
@@ -139,10 +139,12 @@ fn get_vault_properties_with(
                 name
             )))
         });
-    let challenge_response = match config.hwkey {
+    // Resolving the enrolled key fails when it is not connected; that is
+    // reported here, before "Unlocking vault" is announced.
+    let challenge_factor = match config.hwkey {
         Some(ref hwkey_config) => {
-            match passlane_core::hwkey::configured_challenge_response_key(hwkey_config) {
-                Ok(cr) => Some(cr),
+            match ChallengeFactor::yubikey(hwkey_config.slot, hwkey_config.serial) {
+                Ok(factor) => Some(factor),
                 Err(e) => {
                     // The key not being connected lands here; keep the password
                     // zeroize discipline on this early return too.
@@ -154,7 +156,7 @@ fn get_vault_properties_with(
         None => None,
     };
     Ok((
-        (master_pwd, config.path, config.keyfile, challenge_response),
+        (master_pwd, config.path, config.keyfile, challenge_factor),
         source,
     ))
 }
@@ -191,7 +193,7 @@ impl PasswordSource {
 }
 
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
-    let ((mut master_pwd, filepath, keyfile_path, challenge_response), source) =
+    let ((mut master_pwd, filepath, keyfile_path, challenge_factor), source) =
         get_vault_properties()?;
     set_last_unlock_source(source);
     if source == PasswordSource::SessionAgent {
@@ -203,7 +205,7 @@ pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
         &master_pwd,
         &filepath,
         keyfile_path,
-        challenge_response.as_ref(),
+        challenge_factor.as_ref(),
     )
     .map_err(|e| {
         if source == PasswordSource::SessionAgent {
@@ -225,10 +227,15 @@ fn get_vault(
     password: &str,
     filepath: &str,
     keyfile_path: Option<String>,
-    challenge_response: Option<&ChallengeResponseKey>,
+    challenge_factor: Option<&ChallengeFactor>,
 ) -> Result<Box<dyn Vault>, Error> {
     // we could return some other Vault implementation here
-    let vault = KeepassVault::open(password, filepath, keyfile_path, challenge_response)?;
+    let vault = KeepassVault::open_with_challenge_factor(
+        password,
+        filepath,
+        keyfile_path,
+        challenge_factor,
+    )?;
     Ok(Box::new(vault))
 }
 
