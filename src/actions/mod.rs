@@ -21,6 +21,7 @@ pub mod vault;
 use crate::keychain;
 
 use crate::ui::input::ask_master_password;
+use crate::vault_registry::VaultConfig;
 use arboard::Clipboard;
 use clap::ArgMatches;
 use keepass_ng::ChallengeResponseKey;
@@ -117,46 +118,115 @@ pub(crate) fn get_vault_password(vault_name: &str) -> String {
     .0
 }
 
-type VaultProperties = (String, String, Option<String>, Option<ChallengeResponseKey>);
-
-fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
-    get_vault_properties_with(&|name| keychain::get_master_password(name).ok(), &|name| {
-        crate::session_agent::try_unlock_factors(name)
-    })
+/// Everything needed to open the current vault.
+pub(crate) struct VaultProperties {
+    /// The master password. Zeroized when this is dropped.
+    pub password: String,
+    /// The vault file.
+    pub path: String,
+    /// The keyfile, if the vault uses one.
+    pub keyfile: Option<String>,
+    /// The vault's challenge-response factor, if it has one: a hardware
+    /// key, a phone-held key (answered over the link transport), or none.
+    pub challenge_response: Option<ChallengeResponseKey>,
 }
 
-/// [`get_vault_properties`] with the keychain and agent lookups injected
-/// (tests run without touching either).
+impl Drop for VaultProperties {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+fn get_vault_properties() -> Result<(VaultProperties, PasswordSource), Error> {
+    get_vault_properties_with(
+        &|name| keychain::get_master_password(name).ok(),
+        &|name| crate::session_agent::try_unlock_factors(name),
+        &enrolled_challenge_response,
+    )
+}
+
+/// [`get_vault_properties`] with the keychain, agent and second-factor
+/// lookups injected (tests run without touching any of them).
+#[allow(clippy::too_many_arguments)]
 fn get_vault_properties_with(
     keychain_lookup: &dyn Fn(&str) -> Option<String>,
     agent_lookup: &dyn Fn(&str) -> Option<Zeroizing<String>>,
+    second_factor: &dyn Fn(&VaultConfig) -> Result<Option<ChallengeResponseKey>, Error>,
 ) -> Result<(VaultProperties, PasswordSource), Error> {
     let config = crate::vault_registry::current()?;
-    let (mut master_pwd, source) =
+
+    // A phone-held key is resolved before anyone is asked for a password:
+    // a holder that is not pinned, or a vault file that cannot be read,
+    // should fail before a password is typed. Resolving only mints the
+    // request, though; keepass-ng asks for the answer when the vault is
+    // opened, after the password is known.
+    let phone_gated = config.phone_key.is_some();
+    let early_factor = if phone_gated {
+        second_factor(&config)?
+    } else {
+        None
+    };
+
+    let (mut password, source) =
         get_vault_password_with(&config.name, keychain_lookup, agent_lookup, &|name| {
             ask_master_password(Some(&format!(
                 "Please enter master password of vault '{}'",
                 name
             )))
         });
-    let challenge_response = match config.hwkey {
-        Some(ref hwkey_config) => {
-            match passlane_core::hwkey::configured_challenge_response_key(hwkey_config) {
-                Ok(cr) => Some(cr),
-                Err(e) => {
-                    // The key not being connected lands here; keep the password
-                    // zeroize discipline on this early return too.
-                    master_pwd.zeroize();
-                    return Err(e);
-                }
+    let challenge_response = if phone_gated {
+        early_factor
+    } else {
+        match second_factor(&config) {
+            Ok(factor) => factor,
+            // Keep the zeroize discipline on this early return too.
+            Err(e) => {
+                password.zeroize();
+                return Err(e);
             }
         }
-        None => None,
     };
     Ok((
-        (master_pwd, config.path, config.keyfile, challenge_response),
+        VaultProperties {
+            password,
+            path: config.path,
+            keyfile: config.keyfile,
+            challenge_response,
+        },
         source,
     ))
+}
+
+/// The challenge-response key for a vault's enrolled factor, or `None`
+/// when the vault opens on password (and keyfile) alone.
+pub(crate) fn enrolled_challenge_response(
+    config: &VaultConfig,
+) -> Result<Option<ChallengeResponseKey>, Error> {
+    match (&config.hwkey, &config.phone_key) {
+        (Some(hwkey_config), _) => {
+            passlane_core::hwkey::configured_challenge_response_key(hwkey_config).map(Some)
+        }
+        (None, Some(phone_key)) => phone_challenge_response_key(config, phone_key).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+/// A vault's phone-held key as keepass-ng sees it: a challenge responder
+/// whose answers come from the pinned holder over the link transport,
+/// straight from this process or through the session agent.
+fn phone_challenge_response_key(
+    config: &VaultConfig,
+    phone_key: &crate::vault_registry::PhoneKeyConfig,
+) -> Result<ChallengeResponseKey, Error> {
+    let dir = crate::approvals::state_dir();
+    let holder = crate::phone_key::transport::holder_pin(&dir, &phone_key.holder_kid)?;
+    let transport = crate::phone_key::transport::LinkTransport::new(
+        &dir,
+        holder,
+        crate::agent::requester(),
+        std::sync::Arc::new(crate::session_agent::AgentAnswerStore),
+    );
+    crate::phone_key::open_key(config, std::sync::Arc::new(transport))
 }
 
 /// How the current process last unlocked a vault (see [`unlock`]), so
@@ -191,8 +261,7 @@ impl PasswordSource {
 }
 
 pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
-    let ((mut master_pwd, filepath, keyfile_path, challenge_response), source) =
-        get_vault_properties()?;
+    let (properties, source) = get_vault_properties()?;
     set_last_unlock_source(source);
     if source == PasswordSource::SessionAgent {
         eprintln!("Unlocking vault via the session agent...");
@@ -200,24 +269,24 @@ pub(crate) fn unlock() -> Result<Box<dyn Vault>, Error> {
         println!("Unlocking vault...");
     }
     let vault = get_vault(
-        &master_pwd,
-        &filepath,
-        keyfile_path,
-        challenge_response.as_ref(),
+        &properties.password,
+        &properties.path,
+        properties.keyfile.clone(),
+        properties.challenge_response.as_ref(),
     )
     .map_err(|e| {
         if source == PasswordSource::SessionAgent {
             Error::new(&format!(
                 "{} (the unlock factors came from a session agent; if the vault was \
-                     re-keyed, drop the stale session with 'passlane sessions revoke' and \
-                     try again)",
+                 re-keyed, drop the stale session with 'passlane sessions revoke' and \
+                 try again)",
                 e.message
             ))
         } else {
             e
         }
     });
-    master_pwd.zeroize();
+    // `properties` zeroes the password when it is dropped here.
     vault
 }
 
@@ -380,16 +449,100 @@ mod tests {
         assert_eq!(source, PasswordSource::Prompt);
     }
 
+    /// A phone-gated vault is resolved before the password is looked up,
+    /// and only once.
+    #[test]
+    fn phone_key_is_resolved_before_the_password_and_only_once() {
+        let mut config = VaultConfig {
+            name: "agent-test".to_string(),
+            path: "/nonexistent/agent-test.kdbx".to_string(),
+            keyfile: None,
+            hwkey: None,
+            phone_key: None,
+        };
+        let order = std::cell::RefCell::new(Vec::new());
+        let factor = |config: &VaultConfig| {
+            order
+                .borrow_mut()
+                .push(format!("factor:{}", config.phone_key.is_some()));
+            Ok(None)
+        };
+        let note = || order.borrow_mut().push("password".to_string());
+        // The keychain answers, so the chain never reaches a real prompt.
+        let keychain = |_: &str| {
+            note();
+            Some("keychain-pw".to_string())
+        };
+        let agent = |_: &str| -> Option<Zeroizing<String>> {
+            note();
+            None
+        };
+
+        set_current(config.clone());
+        get_vault_properties_with(&keychain, &agent, &factor)
+            .map(|_| ())
+            .unwrap();
+        assert_eq!(*order.borrow(), vec!["password", "factor:false"]);
+
+        order.borrow_mut().clear();
+        config.phone_key = Some(crate::vault_registry::PhoneKeyConfig {
+            holder_kid: "0123456789abcdef".into(),
+            enrolled_at: 1,
+        });
+        set_current(config);
+        let (properties, _) = get_vault_properties_with(&keychain, &agent, &factor).unwrap();
+        assert_eq!(*order.borrow(), vec!["factor:true", "password"]);
+        assert!(properties.challenge_response.is_none());
+    }
+
+    /// A phone-held key that cannot be resolved fails before anyone is
+    /// asked for a password.
+    #[test]
+    fn an_unresolvable_phone_key_fails_before_the_password_prompt() {
+        set_current(VaultConfig {
+            name: "agent-test".to_string(),
+            path: "/nonexistent/agent-test.kdbx".to_string(),
+            keyfile: None,
+            hwkey: None,
+            phone_key: Some(crate::vault_registry::PhoneKeyConfig {
+                holder_kid: "0123456789abcdef".into(),
+                enrolled_at: 1,
+            }),
+        });
+        let err = get_vault_properties_with(
+            &|_| panic!("the keychain must not be read before the factor resolves"),
+            &|_| panic!("the agent must not be asked before the factor resolves"),
+            &|_| Err(Error::new("the holder is no longer pinned")),
+        )
+        .err()
+        .expect("the factor cannot be resolved");
+        assert_eq!(err.message, "the holder is no longer pinned");
+    }
+
+    /// A hardware key (resolved after the password, as before) that
+    /// cannot be found still aborts the unlock.
+    #[test]
+    fn a_missing_hardware_key_still_fails_the_unlock() {
+        test_vault();
+        let err =
+            get_vault_properties_with(&|_| Some("keychain-pw".to_string()), &|_| None, &|_| {
+                Err(Error::new("No hardware key detected"))
+            })
+            .err()
+            .expect("the hardware key is missing");
+        assert_eq!(err.message, "No hardware key detected");
+    }
+
     #[test]
     fn vault_properties_flow_through_the_agent_source() {
         test_vault();
-        let ((pw, path, keyfile, challenge), source) =
-            get_vault_properties_with(&|_| None, &agent_password("agent-pw"))
+        let (properties, source) =
+            get_vault_properties_with(&|_| None, &agent_password("agent-pw"), &|_| Ok(None))
                 .expect("properties resolve from the agent");
-        assert_eq!(pw, "agent-pw");
-        assert_eq!(path, "/nonexistent/agent-test.kdbx");
-        assert!(keyfile.is_none());
-        assert!(challenge.is_none());
+        assert_eq!(properties.password, "agent-pw");
+        assert_eq!(properties.path, "/nonexistent/agent-test.kdbx");
+        assert!(properties.keyfile.is_none());
+        assert!(properties.challenge_response.is_none());
         assert_eq!(source, PasswordSource::SessionAgent);
     }
 }

@@ -472,18 +472,17 @@ pub enum ApproveOutcome {
     },
 }
 
-/// A verified response, with what must never be written to disk.
+/// What a verified response did, and what it answered.
+///
+/// Deliberately carries no answer bytes: a challenge response reaches
+/// its caller only through [`verify_response`]'s handoff, so there is
+/// exactly one place an unlock factor can be taken from.
 #[derive(Debug)]
 pub struct VerifiedResponse {
     /// What the response did.
     pub outcome: ApproveOutcome,
-    /// The 20-byte HMAC-SHA1 answer of an `Unlock`, `Save` or `EnrollKey`
-    /// request, held zeroized: it is a vault unlock factor.
-    pub response: Option<zeroize::Zeroizing<Vec<u8>>>,
     /// What the answered request asked for.
     pub kind: RequestKind,
-    /// The challenge the answered request carried (lower-case hex).
-    pub challenge: Option<String>,
 }
 
 /// What happens to a request once its answer is verified.
@@ -703,9 +702,7 @@ pub fn verify_response(
                         until,
                         has_unlock_response: answer.is_some(),
                     },
-                    response: answer,
                     kind: record.kind,
-                    challenge: record.challenge,
                 })
             }
             Decision::Deny { reason } => {
@@ -721,9 +718,7 @@ pub fn verify_response(
                         field,
                         reason: reason.clone(),
                     },
-                    response: None,
                     kind: record.kind,
-                    challenge: record.challenge,
                 })
             }
         }
@@ -731,9 +726,11 @@ pub fn verify_response(
     .map_err(|e| format!("could not update the pending-request store: {e}"))?
 }
 
-/// [`verify_response`] leaving the request granted, for callers that do
-/// not use a challenge response themselves: `passlane approve --response`
-/// and the ask flow.
+/// [`verify_response`] leaving the request granted and ignoring any
+/// answer. The binary's one caller — `passlane approve --response` —
+/// hands the answer to the session agent instead; this is the shape the
+/// tests use for a plain approval.
+#[cfg(test)]
 pub fn approve_response(dir: &std::path::Path, blob: &str) -> Result<ApproveOutcome, String> {
     verify_response(dir, blob, Disposition::Grant, &|_| Ok(())).map(|verified| verified.outcome)
 }
@@ -1569,8 +1566,13 @@ mod tests {
     ) -> EmittedRequest {
         let peer = load_peers_pinned(dir).unwrap().remove(0);
         let hex = passlane_approval::encoding::hex_encode(challenge);
-        let body =
-            challenge_request_body("default", kind.operation(), challenge, "test-user").unwrap();
+        let operation = match kind {
+            RequestKind::Unlock => Operation::Unlock,
+            RequestKind::Save => Operation::Save,
+            RequestKind::EnrollKey => Operation::EnrollKey,
+            RequestKind::Reveal => panic!("a reveal carries no challenge"),
+        };
+        let body = challenge_request_body("default", operation, challenge, "test-user").unwrap();
         emit_to(
             dir,
             &peer,
@@ -1696,11 +1698,7 @@ mod tests {
             assert_eq!(
                 handed.into_inner(),
                 answer,
-                "the handoff and the caller see the same bytes"
-            );
-            assert_eq!(
-                verified.response.as_deref().map(|r| r.as_slice()),
-                Some(answer.as_slice())
+                "the caller receives the answer through the handoff"
             );
             assert_eq!(verified.kind, RequestKind::Unlock);
             assert!(matches!(
@@ -1750,14 +1748,18 @@ mod tests {
             .unwrap_err();
             assert!(err.contains("nowhere to keep it"), "{err}");
 
-            // Still pending, and not yet replayed: the blob verifies.
+            // Still pending, and not yet replayed: the blob verifies and
+            // hands the same answer over.
             let pending = PendingStore::load(dir).unwrap();
             assert_eq!(pending.records()[0].state, RequestState::Pending);
-            let verified = verify_response(dir, &blob, Disposition::Grant, &|_| Ok(())).unwrap();
-            assert_eq!(
-                verified.response.as_deref().map(|r| r.as_slice()),
-                Some([0x42u8; 20].as_slice())
-            );
+            let got = std::cell::RefCell::new(Vec::new());
+            verify_response(dir, &blob, Disposition::Grant, &|handoff| {
+                got.borrow_mut().clear();
+                got.borrow_mut().extend_from_slice(handoff.response);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(got.into_inner(), [0x42u8; 20]);
             let pending = PendingStore::load(dir).unwrap();
             assert!(matches!(
                 pending.records()[0].state,
@@ -1821,7 +1823,6 @@ mod tests {
                     ..
                 } if reason.as_deref() == Some("not this vault")
             ));
-            assert!(verified.response.is_none());
             let pending = PendingStore::load(dir).unwrap();
             assert_eq!(pending.records()[0].state, RequestState::Denied);
         }

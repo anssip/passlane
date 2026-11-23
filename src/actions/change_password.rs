@@ -20,12 +20,7 @@ impl Action for ChangePasswordAction {
             "Please enter current master password of vault '{}'",
             config.name
         )));
-        let challenge_response = match config.hwkey {
-            Some(ref hwkey_config) => Some(
-                passlane_core::hwkey::configured_challenge_response_key(hwkey_config)?,
-            ),
-            None => None,
-        };
+        let challenge_response = crate::actions::enrolled_challenge_response(&config)?;
 
         let mut vault = KeepassVault::open(
             &current_pwd,

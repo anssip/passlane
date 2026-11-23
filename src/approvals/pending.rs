@@ -53,19 +53,6 @@ impl RequestKind {
         }
     }
 
-    /// The operation each kind is answered with.
-    pub fn operation(self) -> Operation {
-        match self {
-            Self::Reveal => Operation::Reveal {
-                entry: String::new(),
-                field: String::new(),
-            },
-            Self::Unlock => Operation::Unlock,
-            Self::Save => Operation::Save,
-            Self::EnrollKey => Operation::EnrollKey,
-        }
-    }
-
     /// Whether an answer must carry a challenge response.
     pub fn carries_challenge(self) -> bool {
         self != Self::Reveal
@@ -618,24 +605,20 @@ mod tests {
     }
 
     #[test]
-    fn kinds_map_to_and_from_operations() {
+    fn operations_map_to_kinds() {
         let reveal = Operation::Reveal {
             entry: "GitHub".into(),
             field: "password".into(),
         };
-        for (operation, kind) in [
-            (reveal, RequestKind::Reveal),
-            (Operation::Unlock, RequestKind::Unlock),
-            (Operation::Save, RequestKind::Save),
-            (Operation::EnrollKey, RequestKind::EnrollKey),
+        for (operation, kind, label) in [
+            (reveal, RequestKind::Reveal, "reveal"),
+            (Operation::Unlock, RequestKind::Unlock, "unlock"),
+            (Operation::Save, RequestKind::Save, "save"),
+            (Operation::EnrollKey, RequestKind::EnrollKey, "enroll_key"),
         ] {
             assert_eq!(RequestKind::from_operation(&operation), kind);
-            assert_eq!(
-                RequestKind::from_operation(&kind.operation()),
-                kind,
-                "{} round-trips through an operation",
-                kind.label()
-            );
+            assert_eq!(kind.label(), label);
+            // Only a reveal is answered with a bare decision.
             assert_eq!(kind.carries_challenge(), kind != RequestKind::Reveal);
         }
     }

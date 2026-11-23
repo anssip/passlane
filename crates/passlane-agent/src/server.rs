@@ -19,10 +19,11 @@ use passlane_approval::policy::Policy;
 
 use crate::error::AgentError;
 use crate::protocol::{
-    self, ErrorCode, Event, GrantInfo, GrantSpec, MAX_ENTRY_NAME_LEN, MAX_FIELD_NAME_LEN,
-    MAX_ID_LEN, MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, Request, Response, SessionInfo,
+    self, CHALLENGE_HEX_LEN, ErrorCode, Event, GrantInfo, GrantSpec, MAX_ENTRY_NAME_LEN,
+    MAX_FIELD_NAME_LEN, MAX_ID_LEN, MAX_VAULT_NAME_LEN, PROTOCOL_VERSION, RESPONSE_HEX_LEN,
+    Request, Response, SessionInfo, is_hex_of_len,
 };
-use crate::session::{Grant, KeyMaterial, Session};
+use crate::session::{ChallengeMaterial, Grant, KeyMaterial, Session};
 
 /// The hard ceiling on any session duration, regardless of
 /// configuration: long-lived unlock factors widen the window on a
@@ -489,6 +490,24 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                     );
                 }
             }
+            // Both fields become keys for lookups (the challenge) and
+            // vault key material (the answer): anything but the exact
+            // hex shape is refused rather than stored.
+            if let GrantSpec::ChallengeResponse {
+                challenge,
+                response,
+            } = &grant
+                && (!is_hex_of_len(challenge.expose(), CHALLENGE_HEX_LEN)
+                    || !is_hex_of_len(response.expose(), RESPONSE_HEX_LEN))
+            {
+                return error_response(
+                    ErrorCode::Invalid,
+                    format!(
+                        "a challenge response needs a {CHALLENGE_HEX_LEN}-hex challenge and a \
+                         {RESPONSE_HEX_LEN}-hex answer, lower-case"
+                    ),
+                );
+            }
             let seconds = scope.seconds();
             if seconds > shared.max_session_secs {
                 return error_response(
@@ -505,11 +524,19 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                     Grant::Unlock(KeyMaterial::new(master_password.expose()))
                 }
                 GrantSpec::Reveal { id, entry, field } => Grant::Reveal { id, entry, field },
+                GrantSpec::ChallengeResponse {
+                    challenge,
+                    response,
+                } => Grant::ChallengeResponse(ChallengeMaterial::new(
+                    challenge.expose(),
+                    response.expose(),
+                )),
             };
             let vault_name = vault.clone();
             let grant_kind = match grant.info() {
                 GrantInfo::Unlock => "unlock",
                 GrantInfo::Reveal { .. } => "reveal",
+                GrantInfo::ChallengeResponse => "challenge_response",
             };
             let session = Session::new(vault, grant, scope, now);
             let response = Response::SessionCreated {
@@ -577,6 +604,65 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
             }
             Err(_) => error_response(ErrorCode::Protocol, "state mutex poisoned"),
         },
+        Request::GetChallengeResponse { vault, challenge } => {
+            if !is_hex_of_len(&challenge, CHALLENGE_HEX_LEN) {
+                return error_response(
+                    ErrorCode::Invalid,
+                    format!("the challenge must be {CHALLENGE_HEX_LEN} hex characters"),
+                );
+            }
+            match shared.inner.lock() {
+                Ok(mut sessions) => {
+                    let now = now_secs();
+                    // A timed session serves until it expires; a once
+                    // session is spent by this call. Either way only for
+                    // the exact challenge asked for.
+                    let timed = sessions.values().find(|s| {
+                        s.vault == vault
+                            && s.grant.challenge_response_for(&challenge).is_some()
+                            && !s.expired(now)
+                            && matches!(s.scope, Scope::Timed { .. })
+                    });
+                    if let Some(session) = timed {
+                        let answer = session
+                            .grant
+                            .challenge_response_for(&challenge)
+                            .expect("filtered to matching grants above")
+                            .to_string();
+                        return Response::ChallengeResponse {
+                            response: crate::protocol::SecretString::new(answer),
+                            expires_at: session.expires_at,
+                        };
+                    }
+                    let once_id = sessions
+                        .values()
+                        .find(|s| {
+                            s.vault == vault
+                                && s.grant.challenge_response_for(&challenge).is_some()
+                                && matches!(s.scope, Scope::Once)
+                        })
+                        .map(|s| s.id.clone());
+                    match once_id.and_then(|id| sessions.remove(&id)) {
+                        // The removed session's answer wipes on drop; the
+                        // copy below is zeroizing on both sides.
+                        Some(session) => Response::ChallengeResponse {
+                            response: crate::protocol::SecretString::new(
+                                session
+                                    .grant
+                                    .challenge_response_for(&challenge)
+                                    .expect("filtered to matching grants above"),
+                            ),
+                            expires_at: None,
+                        },
+                        None => error_response(
+                            ErrorCode::NotFound,
+                            format!("no challenge response for vault '{vault}' and that challenge"),
+                        ),
+                    }
+                }
+                Err(_) => error_response(ErrorCode::Protocol, "state mutex poisoned"),
+            }
+        }
         Request::CheckReveal { vault, id, field } => match shared.inner.lock() {
             Ok(mut sessions) => {
                 let now = now_secs();
@@ -737,6 +823,133 @@ mod tests {
         GrantSpec::Unlock {
             master_password: crate::protocol::SecretString::new(pw),
         }
+    }
+
+    #[test]
+    fn challenge_responses_are_keyed_by_the_exact_challenge() {
+        let shared = shared(60);
+        let answer = GrantSpec::ChallengeResponse {
+            challenge: crate::protocol::SecretString::new("ab".repeat(32)),
+            response: crate::protocol::SecretString::new("ef".repeat(20)),
+        };
+        assert!(matches!(
+            dispatch(
+                &shared,
+                Request::CreateSession {
+                    vault: "work".into(),
+                    grant: answer,
+                    scope: Scope::Timed { seconds: 60 },
+                }
+            ),
+            Response::SessionCreated { .. }
+        ));
+
+        let get = |challenge: &str| {
+            dispatch(
+                &shared,
+                Request::GetChallengeResponse {
+                    vault: "work".into(),
+                    challenge: challenge.to_string(),
+                },
+            )
+        };
+        // The right challenge, reusable while timed.
+        for _ in 0..2 {
+            assert!(matches!(
+                get(&"ab".repeat(32)),
+                Response::ChallengeResponse { ref response, expires_at: Some(_) }
+                    if response.expose() == "ef".repeat(20)
+            ));
+        }
+        // A re-saved vault has a new seed: its old answer is not served.
+        assert!(matches!(
+            get(&"ac".repeat(32)),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            get("not hex"),
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+
+        // A once answer is spent by the first command that uses it.
+        assert!(matches!(
+            dispatch(
+                &shared,
+                Request::CreateSession {
+                    vault: "home".into(),
+                    grant: GrantSpec::ChallengeResponse {
+                        challenge: crate::protocol::SecretString::new("11".repeat(32)),
+                        response: crate::protocol::SecretString::new("22".repeat(20)),
+                    },
+                    scope: Scope::Once,
+                }
+            ),
+            Response::SessionCreated { .. }
+        ));
+        let get_home = || {
+            dispatch(
+                &shared,
+                Request::GetChallengeResponse {
+                    vault: "home".into(),
+                    challenge: "11".repeat(32),
+                },
+            )
+        };
+        assert!(matches!(
+            get_home(),
+            Response::ChallengeResponse { ref response, expires_at: None }
+                if response.expose() == "22".repeat(20)
+        ));
+        assert!(matches!(
+            get_home(),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn malformed_challenge_responses_are_refused_at_create() {
+        let shared = shared(60);
+        for (challenge, response) in [
+            ("ab".repeat(31), "ef".repeat(20)), // short challenge
+            ("ab".repeat(32), "ef".repeat(21)), // long answer
+            ("AB".repeat(32), "ef".repeat(20)), // upper-case
+            ("ab".repeat(32), "zz".repeat(20)), // not hex
+        ] {
+            let resp = dispatch(
+                &shared,
+                Request::CreateSession {
+                    vault: "work".into(),
+                    grant: GrantSpec::ChallengeResponse {
+                        challenge: crate::protocol::SecretString::new(challenge),
+                        response: crate::protocol::SecretString::new(response),
+                    },
+                    scope: Scope::Timed { seconds: 60 },
+                },
+            );
+            assert!(
+                matches!(
+                    resp,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{resp:?}"
+            );
+        }
+        assert!(
+            shared.inner.lock().unwrap().is_empty(),
+            "nothing was stored"
+        );
     }
 
     #[test]

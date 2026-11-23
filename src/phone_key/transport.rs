@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use passlane_approval::keys::PeerPin;
-use passlane_approval::message::{Decision, Operation};
+use passlane_approval::message::Operation;
 use passlane_core::vault::entities::Error;
 use zeroize::Zeroizing;
 
@@ -101,6 +101,15 @@ impl Terminal for RealTerminal {
              link there), approve the request, and paste the response below.",
             request.vault_name
         );
+        // How long the person has, in the terms they think in.
+        let left = shown.exp.saturating_sub(crate::approvals::now_secs());
+        if let Some(at) = chrono::DateTime::from_timestamp(shown.exp as i64, 0) {
+            eprintln!(
+                "The request expires at {} (in about {} minute(s)).",
+                at.with_timezone(&chrono::Local).format("%H:%M:%S"),
+                left.div_ceil(60)
+            );
+        }
     }
 
     fn note(&self, message: &str) {
@@ -420,6 +429,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::approvals::{load_identity, mock_page, mock_page_answer, pin_approver};
     use passlane_approval::keys::IdentityKeys;
+    use passlane_approval::message::Decision;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -850,7 +860,6 @@ pub(crate) mod tests {
                         Ok(())
                     })
                     .unwrap();
-                assert!(verified.response.is_some());
             }),
         );
         let answer = rig.ask(Operation::Save).unwrap();

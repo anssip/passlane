@@ -465,7 +465,7 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// process runs as. (The protocol's `requester` field is "user@host for
 /// the CLI"; a reliable host name needs the pairing machinery, so the
 /// local log records the user only.)
-fn requester() -> String {
+pub(crate) fn requester() -> String {
     std::env::var("USER")
         .ok()
         .filter(|u| !u.is_empty())

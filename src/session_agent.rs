@@ -85,6 +85,92 @@ pub fn try_unlock_factors(vault: &str) -> Option<Zeroizing<String>> {
     }
 }
 
+/// Whether a session agent is reachable at all.
+pub fn agent_running() -> bool {
+    connect_result().is_ok()
+}
+
+/// The answer a live session holds for a phone-held key (passlane#53):
+/// exactly this vault and challenge (lower-case hex), consumed when the
+/// session is single-use. `None` when the agent is absent or holds
+/// nothing for that challenge — a vault that was saved since has a new
+/// seed, and answers for the old one are not answers for it.
+pub fn try_challenge_response(vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let mut client = try_connect()?;
+    match client.get_challenge_response(vault, challenge_hex) {
+        Ok((response, _expiry)) => {
+            let bytes = match passlane_approval::encoding::hex_decode(&response) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("Warning: the session agent returned a malformed answer: {e}");
+                    return None;
+                }
+            };
+            if bytes.len() != passlane_approval::message::CHALLENGE_RESPONSE_LEN {
+                eprintln!(
+                    "Warning: the session agent returned a {}-byte answer, not 20",
+                    bytes.len()
+                );
+                return None;
+            }
+            Some(Zeroizing::new(bytes))
+        }
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        }) => None,
+        Err(AgentError::NotRunning(_)) => None,
+        // Never silent: an agent that is running but cannot serve is
+        // reported, so the next request is not mistaken for the first.
+        Err(e) => {
+            eprintln!("Warning: the session agent errored and was skipped: {e}");
+            None
+        }
+    }
+}
+
+/// Hold a phone-held key's answer in the agent (memory only) for one
+/// vault file version. Returns the session's expiry (unix seconds; 0 for
+/// a single-use one).
+pub fn create_challenge_response_session(
+    vault: &str,
+    challenge_hex: &str,
+    response_hex: &str,
+    scope: Scope,
+) -> Result<u64, Error> {
+    let mut client = connect_or_error()?;
+    let grant = GrantSpec::ChallengeResponse {
+        challenge: SecretString::new(challenge_hex),
+        response: SecretString::new(response_hex),
+    };
+    // The agent refuses anything past its own cap with an explanation.
+    match client.create_session(vault, grant, scope) {
+        Ok(created) => Ok(created.expires_at.unwrap_or(0)),
+        Err(AgentError::Server {
+            code: ErrorCode::TooLong,
+            message,
+        }) => Err(Error::new(&format!(
+            "{message}. Restart passlane-agent with a higher --max-session-secs if you \
+             really need a longer session (the hard cap is 28800s)."
+        ))),
+        Err(e) => Err(to_error(e)),
+    }
+}
+
+/// The session agent as a source of phone-held-key answers for the link
+/// transport.
+pub(crate) struct AgentAnswerStore;
+
+impl crate::phone_key::transport::AnswerStore for AgentAnswerStore {
+    fn take(&self, vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
+        try_challenge_response(vault, challenge_hex)
+    }
+
+    fn is_running(&self) -> bool {
+        agent_running()
+    }
+}
+
 /// Revalidate, after subscribing to agent events, that the sessions
 /// backing the current action are still live — closing the gap between
 /// the unlock (or reveal gate) and the subscription, where a

@@ -92,11 +92,7 @@ fn generate_cache() -> Result<usize, Error> {
             ask_master_password(None)
         }
     };
-    let challenge_response = config
-        .hwkey
-        .as_ref()
-        .map(passlane_core::hwkey::configured_challenge_response_key)
-        .transpose()?;
+    let challenge_response = crate::actions::enrolled_challenge_response(&config)?;
 
     println!(
         "Opening vault '{}' to build completion cache...",

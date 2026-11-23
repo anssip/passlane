@@ -44,16 +44,19 @@ fn ask_slot() -> Result<u8, Error> {
         .map_err(|_| Error::new("slot must be 1 or 2"))
 }
 
-/// Prompt for the backed-up HMAC-SHA1 secret (hex) of an enrolled slot, for
-/// recovering a vault whose hardware key has been lost. The secret is what
-/// `ykman otp chalresp` was programmed with (or exported from). Whitespace is
-/// stripped: pasted secrets often carry trailing newlines or spaces, which
-/// would otherwise fail hex decoding.
+/// Prompt for the backed-up HMAC-SHA1 secret (hex) of the enrolled factor,
+/// for recovering a vault whose hardware key or phone has been lost. For a
+/// hardware key it is what `ykman otp chalresp` was programmed with (or
+/// exported from); for a phone-held key it is the secret printed on the
+/// recovery sheet. Whitespace and the grouping spaces of the sheet are
+/// stripped: pasted secrets often carry trailing newlines too, which would
+/// otherwise fail hex decoding.
 pub fn recovery_key_from_prompt() -> ChallengeResponseKey {
     let secret = ask_password(
-        "Enter the backed-up HMAC-SHA1 secret (hex) of the enrolled slot",
+        "Enter the backed-up HMAC-SHA1 secret (hex) of the enrolled factor",
         Some(
-            "The 40-character hex secret saved when the key's slot was programmed, e.g. with 'ykman otp chalresp'",
+            "A hardware key: the 40 hex characters its slot was programmed with. A phone-held \
+             key: the secret printed on its recovery sheet.",
         ),
     );
     let secret = secret.chars().filter(|c| !c.is_whitespace()).collect();

@@ -97,6 +97,7 @@ impl VaultAction {
             "Location",
             "Keyfile",
             "Hardware key",
+            "Phone key",
             "State",
         ]);
         for vault in &vaults {
@@ -110,6 +111,7 @@ impl VaultAction {
                 vault.path.clone(),
                 yes_no(vault.keyfile.is_some()),
                 yes_no(vault.hwkey.is_some()),
+                yes_no(vault.phone_key.is_some()),
                 lock_state(&vault.name),
             ]);
         }
@@ -206,6 +208,16 @@ impl VaultAction {
                     None => format!("Hardware key: slot {}", hwkey.slot),
                 },
                 None => "Hardware key: none".to_string(),
+            },
+            match &config.phone_key {
+                Some(phone_key) => format!(
+                    "Phone key:    {}",
+                    super::approvals::describe_holder(
+                        phone_key,
+                        crate::approvals::load_peers_pinned(&crate::approvals::state_dir())
+                    )
+                ),
+                None => "Phone key:    none".to_string(),
             },
             format!("State:        {}", lock_state(&config.name)),
             format!(

@@ -336,6 +336,17 @@ pub(crate) mod tests {
         pub(crate) fn asked(&self) -> Vec<PhoneRequest> {
             self.asked.lock().unwrap().clone()
         }
+
+        /// A point in the request log, to look only at what a later step
+        /// asks (`asked_since`).
+        pub(crate) fn mark(&self) -> usize {
+            self.asked.lock().unwrap().len()
+        }
+
+        /// What was asked after `mark`.
+        pub(crate) fn asked_since(&self, mark: usize) -> Vec<PhoneRequest> {
+            self.asked.lock().unwrap()[mark..].to_vec()
+        }
     }
 
     impl ResponseSource for MockPhone {

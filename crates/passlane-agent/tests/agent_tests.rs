@@ -7,6 +7,7 @@
 // in the lib).
 #![cfg(unix)]
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -102,6 +103,13 @@ fn reveal_grant(id: &str, entry: &str, field: &str) -> GrantSpec {
     }
 }
 
+fn challenge_response_grant(challenge: &str, answer: &str) -> GrantSpec {
+    GrantSpec::ChallengeResponse {
+        challenge: SecretString::new(challenge),
+        response: SecretString::new(answer),
+    }
+}
+
 const GITHUB_ID: &str = "11111111-1111-1111-1111-111111111111";
 const STRIPE_ID: &str = "22222222-2222-2222-2222-222222222222";
 
@@ -171,6 +179,98 @@ fn once_scoped_unlock_session_is_consumed_by_first_use() {
         other => panic!("once session must be consumed, got {other:?}"),
     }
     agent.stop();
+}
+
+/// A phone-held key's answer (passlane#53) is keyed by the challenge it
+/// answers, so it is served for one vault file version only.
+#[test]
+fn challenge_response_sessions_serve_the_matching_challenge_once_or_timed() {
+    let agent = RunningAgent::start();
+    let mut client = agent.client();
+    let seed = "ab".repeat(32);
+    let next_seed = "cd".repeat(32);
+
+    // Timed: reusable while it lives, listed without the answer.
+    let created = client
+        .create_session(
+            "work",
+            challenge_response_grant(&seed, &"ef".repeat(20)),
+            Scope::Timed { seconds: 300 },
+        )
+        .unwrap();
+    assert!(created.expires_at.is_some());
+    let list = client.list_sessions().unwrap();
+    assert_eq!(
+        list[0].grant,
+        passlane_agent::protocol::GrantInfo::ChallengeResponse
+    );
+    let listed = format!("{:?}", list);
+    assert!(!listed.contains("efef"), "{listed}");
+    for _ in 0..2 {
+        let (answer, expires) = client.get_challenge_response("work", &seed).unwrap();
+        assert_eq!(*answer, "ef".repeat(20));
+        assert!(expires.is_some());
+    }
+
+    // The vault was saved since: a new seed, and the old answer is not
+    // an answer to it.
+    assert!(matches!(
+        client.get_challenge_response("work", &next_seed),
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        })
+    ));
+    // ...nor for another vault with the same seed.
+    assert!(matches!(
+        client.get_challenge_response("home", &seed),
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        })
+    ));
+
+    // Once: served exactly once, with no expiry to revalidate.
+    client
+        .create_session(
+            "work",
+            challenge_response_grant(&next_seed, &"11".repeat(20)),
+            Scope::Once,
+        )
+        .unwrap();
+    let (answer, expires) = client.get_challenge_response("work", &next_seed).unwrap();
+    assert_eq!(*answer, "11".repeat(20));
+    assert!(expires.is_none());
+    assert!(matches!(
+        client.get_challenge_response("work", &next_seed),
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        })
+    ));
+
+    // Lock drops the timed one with everything else.
+    client.lock().unwrap();
+    assert!(matches!(
+        client.get_challenge_response("work", &seed),
+        Err(AgentError::Server {
+            code: ErrorCode::NotFound,
+            ..
+        })
+    ));
+
+    // The wire refuses answers that are not the exact hex shape.
+    assert!(matches!(
+        client.create_session(
+            "work",
+            challenge_response_grant(&seed, "not hex"),
+            Scope::Timed { seconds: 300 },
+        ),
+        Err(AgentError::Server {
+            code: ErrorCode::Invalid,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -467,17 +567,16 @@ fn discovery_rejects_shared_runtime_directories() {
     perms.set_mode(0o1777); // a /tmp-like sticky, world-writable dir
     std::fs::set_permissions(shared.path(), perms).unwrap();
 
-    // SAFETY of test hygiene: save and restore both vars.
-    let saved_tmpdir = std::env::var_os("TMPDIR");
-    let saved_sock = std::env::var_os("PASSLANE_AGENT_SOCK");
-    unsafe { std::env::set_var("TMPDIR", shared.path()) };
-    unsafe { std::env::remove_var("PASSLANE_AGENT_SOCK") };
-    // No XDG_RUNTIME_DIR in the test env normally; remove defensively.
-    let saved_xdg = std::env::var_os("XDG_RUNTIME_DIR");
-    unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    // The environment is injected rather than changed: mutating the
+    // process TMPDIR races with every other test creating temp files.
+    let mut env: HashMap<&str, std::ffi::OsString> = HashMap::new();
+    env.insert("TMPDIR", shared.path().as_os_str().to_os_string());
+    fn discover(env: &HashMap<&str, std::ffi::OsString>) -> Option<std::path::PathBuf> {
+        passlane_agent::socket_path_from(|name| env.get(name).cloned())
+    }
 
     assert_eq!(
-        passlane_agent::default_socket_path(),
+        discover(&env),
         None,
         "a world-writable TMPDIR must not be used for discovery"
     );
@@ -487,30 +586,31 @@ fn discovery_rejects_shared_runtime_directories() {
     perms.set_mode(0o700);
     std::fs::set_permissions(shared.path(), perms).unwrap();
     assert_eq!(
-        passlane_agent::default_socket_path(),
+        discover(&env),
         Some(shared.path().join("passlane-agent.sock"))
     );
-    // An explicit PASSLANE_AGENT_SOCK always wins.
-    unsafe { std::env::set_var("PASSLANE_AGENT_SOCK", "/explicit/agent.sock") };
+    // An explicit PASSLANE_AGENT_SOCK always wins, even over an unusable
+    // runtime directory.
+    env.insert("TMPDIR", "/tmp".into());
+    env.insert("PASSLANE_AGENT_SOCK", "/explicit/agent.sock".into());
+    assert_eq!(discover(&env), Some("/explicit/agent.sock".into()));
+    env.remove("PASSLANE_AGENT_SOCK");
+    assert_eq!(discover(&env), None, "a shared /tmp is rejected too");
+    // XDG_RUNTIME_DIR outranks TMPDIR; an empty value counts as unset.
+    let private = tempfile::tempdir().unwrap();
+    env.insert("XDG_RUNTIME_DIR", private.path().as_os_str().to_os_string());
+    env.insert("TMPDIR", "".into());
     assert_eq!(
-        passlane_agent::default_socket_path(),
-        Some("/explicit/agent.sock".into())
+        discover(&env),
+        Some(private.path().join("passlane-agent.sock"))
     );
 
-    unsafe {
-        match saved_sock {
-            Some(v) => std::env::set_var("PASSLANE_AGENT_SOCK", v),
-            None => std::env::remove_var("PASSLANE_AGENT_SOCK"),
-        }
-        match saved_xdg {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        match saved_tmpdir {
-            Some(v) => std::env::set_var("TMPDIR", v),
-            None => std::env::remove_var("TMPDIR"),
-        }
-    }
+    // The real entry point is that function applied to the real
+    // environment (read here, never written).
+    assert_eq!(
+        passlane_agent::default_socket_path(),
+        passlane_agent::socket_path_from(|name| std::env::var_os(name))
+    );
 }
 
 #[test]
@@ -581,9 +681,13 @@ fn key_material_never_reaches_disk() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // Canary secrets that must never appear in any file.
+    // Canary secrets that must never appear in any file. The challenge
+    // answer has to be 40 hex characters to be accepted, so its canary is
+    // a random hex string rather than a spelled-out word.
     let canary_pw = format!("CANARY-pw-{}", uuid::Uuid::new_v4());
     let canary_entry = format!("CANARY-entry-{}", uuid::Uuid::new_v4());
+    let canary_answer = format!("deadbeef{:032x}", uuid::Uuid::new_v4().as_u128());
+    assert_eq!(canary_answer.len(), 40);
     {
         let mut client = AgentClient::connect(&socket).unwrap();
         client
@@ -605,6 +709,17 @@ fn key_material_never_reaches_disk() {
         client
             .check_reveal("work", &canary_entry, "password")
             .unwrap();
+        client
+            .create_session(
+                "work",
+                challenge_response_grant(&"ab".repeat(32), &canary_answer),
+                Scope::Timed { seconds: 300 },
+            )
+            .unwrap();
+        let (answer, _): (Zeroizing<String>, _) = client
+            .get_challenge_response("work", &"ab".repeat(32))
+            .unwrap();
+        assert_eq!(*answer, canary_answer);
         client.list_sessions().unwrap();
     }
 
@@ -623,7 +738,7 @@ fn key_material_never_reaches_disk() {
 
     // No file under either scratch directory contains the canaries.
     for root in [dir.path(), home.path()] {
-        assert_no_canary(root, &[&canary_pw, &canary_entry]);
+        assert_no_canary(root, &[&canary_pw, &canary_entry, &canary_answer]);
     }
 }
 
