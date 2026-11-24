@@ -232,15 +232,28 @@ fn connect_or_start_with(
         // The failure of this attempt — retried until the budget runs
         // out, then reported with the log to consult. The connection
         // and the version exchange are each bounded by what is left of
-        // the budget: a spawned binary that accepts but never answers
-        // must not stretch the wait past what was promised.
+        // the budget, recomputed after each step: a spawned binary that
+        // accepts but never answers must not stretch the wait past what
+        // was promised.
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let failure = match AgentClient::connect_within(&socket, remaining) {
             Ok(mut client) => {
-                let bounded = remaining.max(Duration::from_millis(1));
-                match client.set_request_timeout(bounded) {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                match client.set_request_timeout(left.max(Duration::from_millis(1))) {
                     Ok(()) => match client.check_version() {
-                        Ok(_) => return Ok(client),
+                        Ok(_) => {
+                            // The probe's leftover millisecond budget
+                            // must not follow the client out of here: a
+                            // healthy agent can pass readiness near the
+                            // deadline and then time out on the very
+                            // request that wanted it.
+                            if let Err(e) =
+                                client.set_request_timeout(passlane_agent::client::REQUEST_TIMEOUT)
+                            {
+                                return Err(to_error(e));
+                            }
+                            return Ok(client);
+                        }
                         Err(e @ AgentError::VersionMismatch { .. }) => return Err(to_error(e)),
                         Err(e) => e,
                     },
@@ -419,10 +432,15 @@ fn spawn_agent_detached(_plan: &AutostartPlan) -> Result<(), String> {
     Err("the session agent needs a Unix domain socket platform".into())
 }
 
-/// The highest file descriptor number worth closing in a spawned child:
-/// the process's nofile soft limit (clamped to what an `i32` loop can
-/// walk), or a practical ceiling when the limit is unlimited or cannot
-/// be read — inherited descriptors carry no guarantee of sitting low.
+/// The highest file descriptor number worth closing in a spawned child.
+/// The process's nofile soft limit bounds what *it* can create, but not
+/// what it can *hold*: a wrapper can park a descriptor above a limit it
+/// lowers before executing the CLI, so the sweep is floored well above
+/// any realistic inherited number. A practical ceiling covers an
+/// unlimited or unreadable limit; `closefrom`/`close_range` would cover
+/// the true set but are not uniformly exposed by libc on the platforms
+/// this builds for. The cost — one `close` per number — is paid once,
+/// inside the child, between fork and exec.
 #[cfg(unix)]
 fn open_fd_limit() -> i32 {
     // SAFETY: `getrlimit` writes into a plain `rlimit` struct we own.
@@ -431,7 +449,7 @@ fn open_fd_limit() -> i32 {
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0
             && limit.rlim_cur != libc::RLIM_INFINITY
         {
-            return limit.rlim_cur.min(i32::MAX as u64) as i32;
+            return (limit.rlim_cur.max(1 << 20).min(i32::MAX as u64)) as i32;
         }
     }
     1 << 20
@@ -1701,6 +1719,19 @@ mod tests {
             autostart_cap(999_999),
             28800,
             "nothing may be held past the hard cap"
+        );
+    }
+
+    /// The sweep's bound must reach past a *lowered* soft limit: a
+    /// wrapper can park a descriptor high and then lower its limit
+    /// before executing the CLI, and the daemon must still not inherit
+    /// it (passlane#77 review).
+    #[cfg(unix)]
+    #[test]
+    fn the_fd_sweep_reaches_well_past_a_lowered_soft_limit() {
+        assert!(
+            open_fd_limit() >= 2000,
+            "the sweep reaches inherited descriptors above a lowered soft limit"
         );
     }
 

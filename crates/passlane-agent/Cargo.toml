@@ -21,6 +21,9 @@ thiserror = "2"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 log = "0.4.16"
 clap = { version = "4.5.4", features = ["env"] }
+# `flock` on the socket's directory: serializes concurrent auto-starts'
+# look-then-publish sequence without creating a lock file (passlane#77).
+libc = "0.2"
 # "termination" so SIGTERM (launchd/systemd stops) runs the graceful
 # shutdown too, not just Ctrl+C.
 ctrlc = { version = "3.4", features = ["termination"] }
