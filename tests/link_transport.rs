@@ -193,6 +193,7 @@ impl Scratch {
             "field": field,
             "created": created,
             "exp": exp.unwrap_or(envelope.header().exp),
+            "link": format!("https://{RP_ID}/approve.html#{rid}"),
             "state": { "kind": "pending" },
         }));
         std::fs::write(
@@ -517,6 +518,57 @@ fn binary_approve_honors_a_late_redeemed_in_time_approval() {
     assert!(
         stderr.contains("re-running the command") || stderr.contains("expired"),
         "{stderr}"
+    );
+}
+
+/// `approvals link` relays a link to start a *fresh* decision, so it must
+/// refuse once the decision window (expiry + clock skew) has closed —
+/// even though the record survives for late redemption (passlane#73).
+#[test]
+fn binary_approvals_link_refuses_past_the_decision_window() {
+    let now = passlane_time();
+    let skew = Policy::default().max_clock_skew_secs;
+    let scratch = Scratch::new();
+
+    // A fresh request: the link is handed out.
+    let rid = scratch.emit_request("GitHub", "password");
+    let out = scratch.run(&["approvals", "link", &rid[..8]]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("/approve.html#"),
+        "the relayable link"
+    );
+
+    // Window closed (expired 200 s ago, past the 120 s skew), but still
+    // redeemable (deadline now + 100): the record lives, the link does not.
+    let old_rid = scratch.emit_request_as_of("staging", "password", now - 500, Some(now - 200));
+    let refused = scratch.run(&["approvals", "link", &old_rid[..8]]);
+    assert!(
+        !refused.status.success(),
+        "a closed window refuses the link"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("decision window closed")
+            && stderr.contains("still redeemable")
+            && stderr.contains("re-running the command"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{}", now - 200 + skew)),
+        "{stderr}"
+    );
+
+    // The pending record itself is still there — the refusal is about the
+    // link, not the record's existence.
+    let pending = scratch.run(&["approvals", "pending"]);
+    assert!(
+        String::from_utf8_lossy(&pending.stdout).contains("staging"),
+        "the redeemable record survives"
     );
 }
 

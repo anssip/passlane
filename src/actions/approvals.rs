@@ -11,6 +11,7 @@
 use clap::ArgMatches;
 
 use passlane_approval::keys::{PeerPin, WebauthnPin};
+use passlane_approval::policy::Policy;
 use passlane_core::vault::entities::Error;
 
 use crate::actions::Action;
@@ -135,6 +136,24 @@ impl ApprovalsAction {
                 matches.len()
             )));
         };
+        // A pending record outlives its request so a decision already
+        // made can be redeemed late (SPEC §4) — but relaying its *link*
+        // starts a fresh decision, and the decision window (expiry plus
+        // clock skew) may have closed while the record lives on. Handing
+        // out a link the approver can no longer answer usefully would
+        // only produce a refused paste.
+        let decision_deadline = record.exp + Policy::default().max_clock_skew_secs;
+        if approvals::now_secs() > decision_deadline {
+            return Err(Error::new(&format!(
+                "request {} expired at {} — its decision window closed at {}, so relaying the \
+                 link can no longer produce an approval (a response already made in time is \
+                 still redeemable until {}); emit a new one by re-running the command",
+                &record.rid[..record.rid.len().min(8)],
+                record.exp,
+                decision_deadline,
+                Policy::default().redemption_deadline(record.created, record.exp),
+            )));
+        }
         match (&record.state, &record.link) {
             (RequestState::Pending, Some(link)) => Ok(link.clone()),
             (state, _) => Err(Error::new(&format!(

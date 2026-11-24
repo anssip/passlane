@@ -506,6 +506,20 @@ async function main() {
         assert: assertWithPasskey,
         answerHex,
       });
+      // The envelope's ts was stamped when this decision started; the
+      // human-present authorization has only just completed, and a
+      // passkey prompt left open can outlast the window. An
+      // authorization that closed the decision window is not an
+      // in-time decision: discard the response before it leaves this
+      // page or any key transition is committed.
+      if (!decisionWindow(envelope.header, nowSeconds()).decidable) {
+        $("approve").disabled = true;
+        $("deny").disabled = true;
+        $("status").textContent =
+          "The request's decision window closed while the passkey prompt was open; " +
+            "nothing was answered. Re-run the command to emit a fresh request.";
+        return;
+      }
       if (pendingTransition) {
         await mutateApprover(record.rkid, (current) => {
           let next = current;
