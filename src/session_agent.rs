@@ -600,12 +600,10 @@ mod tests {
 
     // The agent's server is Unix-only, and so are the tests that need a
     // socket to talk to; everything else here runs everywhere.
-    use std::sync::Mutex;
     #[cfg(unix)]
-    use {
-        passlane_agent::server::{AgentConfig, AgentServer},
-        std::path::Path,
-    };
+    use passlane_agent::server::{AgentConfig, AgentServer};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     /// Environment variables are process-global; every test in this
     /// binary that touches them takes turns holding this. It is
@@ -728,31 +726,39 @@ mod tests {
         assert!(event_ends_access(&Event::SessionsLocked, "work"));
     }
 
-    /// Points the CLI at a socket for as long as it lives and puts
-    /// `PASSLANE_AGENT_SOCK` back afterwards — on a failing assertion too.
-    #[cfg(unix)]
-    struct SocketEnv(Option<std::ffi::OsString>);
+    /// Sets one environment variable for as long as it lives and puts it
+    /// back afterwards — on a failing assertion too. Environment variables
+    /// are process-global: whoever builds one holds `ENV_MUTEX`.
+    struct EnvVar {
+        name: &'static str,
+        saved: Option<std::ffi::OsString>,
+    }
 
-    #[cfg(unix)]
-    impl SocketEnv {
-        fn point_at(socket: &Path) -> Self {
-            let saved = std::env::var_os(SOCKET_ENV);
-            // SAFETY: test hygiene — the holder holds `ENV_MUTEX`, the only
-            // code in this binary that touches the variable, for as long as
-            // this lives.
-            unsafe { std::env::set_var(SOCKET_ENV, socket) };
-            Self(saved)
+    impl EnvVar {
+        fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let saved = std::env::var_os(name);
+            // SAFETY: test hygiene — the holder holds `ENV_MUTEX`, which
+            // every test in this binary that touches the environment
+            // takes, for as long as this lives.
+            unsafe { std::env::set_var(name, value) };
+            Self { name, saved }
+        }
+
+        fn remove(name: &'static str) -> Self {
+            let saved = std::env::var_os(name);
+            // SAFETY: see `set`.
+            unsafe { std::env::remove_var(name) };
+            Self { name, saved }
         }
     }
 
-    #[cfg(unix)]
-    impl Drop for SocketEnv {
+    impl Drop for EnvVar {
         fn drop(&mut self) {
-            // SAFETY: see `point_at`.
+            // SAFETY: see `set`.
             unsafe {
-                match self.0.take() {
-                    Some(value) => std::env::set_var(SOCKET_ENV, value),
-                    None => std::env::remove_var(SOCKET_ENV),
+                match self.saved.take() {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
                 }
             }
         }
@@ -772,7 +778,7 @@ mod tests {
         .unwrap();
         let handle = server.handle();
         let served = std::thread::spawn(move || server.serve().unwrap());
-        let env = SocketEnv::point_at(&socket);
+        let env = EnvVar::set(SOCKET_ENV, &socket);
 
         // One once-scoped grant holding the key factor: the rarest thing
         // the agent can hold. Asking what is held must not spend it.
@@ -828,37 +834,173 @@ mod tests {
         served.join().unwrap();
     }
 
+    /// What `session_factors` answers when no agent can be found, with
+    /// nothing else in the process any the wiser.
+    ///
+    /// Discovery looks in `PASSLANE_AGENT_SOCK`, then `XDG_RUNTIME_DIR`,
+    /// then `TMPDIR`: with the first unset and the second a private,
+    /// empty directory, there is nothing to find — and `TMPDIR` is never
+    /// reached. That last part matters: `TMPDIR` is where every other
+    /// test's temporary files live. Repointing it at a folder that goes
+    /// away with the lookup is how `master` went red once — parallel
+    /// tests had temp files created inside that folder. Nothing but this
+    /// lookup reads `XDG_RUNTIME_DIR`.
+    fn lookup_with_no_agent_to_find() -> Result<SessionFactors, Error> {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let nowhere = tempfile::tempdir().unwrap();
+        let _sock = EnvVar::remove(SOCKET_ENV);
+        let _xdg = EnvVar::set("XDG_RUNTIME_DIR", nowhere.path());
+        session_factors("work")
+    }
+
     #[test]
     fn with_no_agent_at_all_there_is_simply_no_session() {
         // An absent agent is optional infrastructure: not an error, and
         // not a reason to stop a hardware-key command that can use the
         // key on its device.
-        let _guard = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let saved_sock = std::env::var_os(SOCKET_ENV);
-        let saved_tmpdir = std::env::var_os("TMPDIR");
-        // SAFETY: test hygiene — this test holds `ENV_MUTEX` and restores
-        // both variables before it returns. A fresh private TMPDIR means
-        // discovery finds no socket at all.
-        unsafe {
-            std::env::remove_var(SOCKET_ENV);
-            std::env::set_var("TMPDIR", dir.path());
-        }
-        let held = session_factors("work");
-        // SAFETY: see above.
-        unsafe {
-            match saved_sock {
-                Some(value) => std::env::set_var(SOCKET_ENV, value),
-                None => std::env::remove_var(SOCKET_ENV),
+        assert_eq!(
+            lookup_with_no_agent_to_find().unwrap(),
+            SessionFactors::None
+        );
+    }
+
+    /// A stand-in for the other tests: a thread that makes a temporary
+    /// directory, does a little, then writes into it by path — until it is
+    /// told to stop, and no later than the test that owns it. Dropping it
+    /// stops and joins the thread, on that test's panic included: a
+    /// stand-in left behind would churn temp files through the rest of the
+    /// run, and a failing test is exactly when that would go unnoticed.
+    struct OtherTests {
+        stop: Arc<AtomicBool>,
+        /// Temporary directories written into so far.
+        written: Arc<AtomicUsize>,
+        /// Set by the thread on its way out, a panic included.
+        finished: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl OtherTests {
+        fn start(written: Arc<AtomicUsize>) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let finished = Arc::new(AtomicBool::new(false));
+            let (watch, done, count) = (
+                Arc::clone(&stop),
+                Arc::clone(&finished),
+                Arc::clone(&written),
+            );
+            let handle = std::thread::spawn(move || {
+                struct Done(Arc<AtomicBool>);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        self.0.store(true, Ordering::Relaxed);
+                    }
+                }
+                let _done = Done(done);
+                while !watch.load(Ordering::Relaxed) {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    std::fs::write(dir.path().join("entry"), b"x").unwrap();
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            Self {
+                stop,
+                written,
+                finished,
+                handle: Some(handle),
             }
-            match saved_tmpdir {
-                Some(value) => std::env::set_var("TMPDIR", value),
-                None => std::env::remove_var("TMPDIR"),
+        }
+
+        /// Stop the stand-in and wait for it — failing the test if it could
+        /// not do what the other tests do.
+        fn finish(mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.handle
+                .take()
+                .expect("started")
+                .join()
+                .expect("the other tests' temp files survive the lookups");
+        }
+    }
+
+    impl Drop for OtherTests {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
             }
         }
-        assert_eq!(held.unwrap(), SessionFactors::None);
+    }
+
+    #[test]
+    fn looking_for_an_absent_agent_never_moves_other_tests_temp_files() {
+        // While the lookup runs, the stand-in does what the other tests
+        // do. If the lookup pointed `TMPDIR` at a folder of its own, the
+        // directory would be created inside it and vanish with it.
+        let other_tests = OtherTests::start(Arc::new(AtomicUsize::new(0)));
+        // Plenty of lookups for the race to have had its chance, and on a
+        // loaded machine not one fewer than the stand-in needs to get
+        // going — but never unbounded: the loop ends as soon as the
+        // stand-in is gone, and at a hard cap otherwise.
+        let mut lookups = 0;
+        while (lookups < 2_000 || other_tests.written.load(Ordering::Relaxed) < 10)
+            && !other_tests.finished.load(Ordering::Relaxed)
+            && lookups < 50_000
+        {
+            assert_eq!(
+                lookup_with_no_agent_to_find().unwrap(),
+                SessionFactors::None
+            );
+            lookups += 1;
+        }
+        other_tests.finish();
+    }
+
+    #[test]
+    fn a_failing_test_does_not_leave_the_stand_in_running() {
+        use std::time::{Duration, Instant};
+        let written = Arc::new(AtomicUsize::new(0));
+        let got_going = Arc::new(AtomicBool::new(false));
+        let outcome = std::panic::catch_unwind({
+            let written = Arc::clone(&written);
+            let got_going = Arc::clone(&got_going);
+            move || {
+                let other_tests = OtherTests::start(written);
+                // Wait for the stand-in's first write rather than sleeping
+                // a fixed time: a loaded runner may need a moment. Bounded,
+                // and reported as its own failure outside — a stand-in that
+                // never got going says nothing about the cleanup under test.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while other_tests.written.load(Ordering::Relaxed) == 0 && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                got_going.store(
+                    other_tests.written.load(Ordering::Relaxed) > 0,
+                    Ordering::Relaxed,
+                );
+                panic!("a failing assertion in the test that owns the stand-in");
+            }
+        });
+        // Unwinding has dropped the stand-in by now.
+        assert!(outcome.is_err(), "the failing test did fail");
+        assert!(
+            got_going.load(Ordering::Relaxed),
+            "readiness: the stand-in never wrote anything, so the cleanup is untested"
+        );
+        let at_the_end = written.load(Ordering::Relaxed);
+        assert!(
+            at_the_end > 0,
+            "the stand-in got going before the test failed"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            written.load(Ordering::Relaxed),
+            at_the_end,
+            "the stand-in stopped with its test"
+        );
     }
 
     #[cfg(unix)]
@@ -900,7 +1042,7 @@ mod tests {
         .unwrap();
         let handle = server.handle();
         let served = std::thread::spawn(move || server.serve().unwrap());
-        let env = SocketEnv::point_at(&socket);
+        let env = EnvVar::set(SOCKET_ENV, &socket);
 
         let config = crate::vault_registry::current().unwrap();
         let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path).unwrap();
@@ -1010,7 +1152,7 @@ mod tests {
         .unwrap();
         let handle = server.handle();
         let served = std::thread::spawn(move || server.serve().unwrap());
-        let env = SocketEnv::point_at(&socket);
+        let env = EnvVar::set(SOCKET_ENV, &socket);
 
         let mut client = AgentClient::connect(&socket).unwrap();
         client
@@ -1053,13 +1195,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let nowhere = SocketEnv::point_at(&dir.path().join("nowhere.sock"));
+        let nowhere = EnvVar::set(SOCKET_ENV, dir.path().join("nowhere.sock"));
         let absent = revoke_vault_sessions("work");
         drop(nowhere);
 
         let not_a_socket = dir.path().join("plain.file");
         std::fs::write(&not_a_socket, "x").unwrap();
-        let untrusted_env = SocketEnv::point_at(&not_a_socket);
+        let untrusted_env = EnvVar::set(SOCKET_ENV, &not_a_socket);
         let untrusted = revoke_vault_sessions("work");
         drop(untrusted_env);
 
