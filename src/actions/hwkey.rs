@@ -180,6 +180,7 @@ impl HwKeyAction {
              key is not enrolled until you do.",
             holder.label, config.name
         );
+        println!("{}", enrollment_approval_notice());
 
         let dir = crate::approvals::state_dir();
         let source = Arc::new(LinkTransport::new(
@@ -346,6 +347,16 @@ impl HwKeyAction {
         }
         Ok(lines.join("\n"))
     }
+}
+
+/// The enrollment ceremony's approval count, announced before the first
+/// request goes out (passlane#72): the second approval's link arriving
+/// unannounced after the first paste is when users lose track of which
+/// response is current, so the sequence is named up front.
+fn enrollment_approval_notice() -> &'static str {
+    "This enrollment needs 2 approvals from that device: create the key, then save the vault \
+     with it. Each approval answers its own fresh request — paste only the response the \
+     terminal is waiting for; a response from an earlier request is refused."
 }
 
 /// Record (or clear) the vault's enrolled factor in the registry.
@@ -872,6 +883,24 @@ mod tests {
             phone.asked_since(mark).len(),
             1,
             "only the open asked; no save happened"
+        );
+    }
+
+    #[test]
+    fn the_enrollment_announces_its_approval_sequence_up_front() {
+        // passlane#72: the ceremony's approvals must be countable by the
+        // user — the count, both steps, and the one-paste rule.
+        let notice = enrollment_approval_notice();
+        assert!(notice.contains("2 approvals"), "{notice}");
+        assert!(notice.contains("create the key"), "{notice}");
+        assert!(notice.contains("save the vault"), "{notice}");
+        assert!(
+            notice.contains("only the response the terminal is waiting for"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("refused"),
+            "it warns that an earlier request's response does not pass: {notice}"
         );
     }
 

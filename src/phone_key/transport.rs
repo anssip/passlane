@@ -34,9 +34,6 @@ use crate::approvals::{self, ApproveOutcome, Disposition, EmittedRequest, Reques
 /// How often a waiting command looks for its answer.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// How many times a response that does not verify may be pasted again.
-const MAX_PASTE_ATTEMPTS: usize = 3;
-
 /// Answers already held in memory elsewhere in this login session — the
 /// session agent in production, a map in tests.
 pub(crate) trait AnswerStore: Send + Sync {
@@ -67,8 +64,6 @@ pub(crate) struct Shown<'a> {
 pub(crate) trait Terminal: Send + Sync {
     /// Show the request: the link, a QR to scan, and what to do.
     fn show(&self, shown: &Shown<'_>);
-    /// A progress line for the human (never the answer, never the link).
-    fn note(&self, message: &str);
     /// The response pasted at the prompt. `None` cancels.
     fn read_response(&self, prompt: &str) -> Option<String>;
 }
@@ -112,10 +107,6 @@ impl Terminal for RealTerminal {
         }
     }
 
-    fn note(&self, message: &str) {
-        eprintln!("{message}");
-    }
-
     fn read_response(&self, prompt: &str) -> Option<String> {
         match inquire::Text::new(prompt).prompt() {
             Ok(text) if !text.trim().is_empty() => Some(text),
@@ -126,6 +117,66 @@ impl Terminal for RealTerminal {
 
 fn short(rid: &str) -> &str {
     &rid[..rid.len().min(8)]
+}
+
+/// The message that ends the command after one rejected paste
+/// (passlane#72): the verifier's precise reason, which request the
+/// rejected blob says it answers versus which one this prompt waits
+/// for (when the blob is an envelope at all — its rid travels in the
+/// cleartext header, decodable even on a rejection), and the re-run
+/// guidance. Nothing here re-prompts.
+fn rejected_paste_message(
+    reason: &str,
+    blob: &str,
+    request: &PhoneRequest,
+    expected_rid: &str,
+) -> String {
+    let mut message = format!("The pasted response was not accepted: {reason}");
+    match answered_request(blob) {
+        Some(answered) if answered != expected_rid => {
+            message.push_str(&format!(
+                " It answers request {}…; this prompt waits for request {}… ({}).",
+                short(&answered),
+                short(expected_rid),
+                request.describe()
+            ));
+        }
+        Some(answered) => {
+            message.push_str(&format!(
+                " It does answer this command's request {}… ({}), but the response itself did \
+                 not verify.",
+                short(&answered),
+                request.describe()
+            ));
+        }
+        None => message.push_str(&format!(
+            " This prompt waits for request {}… ({}).",
+            short(expected_rid),
+            request.describe()
+        )),
+    }
+    message.push_str(" Re-run the command to ask again.");
+    message
+}
+
+/// The request id a pasted response blob says it answers: the `rid`
+/// echoed in the response envelope's cleartext header, decodable even
+/// when the blob is rejected (already used, expired, sealed by another
+/// sender). `None` when the blob is not an approval-response envelope
+/// or its header does not carry a well-formed id — an unverified
+/// header is attacker-controlled, so anything that does not look like
+/// a request id is refused a place in an error message.
+fn answered_request(blob: &str) -> Option<String> {
+    let cleaned: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
+    let envelope = passlane_approval::envelope::Envelope::from_base64url(&cleaned).ok()?;
+    let header = envelope.header();
+    let looks_like_rid = header.rid.len() == 32
+        && header
+            .rid
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'));
+    (header.t == passlane_approval::message::MessageType::ApprovalResponse as u8 && looks_like_rid)
+        .then(|| header.rid.clone())
 }
 
 /// The link transport.
@@ -238,90 +289,86 @@ impl ResponseSource for LinkTransport {
 }
 
 impl LinkTransport {
-    /// The response is pasted here and used at once.
+    /// The response is pasted here and used at once. One paste, one
+    /// verdict (passlane#72): a rejected paste ends the command with the
+    /// reason and the re-run guidance instead of re-prompting — a second
+    /// prompt for the same request invites pasting the same dead blob
+    /// again, which is exactly what the retry loop used to produce.
     fn answered_at_the_terminal(
         &self,
         request: &PhoneRequest,
         emitted: &EmittedRequest,
     ) -> Result<Answer, ResponseError> {
+        // No prompt after the request lapsed: there is nothing it could
+        // still accept, so the person is told to re-run instead of asked.
+        if crate::approvals::now_secs() >= emitted.exp {
+            return Err(ResponseError::Unavailable(format!(
+                "request {}… ({}) expired before a response was pasted; re-run the command to \
+                 ask again",
+                short(&emitted.rid),
+                request.describe()
+            )));
+        }
         let prompt = format!(
             "Paste the approval response for {} (leave empty to cancel)",
             request.describe()
         );
-        for attempt in 1..=MAX_PASTE_ATTEMPTS {
-            if crate::approvals::now_secs() >= emitted.exp {
-                break;
-            }
-            let Some(blob) = self.terminal.read_response(&prompt) else {
-                return Err(ResponseError::Unavailable(
-                    "cancelled at the terminal: no response was given".into(),
-                ));
-            };
-            // The verifier hands the answer over before recording anything;
-            // here it is used immediately, so the request ends as consumed.
-            let handed = std::cell::RefCell::new(None);
-            let verified =
-                approvals::verify_response(&self.dir, &blob, Disposition::ConsumeNow, &|handoff| {
-                    *handed.borrow_mut() = Some(Zeroizing::new(handoff.response.to_vec()));
-                    Ok(())
-                });
-            match verified {
-                Ok(verified) => {
-                    // The response must answer the request this command
-                    // emitted, not any other pending one: an answer pasted
-                    // to a different unlock or save must not pass as this
-                    // gate's confirmation.
-                    let answers_this = match &verified.outcome {
-                        ApproveOutcome::Allowed { rid, .. }
-                        | ApproveOutcome::Denied { rid, .. } => rid == &emitted.rid,
-                    };
-                    if !answers_this {
-                        self.terminal.note(&format!(
-                            "That response answers a different request than the one this \
-                             command emitted; it was not used. {} attempt(s) left.",
-                            MAX_PASTE_ATTEMPTS - attempt
-                        ));
-                        continue;
-                    }
-                    match verified.outcome {
-                        ApproveOutcome::Allowed { .. } => {
-                            // verify_response refuses a challenge request
-                            // approved without an answer, so this is Some.
-                            return Ok(Answer {
-                                response: handed.into_inner().ok_or_else(|| {
-                                    ResponseError::Unavailable(
-                                        "the approved response carried no answer".into(),
-                                    )
-                                })?,
-                                origin: AnswerOrigin::LinkTransport,
-                            });
-                        }
-                        ApproveOutcome::Denied { reason, .. } => {
-                            return Err(ResponseError::Denied(
-                                reason.unwrap_or_else(|| "no reason given".into()),
-                            ));
-                        }
-                    }
+        let Some(blob) = self.terminal.read_response(&prompt) else {
+            return Err(ResponseError::Unavailable(
+                "cancelled at the terminal: no response was given".into(),
+            ));
+        };
+        // The verifier hands the answer over before recording anything;
+        // here it is used immediately, so the request ends as consumed.
+        let handed = std::cell::RefCell::new(None);
+        let verified =
+            approvals::verify_response(&self.dir, &blob, Disposition::ConsumeNow, &|handoff| {
+                *handed.borrow_mut() = Some(Zeroizing::new(handoff.response.to_vec()));
+                Ok(())
+            });
+        match verified {
+            Ok(verified) => {
+                // The response must answer the request this command
+                // emitted, not any other pending one: an answer pasted
+                // to a different unlock or save must not pass as this
+                // gate's confirmation.
+                let answered_rid = match &verified.outcome {
+                    ApproveOutcome::Allowed { rid, .. } | ApproveOutcome::Denied { rid, .. } => rid,
+                };
+                if answered_rid != &emitted.rid {
+                    return Err(ResponseError::Unavailable(format!(
+                        "That response answers request {}…, not this command's request {}… ({}); \
+                         it was not used. Re-run the command to ask again.",
+                        short(answered_rid),
+                        short(&emitted.rid),
+                        request.describe()
+                    )));
                 }
-                Err(e) => {
-                    let expired = e.contains("expired");
-                    if !expired {
-                        self.terminal.note(&format!(
-                            "That response was not accepted ({e}). {} attempt(s) left.",
-                            MAX_PASTE_ATTEMPTS - attempt
-                        ));
+                match verified.outcome {
+                    ApproveOutcome::Allowed { .. } => {
+                        // verify_response refuses a challenge request
+                        // approved without an answer, so this is Some.
+                        Ok(Answer {
+                            response: handed.into_inner().ok_or_else(|| {
+                                ResponseError::Unavailable(
+                                    "the approved response carried no answer".into(),
+                                )
+                            })?,
+                            origin: AnswerOrigin::LinkTransport,
+                        })
                     }
-                    if expired {
-                        break;
-                    }
+                    ApproveOutcome::Denied { reason, .. } => Err(ResponseError::Denied(
+                        reason.unwrap_or_else(|| "no reason given".into()),
+                    )),
                 }
             }
+            Err(e) => Err(ResponseError::Unavailable(rejected_paste_message(
+                &e,
+                &blob,
+                request,
+                &emitted.rid,
+            ))),
         }
-        Err(ResponseError::Unavailable(format!(
-            "no valid response arrived for request {}… before it expired; re-run the command to \
-             ask again",
-            short(&emitted.rid)
-        )))
     }
 
     /// Someone elsewhere approves and runs `passlane approve --response`;
@@ -453,7 +500,9 @@ pub(crate) fn holder_pin(dir: &Path, holder_kid: &str) -> Result<PeerPin, Error>
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::approvals::{load_identity, mock_page, mock_page_answer, pin_approver};
+    use crate::approvals::{
+        load_identity, mock_page, mock_page_answer, mock_page_answer_at, pin_approver,
+    };
     use passlane_approval::keys::IdentityKeys;
     use passlane_approval::message::Decision;
     use std::collections::HashMap;
@@ -522,7 +571,7 @@ pub(crate) mod tests {
     /// `on_read` produces each paste, given what was shown last.
     struct ScriptedTerminal {
         shown: Mutex<Vec<ShownRecord>>,
-        notes: Mutex<Vec<String>>,
+        prompts: AtomicUsize,
         on_show: Mutex<Option<OnShow>>,
         on_read: OnRead,
     }
@@ -536,7 +585,7 @@ pub(crate) mod tests {
         fn new(on_show: Option<OnShow>, on_read: OnRead) -> Self {
             Self {
                 shown: Mutex::new(Vec::new()),
-                notes: Mutex::new(Vec::new()),
+                prompts: AtomicUsize::new(0),
                 on_show: Mutex::new(on_show),
                 on_read,
             }
@@ -546,8 +595,10 @@ pub(crate) mod tests {
             self.shown.lock().unwrap().clone()
         }
 
-        fn notes(&self) -> Vec<String> {
-            self.notes.lock().unwrap().clone()
+        /// How many times a paste was asked for — the one-paste rule
+        /// (passlane#72) is asserted against this.
+        fn prompts(&self) -> usize {
+            self.prompts.load(Ordering::SeqCst)
         }
     }
 
@@ -565,11 +616,8 @@ pub(crate) mod tests {
             }
         }
 
-        fn note(&self, message: &str) {
-            self.notes.lock().unwrap().push(message.to_string());
-        }
-
         fn read_response(&self, _prompt: &str) -> Option<String> {
+            self.prompts.fetch_add(1, Ordering::SeqCst);
             let shown = self.shown.lock().unwrap();
             (self.on_read)(
                 shown
@@ -793,25 +841,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn interactive_a_bad_paste_is_reported_and_may_be_tried_again() {
-        let tries = Arc::new(AtomicUsize::new(0));
-        let rig = Rig::new(true, false, {
-            let tries = tries.clone();
-            pasting(move |keys, shown| {
-                if tries.fetch_add(1, Ordering::SeqCst) == 0 {
-                    Some("not an envelope".into())
-                } else {
-                    Some(page_answer(keys, shown, Some(ANSWER)))
-                }
-            })
-        });
-        let answer = rig.ask(Operation::Save).unwrap();
-        assert_eq!(answer.response.as_slice(), ANSWER);
-        let notes = rig.terminal().notes();
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("not accepted"), "{}", notes[0]);
-        assert!(notes[0].contains("2 attempt(s) left"), "{}", notes[0]);
-        assert_eq!(rig.pending()[0].state, RequestState::Consumed);
+    fn interactive_a_bad_paste_ends_the_command_after_one_prompt() {
+        // passlane#72: one paste, one verdict. A malformed blob is not a
+        // reason to re-prompt — re-prompting invites pasting the same
+        // dead thing again — so the command ends, saying what was
+        // expected and what to do.
+        let rig = Rig::new(true, false, pasting(|_, _| Some("not an envelope".into())));
+        let err = rig.ask(Operation::Save).unwrap_err();
+        let ResponseError::Unavailable(message) = &err else {
+            panic!("{err:?}")
+        };
+        assert!(message.contains("not accepted"), "{message}");
+        assert!(
+            message.contains("is not a valid envelope"),
+            "the verifier's reason is carried through: {message}"
+        );
+        assert!(
+            message.contains("Re-run the command to ask again"),
+            "{message}"
+        );
+        // One prompt, no second chance: a malformed paste is not a reason
+        // to re-prompt — re-prompting invites pasting the same dead thing
+        // again.
+        assert_eq!(rig.terminal().prompts(), 1);
+        // Nothing was released: a bad paste is not a decision, so the
+        // request is still only pending until it expires.
+        assert_eq!(rig.pending()[0].state, RequestState::Pending);
     }
 
     #[test]
@@ -824,20 +879,155 @@ pub(crate) mod tests {
             "{err:?}"
         );
         assert_eq!(rig.terminal().shown().len(), 1, "no second request");
+    }
 
-        // Three bad pastes exhaust the attempts, each one explained.
-        let rig = Rig::new(true, false, pasting(|_, _| Some("garbage".into())));
-        let err = rig.ask(Operation::Unlock).unwrap_err();
+    #[test]
+    fn interactive_a_wrong_blob_is_rejected_once_and_names_both_requests() {
+        // The blob answers an earlier, still-pending request (a different
+        // command's). It verifies — and is refused as this command's
+        // confirmation, with both request ids in the message so the mixup
+        // explains itself.
+        let pasted: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let keys_slot: Arc<Mutex<Option<Arc<Mutex<PageKeys>>>>> = Arc::new(Mutex::new(None));
+        let rig = Rig::new(true, false, {
+            let pasted = pasted.clone();
+            let keys_slot = keys_slot.clone();
+            Box::new(move |env: Env| {
+                *keys_slot.lock().unwrap() = Some(env.keys.clone());
+                Arc::new(ScriptedTerminal::new(
+                    None,
+                    Box::new(move |_| pasted.lock().unwrap().clone()),
+                ))
+            })
+        });
+        // Command one abandons its request at the prompt (nothing pasted
+        // yet), leaving it pending; its response blob is then built from
+        // that request and pasted into command two's prompt.
+        let _ = rig.ask(Operation::Unlock).unwrap_err();
+        let shown = rig.terminal().shown();
+        let keys = keys_slot.lock().unwrap().clone().unwrap();
+        *pasted.lock().unwrap() = Some(page_answer(&keys.lock().unwrap(), &shown[0], Some(ANSWER)));
+        let err = rig.ask(Operation::Save).unwrap_err();
+        let ResponseError::Unavailable(message) = &err else {
+            panic!("{err:?}")
+        };
+        let pending = rig.pending();
+        let wrong = &pending[0].rid; // the abandoned request's
+        let expected = &pending[1].rid; // the save's own
         assert!(
-            matches!(err, ResponseError::Unavailable(ref m) if m.contains("no valid response")),
-            "{err:?}"
+            message.contains(&wrong[..8]),
+            "names the answered one: {message}"
         );
-        let notes = rig.terminal().notes();
-        assert_eq!(notes.len(), 3, "{notes:?}");
-        assert!(notes[2].contains("0 attempt(s) left"), "{}", notes[2]);
-        // Nothing was released: a bad paste is not a decision, so the
-        // request is still only pending until it expires.
-        assert_eq!(rig.pending()[0].state, RequestState::Pending);
+        assert!(
+            message.contains(&expected[..8]),
+            "names the expected one: {message}"
+        );
+        assert!(
+            message.contains(&format!("saving vault '{}'", pending[1].vault)),
+            "says what the prompt waits for: {message}"
+        );
+        assert!(
+            message.contains("Re-run the command to ask again"),
+            "{message}"
+        );
+        assert_eq!(
+            rig.terminal().prompts(),
+            2,
+            "one prompt per command, no retry"
+        );
+    }
+
+    #[test]
+    fn interactive_a_byte_identical_re_paste_of_a_used_blob_is_self_diagnosing() {
+        // The real-world trap (passlane#72 evidence): the response that
+        // already served its command, pasted again at the next one. One
+        // prompt, then a message that names the spent request against
+        // the fresh one.
+        let spent: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let rig = Rig::new(true, false, {
+            let spent = spent.clone();
+            pasting(move |keys, shown| {
+                let mut slot = spent.lock().unwrap();
+                if slot.is_none() {
+                    // Command one's own response, remembered verbatim.
+                    *slot = Some(page_answer(keys, shown, Some(ANSWER)));
+                }
+                slot.clone()
+            })
+        });
+        // Command one consumes its request with the paste it asked for.
+        rig.ask(Operation::Unlock).unwrap();
+        // Command two gets the very same bytes pasted at its own prompt.
+        let err = rig.ask(Operation::Unlock).unwrap_err();
+        let ResponseError::Unavailable(message) = &err else {
+            panic!("{err:?}")
+        };
+        let pending = rig.pending();
+        assert!(
+            message.contains("already approved and used"),
+            "the verifier's reason is carried through: {message}"
+        );
+        assert!(
+            message.contains(&pending[0].rid[..8]),
+            "names the spent request: {message}"
+        );
+        assert!(
+            message.contains(&pending[1].rid[..8]),
+            "names the request the prompt waits for: {message}"
+        );
+        assert!(
+            message.contains("Re-run the command to ask again"),
+            "{message}"
+        );
+        assert_eq!(
+            rig.terminal().prompts(),
+            2,
+            "one prompt per command, no retry"
+        );
+    }
+
+    #[test]
+    fn interactive_an_expired_blob_is_rejected_once_and_explains_itself() {
+        // A blob sealed in the past: its envelope has lapsed even though
+        // it answers the request this prompt waits for. The message says
+        // both — right request, dead blob — and how to recover.
+        let rig = Rig::new(
+            true,
+            false,
+            pasting(|keys: &PageKeys, shown| {
+                let (cli, page, passkey) = keys;
+                Some(
+                    mock_page_answer_at(
+                        cli,
+                        page,
+                        passkey,
+                        &shown.rid,
+                        Decision::Allow,
+                        Some(ANSWER),
+                        passlane_approval::message::Scope::Once,
+                        crate::approvals::now_secs() - 400,
+                    )
+                    .to_base64url(),
+                )
+            }),
+        );
+        let err = rig.ask(Operation::Unlock).unwrap_err();
+        let ResponseError::Unavailable(message) = &err else {
+            panic!("{err:?}")
+        };
+        assert!(
+            message.contains("failed verification"),
+            "the verifier's reason is carried through: {message}"
+        );
+        assert!(
+            message.contains("does answer this command's request"),
+            "right request, dead blob: {message}"
+        );
+        assert!(
+            message.contains("Re-run the command to ask again"),
+            "{message}"
+        );
+        assert_eq!(rig.terminal().prompts(), 1);
     }
 
     #[test]

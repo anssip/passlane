@@ -1076,6 +1076,32 @@ pub(crate) fn mock_page_answer(
     answer: Option<[u8; 20]>,
     scope: Scope,
 ) -> Envelope {
+    mock_page_answer_at(
+        cli,
+        page,
+        passkey,
+        request_rid,
+        decision,
+        answer,
+        scope,
+        now_secs(),
+    )
+}
+
+/// [`mock_page_answer`] sealed at an explicit time — a blob whose
+/// envelope is already expired, for the rejected-paste paths.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mock_page_answer_at(
+    cli: &IdentityKeys,
+    page: &IdentityKeys,
+    passkey: &p256::ecdsa::SigningKey,
+    request_rid: &str,
+    decision: Decision,
+    answer: Option<[u8; 20]>,
+    scope: Scope,
+    now: u64,
+) -> Envelope {
     let cli_pin = PeerPin::new(
         "cli",
         PublicKey(cli.encryption_public()),
@@ -1092,7 +1118,7 @@ pub(crate) fn mock_page_answer(
             response: answer.map(|bytes| passlane_approval::message::SecretHex::from_bytes(&bytes)),
         },
         request_rid,
-        now_secs(),
+        now,
         &Policy::default(),
     )
     .unwrap();

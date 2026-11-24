@@ -902,6 +902,81 @@ test("approve page: the card describes phone-key operations", () => {
   eq(view2.op, "Supply the challenge-response for saving vault 'work'");
 });
 
+// -- labeled, expiring responses (passlane#72) ----------------------------------
+
+const { responseLabel, expiredResponseLabel, scheduleResponseExpiry, shortRid } = await import(
+  "./approve.js"
+);
+
+test("approve page: a response is labeled with the request it answers", () => {
+  const rid = "51d9af44c2b3e4d5f60718293a4b5c6d";
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "save" } }, rid),
+    `answers: SAVE vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "unlock" } }, rid),
+    `answers: OPEN vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "enroll_key" } }, rid),
+    `answers: CREATE the key for vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel(
+      { operation: { kind: "reveal", entry: "github", field: "password" } },
+      rid,
+    ),
+    `answers: REVEAL password of 'github' · 51d9af44…`,
+  );
+  // Two requests a person could mix up must be tellable apart by the label.
+  const other = "fe523a8199b7c6d5e4f3021122334455";
+  const a = responseLabel({ vault_name: "default", operation: { kind: "save" } }, rid);
+  const b = responseLabel({ vault_name: "default", operation: { kind: "save" } }, other);
+  if (a === b) throw new Error("labels of different requests must differ");
+  if (!a.includes("51d9af44") || !b.includes("fe523a81")) throw new Error(`${a} / ${b}`);
+});
+
+test("approve page: response labels survive short or absent ids", () => {
+  eq(shortRid("51d9af44"), "51d9af44…");
+  eq(shortRid(null), "…");
+  eq(shortRid(undefined), "…");
+  eq(responseLabel({ vault_name: "w", operation: { kind: "save" } }, null), "answers: SAVE vault 'w' · …");
+  eq(responseLabel({ vault_name: "w", operation: { kind: "weird" } }, "51d9af44…"), "answers: weird · 51d9af44…");
+});
+
+test("approve page: a lapsed response says it is no longer accepted", () => {
+  const label = expiredResponseLabel("answers: SAVE vault 'default' · 51d9af44…");
+  if (!label.startsWith("EXPIRED — answers: SAVE vault 'default' · 51d9af44…")) throw new Error(label);
+  if (!label.includes("no longer accepted")) throw new Error(label);
+  if (!label.includes("fresh request")) throw new Error(label);
+});
+
+test("approve page: response expiry fires at the request's deadline", () => {
+  const now = 1_000;
+  // Already lapsed: expires at once, no timer.
+  let fired = 0;
+  eq(scheduleResponseExpiry(now - 1, now, () => fired++), null);
+  eq(fired, 1, "a lapsed request's response is expired immediately");
+  // Live: scheduled with the exact remaining time, fires when run.
+  let ran = null;
+  const handle = scheduleResponseExpiry(
+    now + 5,
+    now,
+    () => fired++,
+    (fn, ms) => {
+      ran = ms;
+      return "timer-handle";
+    },
+  );
+  eq(ran, 5_000, "the timer waits exactly the request's remaining life");
+  eq(handle, "timer-handle");
+  // Exactly at the deadline is already lapsed, not scheduled.
+  eq(scheduleResponseExpiry(now, now, () => fired++, () => { throw new Error("no timer"); }), null);
+  eq(fired, 2);
+});
+
+
 // -- the enrollment ceremony (SPEC §6, with both CLI keys bound) --------------
 
 test("enrollment confirmation code mirrors the Rust derivation", async () => {

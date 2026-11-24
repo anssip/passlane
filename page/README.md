@@ -41,7 +41,7 @@ runs the exact same files.
 | Path                | Purpose                                                            |
 | ------------------- | ------------------------------------------------------------------ |
 | `/enroll.html#…`    | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying public key hex>`. |
-| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. |
+| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. Each produced response is labeled with the request it answers (purpose + short request id) and visibly expires when that request lapses — a stale blob is refused by the CLI, so the page stops offering it as current. |
 | `/test.html`        | In-browser self-test of the protocol layer against pinned vectors. |
 | `/`                 | Landing page for people who paste the domain.                      |
 

@@ -82,6 +82,59 @@ export function describeBody(body) {
   return { op, scope, requester: body.requester, vault: body.vault_name };
 }
 
+/** The first eight hex of a request id — enough to tell two apart. */
+export function shortRid(rid) {
+  return `${String(rid ?? "").slice(0, 8)}…`;
+}
+
+/**
+ * The label that ties a produced response to the request it answers
+ * (passlane#72): purpose + short request id. When two approvals follow
+ * each other (an enrollment's create-then-save), "the latest thing on
+ * my phone screen" stops being a trap: each response says which
+ * request it belongs to, matching the id the terminal's prompt and
+ * rejection messages name.
+ */
+export function responseLabel(body, rid) {
+  const kind = body?.operation?.kind;
+  const purpose =
+    kind === "unlock"
+      ? `OPEN vault '${body.vault_name}'`
+      : kind === "save"
+        ? `SAVE vault '${body.vault_name}'`
+        : kind === "enroll_key"
+          ? `CREATE the key for vault '${body.vault_name}'`
+          : kind === "reveal"
+            ? `REVEAL ${body.operation.field} of '${body.operation.entry}'`
+            : String(kind);
+  return `answers: ${purpose} · ${shortRid(rid)}`;
+}
+
+/**
+ * What the label becomes once the request lapses: the blob is dead —
+ * the CLI refuses it — and the person holding the phone should know
+ * before walking it to a terminal that can no longer accept it.
+ */
+export function expiredResponseLabel(label) {
+  return `EXPIRED — ${label} (no longer accepted; the computer must emit a fresh request)`;
+}
+
+/**
+ * Run `expire` when the request's clock runs out. Pure scheduling: the
+ * timer is injected so the node tests can fire it deterministically.
+ * A request already lapsed expires immediately; the handle is returned
+ * for cancellation.
+ */
+export function scheduleResponseExpiry(expSeconds, nowSeconds, expire, timer = setTimeout) {
+  const ms = (expSeconds - nowSeconds) * 1000;
+  if (ms <= 0) {
+    expire();
+    return null;
+  }
+  return timer(expire, ms);
+}
+
+
 /**
  * The challenge of a phone-held-key request, as bytes — or null when the
  * request carries none (then this device cannot answer it usefully).
@@ -479,6 +532,18 @@ async function main() {
       }
       $("response").value = blob;
       $("response-wrap").hidden = false;
+      // Label the response with the request it answers, and let it age
+      // with that request: past its expiry the blob is dead (the CLI
+      // refuses it), so it must stop looking current (passlane#72).
+      const label = responseLabel(body, envelope.header.rid);
+      $("response-label").textContent = label;
+      scheduleResponseExpiry(envelope.header.exp, nowSeconds(), () => {
+        const wrap = $("response-wrap");
+        if (wrap) wrap.classList.add("expired");
+        $("response-label").textContent = expiredResponseLabel(label);
+        const copy = $("copy");
+        if (copy) copy.disabled = true;
+      });
       $("status").textContent =
         decision === "allow"
           ? body.operation.kind === "enroll_key"
