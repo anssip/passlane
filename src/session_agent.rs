@@ -464,24 +464,27 @@ fn spawn_agent_detached(_plan: &AutostartPlan) -> Result<(), String> {
     Err("the session agent needs a Unix domain socket platform".into())
 }
 
-/// The highest file descriptor number worth closing in a spawned child.
+/// The highest file descriptor number worth covering in a spawned child.
 /// The process's nofile soft limit bounds what *it* can create, but not
 /// what it can *hold*: a wrapper can park a descriptor above a limit it
 /// lowers before executing the CLI, so the sweep is floored well above
 /// any realistic inherited number. A practical ceiling covers an
 /// unlimited or unreadable limit; `closefrom`/`close_range` would cover
 /// the true set but are not uniformly exposed by libc on the platforms
-/// this builds for. The cost — one `close` per number — is paid once,
+/// this builds for. The cost — one `fcntl` per number — is paid once,
 /// inside the child, between fork and exec.
 #[cfg(unix)]
 fn open_fd_limit() -> i32 {
+    // Widen first: `rlim_t` is 32-bit on 32-bit targets, and the
+    // clamping arithmetic must not depend on its width.
     // SAFETY: `getrlimit` writes into a plain `rlimit` struct we own.
     unsafe {
         let mut limit: libc::rlimit = std::mem::zeroed();
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0
-            && limit.rlim_cur != libc::RLIM_INFINITY
-        {
-            return (limit.rlim_cur.max(1 << 20).min(i32::MAX as u64)) as i32;
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            let soft = limit.rlim_cur as u64;
+            if soft != libc::RLIM_INFINITY as u64 {
+                return soft.max(1 << 20).min(i32::MAX as u64) as i32;
+            }
         }
     }
     1 << 20

@@ -209,7 +209,10 @@ impl AgentServer {
             }
             // Not connectable: a leftover socket from a crashed agent.
             // The rename replaces it atomically — no remove-then-bind
-            // window for a racing starter to slip into.
+            // window for a racing starter to slip into — and only a
+            // socket: whatever appeared at the path since the check
+            // above must not be destroyed by the rename.
+            refuse_to_replace_non_sockets(&path)?;
             std::fs::rename(&temp, &path)?;
             if file_inode(&path) != identity {
                 // Another starter renamed onto the path between our
@@ -242,10 +245,25 @@ impl AgentServer {
         if UnixStream::connect(&path).is_ok() {
             return Err(AgentError::AlreadyRunning(path));
         }
-        // A leftover socket from a crashed agent; nothing else is here
-        // (non-sockets were refused above).
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        // A leftover socket from a crashed agent. Re-verified as a
+        // socket right before the removal — whatever appeared at the
+        // path since the refusal above is not ours to delete.
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileTypeExt;
+                    if !meta.file_type().is_socket() {
+                        return Err(AgentError::Protocol(format!(
+                            "'{}' appeared and is not a socket; refusing to remove it",
+                            path.display()
+                        )));
+                    }
+                }
+                std::fs::remove_file(&path)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
         let listener = UnixListener::bind(&path)?;
         #[cfg(unix)]
