@@ -76,8 +76,9 @@ What they **cannot** do is ask the iPhone: the approval page speaks
 passlane's approval protocol over HTTPS, and KeePass clients expect a
 USB/NFC hardware key. The bridge is the recovery sheet:
 
-1. Program the sheet's secret into a YubiKey slot, e.g.
-   `ykman otp chalresp <slot>` with the 40-hex-character secret.
+1. Program the sheet's secret into a YubiKey slot, e.g. run
+   `ykman otp chalresp <slot>` and enter the 40-hex-character secret at
+   its prompt.
 2. In the client, add the YubiKey as a **hardware key / challenge-response**
    factor (KeePassXC: database unlock → *Add Hardware Key* → slot).
    KeePass 2.x, KeePassium and StrongBox work the same way (NFC keys on
