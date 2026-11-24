@@ -1109,13 +1109,12 @@ pub(crate) fn mock_page_answer(
     )
 }
 
-/// [`mock_page_answer`] with the decision time chosen by the caller: the
-/// response header's authenticated `ts` is what late-redemption rules
-/// (SPEC §4, passlane#73) are validated against.
-// A test helper standing in for the whole page: the parameter set is the
-// ceremony's, and it mirrors `mock_page_answer` plus the clock.
-#[allow(clippy::too_many_arguments)]
+/// [`mock_page_answer`] sealed at an explicit time — the decision time
+/// the response header's authenticated `ts` carries: what late-redemption
+/// rules (SPEC §4, passlane#73) are validated against, and how the
+/// rejected-paste paths build blobs whose envelopes are already expired.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mock_page_answer_at(
     cli: &IdentityKeys,
     page: &IdentityKeys,

@@ -41,7 +41,7 @@ runs the exact same files.
 | Path                | Purpose                                                            |
 | ------------------- | ------------------------------------------------------------------ |
 | `/enroll.html#…`    | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying public key hex>`. |
-| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. |
+| `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. Each produced response is labeled with the request it answers (purpose + short request id) and visibly expires when that request lapses — a stale blob is refused by the CLI, so the page stops offering it as current. |
 | `/test.html`        | In-browser self-test of the protocol layer against pinned vectors. |
 | `/`                 | Landing page for people who paste the domain.                      |
 
@@ -55,6 +55,20 @@ to the host. The domain later serves the app's
 `apple-app-site-association` (see `.well-known/`, placeholder app ID
 until the app ships) so universal links route to the app instead — the
 same envelopes, a different carrier.
+
+## Getting the blob back to the terminal
+
+Both ceremonies end with text that must reach the waiting computer, and
+on iOS Safari a bare `navigator.clipboard.writeText` is not enough: it
+can reject, and even a successful write syncs to Universal Clipboard
+unreliably. The handoff (passlane#76) therefore always shows what
+happened: Copy tries the async Clipboard API and falls back to a
+selection `execCommand("copy")` inside the click gesture; the textarea
+is selected on reveal, so the native long-press → Copy path — the one
+that reliably triggers Universal Clipboard — is one gesture away; and a
+Share button offers the platform share sheet, which on iOS includes
+AirDrop (a web page cannot invoke AirDrop directly; the sheet is the
+supported route). One implementation in `js/lib.js` serves both pages.
 
 ## Deploying
 

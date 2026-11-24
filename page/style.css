@@ -63,6 +63,18 @@ textarea {
 .error { color: #b3261e; }
 .note { opacity: 0.8; font-size: 0.9rem; }
 
+/* A response whose request has lapsed: the blob is dead, so it stops
+   looking current (passlane#72) — dimmed, struck through, uncopyable. */
+#response-wrap.expired #response {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+#response-wrap.expired #response-label {
+  color: #b3261e;
+  opacity: 1;
+  font-weight: 600;
+}
+
 #status { min-height: 1.5rem; }
 
 .code {
