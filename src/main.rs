@@ -206,7 +206,7 @@ pub fn cli() -> Command {
                     -o --otp "Legacy alias for --vault totp, the vault that held the one-time passwords before multi-vault support."
                 ).action(ArgAction::SetTrue))
                 .arg(
-                    arg!(--session [SECS] "Hold the vault's unlock factors in the running passlane-agent (memory only, nothing in the keychain) for SECS seconds (default 900, capped by the agent). Requires the session agent.")
+                    arg!(--session [SECS] "Hold the vault's unlock factors in the running passlane-agent (memory only, nothing in the keychain) for SECS seconds (default 900, capped by the agent). Starts the agent when none is running and a default socket path is in use.")
                         .num_args(0..=1)
                         .default_missing_value("900")
                         .value_parser(clap::value_parser!(u64))

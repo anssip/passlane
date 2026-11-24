@@ -2318,6 +2318,7 @@ dependencies = [
  "inquire",
  "keepass-ng",
  "keyring",
+ "libc",
  "log",
  "p256",
  "passlane-agent",

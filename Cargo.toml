@@ -75,6 +75,10 @@ qrcode = "0.14"
 rand = "0.8"
 # Session-agent client for unlock/approval sessions (issue #54).
 passlane-agent = { path = "crates/passlane-agent", version = "0.1.0" }
+# Closing inherited fds when auto-starting the session agent (issue #77):
+# a detached daemon must not hold a spawning command's pipes open.
+# Already in the tree via arboard/ctrlc; same major line as keepass-ng's.
+libc = "0.2"
 # The registry derives the phone-held key's holder-side vault id with it
 # (same version as passlane-approval's, so the workspace unifies).
 sha2 = "0.10"
