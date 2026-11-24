@@ -385,11 +385,10 @@ fn agent_log_path() -> PathBuf {
 /// stdio appended to the log file, stdin closed — an idle daemon that
 /// cannot block on anything — and **no other file descriptor inherited**:
 /// a daemon that outlives its spawner must not hold the spawning
-/// command's pipes open (an `expect`-style wrapper that leaks a
-/// non-CLOEXEC fd would otherwise keep the command's own pipeline from
-/// ever seeing EOF). The child is never waited on: it outlives this
-/// command by design, and the loser of a start race exits on its own
-/// (the server refuses to bind a socket a live agent answers).
+/// command's pipes open. A short reaper thread waits on the child so
+/// the loser of a start race does not linger as a zombie for the life
+/// of a long-lived parent (the REPL); the winner outlives the parent
+/// regardless, reparented to the session manager when it stops.
 #[cfg(unix)]
 fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
@@ -426,11 +425,11 @@ fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
         }
         Ok(())
     };
-    // SAFETY: the callback only closes file descriptors
-    // (async-signal-safe); see the comment on it above. Between fork
-    // and exec it must not touch locks, allocate, or read the
-    // environment — it does none of that.
-    unsafe {
+    // SAFETY: the callback only sets the close-on-exec flag on file
+    // descriptors (async-signal-safe); see the comment on it above.
+    // Between fork and exec it must not touch locks, allocate, or read
+    // the environment — it does none of that.
+    let child = unsafe {
         Command::new(&plan.binary)
             .arg("--socket")
             .arg(&plan.socket)
@@ -442,9 +441,20 @@ fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
             .process_group(0)
             .pre_exec(close_inherited_fds)
             .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("could not spawn {}: {e}", plan.binary.display()))
     }
+    .map_err(|e| format!("could not spawn {}: {e}", plan.binary.display()))?;
+    // Reap without adopting: the daemon stays detached by its process
+    // group and is never killed by us — only waited, so an exited one
+    // frees its process-table entry even under a REPL that keeps
+    // running.
+    std::thread::Builder::new()
+        .name("passlane-agent-reaper".into())
+        .spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        })
+        .map_err(|e| format!("could not watch the spawned agent: {e}"))?;
+    Ok(())
 }
 
 /// The spawn on platforms without Unix domain sockets: unreachable (see
@@ -1669,13 +1679,16 @@ mod tests {
     /// with `PASSLANE_AGENT_SOCK` unset, the socket path becomes
     /// `$dir/passlane-agent.sock`. The binary override names any
     /// executable, so the injected spawn tests pass discovery without
-    /// needing a real `passlane-agent` binary. Hold `ENV_MUTEX` for as
-    /// long as it lives.
+    /// needing a real `passlane-agent` binary. The opt-out variable is
+    /// cleared too — a developer exporting `PASSLANE_AGENT_AUTOSTART=0`
+    /// in their shell must not change what these tests assert. Hold
+    /// `ENV_MUTEX` for as long as it lives.
     struct DefaultSocketDir {
         dir: tempfile::TempDir,
         _sock: EnvVar,
         _xdg: EnvVar,
         _bin: EnvVar,
+        _autostart: EnvVar,
     }
 
     impl DefaultSocketDir {
@@ -1684,11 +1697,13 @@ mod tests {
             let _sock = EnvVar::remove(SOCKET_ENV);
             let _xdg = EnvVar::set("XDG_RUNTIME_DIR", dir.path());
             let _bin = EnvVar::set(AGENT_BIN_ENV, "/bin/sh");
+            let _autostart = EnvVar::remove(AUTOSTART_ENV);
             Self {
                 dir,
                 _sock,
                 _xdg,
                 _bin,
+                _autostart,
             }
         }
 
