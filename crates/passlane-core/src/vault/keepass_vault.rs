@@ -1,6 +1,6 @@
 use crate::challenge::{ChallengeFactor, validate_for_enrollment};
 use crate::vault::entities::{
-    Address, Credential, Error, Expiry, Note, PaymentCard, SecretField, Totp, TotpCode,
+    Address, Credential, Error, Expiry, Note, PaymentCard, SecretField, Totp, TotpCode, codes_at,
 };
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -90,6 +90,11 @@ impl From<keepass_ng::Error> for Error {
 /// Normalize an `otpauth://` URL so its `secret=` value passes strict RFC 4648
 /// base32 decoding: uppercase letters, strip whitespace, and pad with `=` to the
 /// next multiple of 8 characters. Other parts of the URL are left untouched.
+///
+/// The secret is scrubbed where it is worked on: the cleaning happens in one
+/// pre-allocated buffer that is zeroized before this returns, so the only
+/// seed-bearing allocation left behind is the returned URL itself — which every
+/// caller that does not keep it must zeroize too (the seed rides inside it).
 fn normalize_otp_url(url: &str) -> String {
     let secret_start = if let Some(pos) = url.find("?secret=") {
         pos + "?secret=".len()
@@ -102,22 +107,30 @@ fn normalize_otp_url(url: &str) -> String {
     let end_offset = after.find('&').unwrap_or(after.len());
     let raw_secret = &after[..end_offset];
 
-    let cleaned: String = raw_secret
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_uppercase();
-    let unpadded = cleaned.trim_end_matches('=');
-    let pad_len = (8 - (unpadded.len() % 8)) % 8;
-    let normalized = format!("{}{}", unpadded, "=".repeat(pad_len));
+    // One working buffer: cleaned, unpadded and re-padded in place, sized
+    // up front so it never reallocates (a growing buffer would strand
+    // seed copies in freed memory no zeroization can reach).
+    let mut cleaned = String::with_capacity(raw_secret.len() + 8);
+    cleaned.extend(
+        raw_secret
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_ascii_uppercase()),
+    );
+    while cleaned.ends_with('=') {
+        cleaned.pop();
+    }
+    let pad_len = (8 - (cleaned.len() % 8)) % 8;
+    cleaned.extend(std::iter::repeat('=').take(pad_len));
 
     let secret_end = secret_start + end_offset;
-    format!(
-        "{}{}{}",
-        &url[..secret_start],
-        normalized,
-        &url[secret_end..]
-    )
+    let mut normalized =
+        String::with_capacity(secret_start + cleaned.len() + (url.len() - secret_end));
+    normalized.push_str(&url[..secret_start]);
+    normalized.push_str(&cleaned);
+    normalized.push_str(&url[secret_end..]);
+    cleaned.zeroize();
+    normalized
 }
 
 fn node_has_totp(node: &NodePtr) -> bool {
@@ -130,7 +143,15 @@ fn node_has_totp(node: &NodePtr) -> bool {
         raw.is_some()
     );
     match raw {
-        Some(url) => TOTP::from_str(&normalize_otp_url(url)).is_ok(),
+        // The normalized URL carries the seed, and the parsed TOTP
+        // zeroizes itself on drop — scrub the URL copy here so classifying
+        // an entry leaves no seed material behind.
+        Some(url) => {
+            let mut normalized = normalize_otp_url(url);
+            let parses = TOTP::from_str(&normalized).is_ok();
+            normalized.zeroize();
+            parses
+        }
         None => false,
     }
 }
@@ -439,8 +460,8 @@ impl KeepassVault {
     /// One entry's one secret field, fetched by UUID: the field-at-a-time
     /// read behind the read-only FFI surface (passlane#44). Only the
     /// asked-for field of the one named entry is materialized — no
-    /// whole-category entity lists, so unfetched secrets are never loaded
-    /// as plain strings on this path — and the buffer zeroizes on drop.
+    /// whole-category entity lists — every working buffer the fetch
+    /// creates is scrubbed, and the returned buffer zeroizes on drop.
     pub fn get_secret_field(
         &self,
         uuid: &Uuid,
@@ -474,7 +495,13 @@ impl KeepassVault {
                 let raw = entry
                     .get_raw_otp_value()
                     .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
-                let totp = TOTP::from_str(&normalize_otp_url(raw))
+                // The normalized URL carries the seed inside it and the
+                // parsed TOTP zeroizes itself on drop: scrub the URL the
+                // moment the parse is done with it.
+                let mut normalized = normalize_otp_url(raw);
+                let parsed = TOTP::from_str(&normalized);
+                normalized.zeroize();
+                let totp = parsed
                     .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
                 // Canonical base32, exactly what the stored entity's
                 // `secret()` reads from the URL.
@@ -494,19 +521,20 @@ impl KeepassVault {
                 if !node_looks_like_payment(&node) {
                     return Err(Self::no_entry_for_field(uuid, field));
                 }
-                // One entry's card, consumed by the field extraction: the
-                // sibling secret is scrubbed there, not stranded.
-                match Self::node_to_payment(node) {
-                    Some(card) => Ok(card.into_secret_field(field)),
-                    None => Err(Self::no_entry_for_field(uuid, field)),
-                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a payment card is an entry");
+                Ok(Self::payment_secret_field(entry, field))
             }
         }
     }
 
     /// The current and next TOTP code of one entry, fetched by UUID — the
     /// by-entry read behind the FFI surface's `totp_now()` (passlane#44);
-    /// no whole-category entity list is materialized.
+    /// no whole-category entity list is materialized, and the seed-bearing
+    /// parse buffers are scrubbed (the parsed TOTP zeroizes itself on
+    /// drop), so repeated refreshes leave nothing behind.
     pub fn get_totp_code(&self, uuid: &Uuid) -> Result<TotpCode, Error> {
         let node = self
             .db
@@ -515,7 +543,55 @@ impl KeepassVault {
         if !node_has_totp(&node) {
             return Err(Self::no_entry_for_field(uuid, SecretField::TotpSeed));
         }
-        Self::node_to_totp(node).get_code()
+        let mut raw = {
+            let node = node.borrow();
+            let entry = node
+                .downcast_ref::<Entry>()
+                .expect("a TOTP node is an entry");
+            entry
+                .get_raw_otp_value()
+                .ok_or_else(|| Self::no_entry_for_field(uuid, SecretField::TotpSeed))?
+                .to_string()
+        };
+        let mut normalized = normalize_otp_url(&raw);
+        let parsed = TOTP::from_str(&normalized);
+        normalized.zeroize();
+        raw.zeroize();
+        let totp = parsed.map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| Error::new(&e.to_string()))?;
+        Ok(codes_at(&totp, now.as_secs()))
+    }
+
+    /// One card field straight off the stored entry, in either storage
+    /// format, read into zeroizing storage without building the card:
+    /// fetching one field must not materialize (and strand) the other.
+    fn payment_secret_field(entry: &Entry, field: SecretField) -> Zeroizing<Vec<u8>> {
+        let cvv = matches!(field, SecretField::CardCvv);
+        // Which format the card is in, by the loaders' own rule: a
+        // non-empty "Number" attribute plus a parseable "Expiry" one.
+        let is_custom_format = Self::non_empty_str(entry.get(PAYMENT_FIELD_NUMBER)).is_some()
+            && Expiry::from_str(entry.get(PAYMENT_FIELD_EXPIRY).unwrap_or("").trim()).is_ok();
+        let value: String = if is_custom_format {
+            if cvv {
+                entry.get(PAYMENT_FIELD_CVV).unwrap_or("").to_string()
+            } else {
+                entry
+                    .get(PAYMENT_FIELD_NUMBER)
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            }
+        } else {
+            // Legacy "Key: value" notes lines, with the loaders' defaults.
+            let note = entry.get_notes().unwrap_or("");
+            if cvv {
+                Self::extract_value_from_note(note, PAYMENT_FIELD_CVV)
+            } else {
+                Self::extract_value_from_note(note, PAYMENT_FIELD_NUMBER)
+            }
+        };
+        Zeroizing::new(value.into_bytes())
     }
 
     /// The shared "no such entry for this field" error, named by the
@@ -1767,6 +1843,34 @@ mod tests {
             err.message.contains("No TOTP entry with id"),
             "{}",
             err.message
+        );
+    }
+
+    #[test]
+    fn get_secret_field_reads_legacy_notes_format_cards() {
+        // The legacy fixture (passlane 3.2) stores its card in "Key: value"
+        // notes lines: the field fetch must read the same values the
+        // entity loader does, in either storage format.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/resources/legacy-passlane3.2-kdbx4.0.kdbx");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        std::fs::copy(&fixture, &path).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        let vault = KeepassVault::open("fixture-password", &path, None, None).unwrap();
+
+        let cards = vault.find_payments();
+        let card = cards.first().expect("the legacy card");
+        let id = *card.id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&id, SecretField::CardNumber)
+                .unwrap(),
+            card.number().as_bytes().to_vec()
+        );
+        assert_eq!(
+            *vault.get_secret_field(&id, SecretField::CardCvv).unwrap(),
+            card.cvv().as_bytes().to_vec()
         );
     }
 

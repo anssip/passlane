@@ -8,7 +8,6 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 use std::time::SystemTimeError;
 use uuid::Uuid;
-use zeroize::{Zeroize, Zeroizing};
 
 use crate::generator::SPECIAL;
 
@@ -354,27 +353,6 @@ impl PaymentCard {
             format!("•••• {}", num)
         }
     }
-
-    /// One card secret as zeroized bytes, consuming the card: the
-    /// field-at-a-time read of [`KeepassVault::get_secret_field`]
-    /// (passlane#44). The other card secret — the CVV when the number is
-    /// fetched, and vice versa — is scrubbed on the way out, so taking one
-    /// field does not strand the other in freed memory as a plain string.
-    /// Any non-card field reads as the number: this is the card read, and
-    /// [`KeepassVault::get_secret_field`] routes card fields here only.
-    ///
-    /// [`KeepassVault::get_secret_field`]: crate::vault::keepass_vault::KeepassVault::get_secret_field
-    pub fn into_secret_field(mut self, field: SecretField) -> Zeroizing<Vec<u8>> {
-        if matches!(field, SecretField::CardCvv) {
-            let cvv = std::mem::take(&mut self.cvv).into_bytes();
-            self.number.zeroize();
-            Zeroizing::new(cvv)
-        } else {
-            let number = std::mem::take(&mut self.number).into_bytes();
-            self.cvv.zeroize();
-            Zeroizing::new(number)
-        }
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -528,17 +506,23 @@ impl Totp {
     fn get_code_at(&self, now_secs: u64) -> Result<TotpCode, Error> {
         let totp = TOTP::from_str(&self.url)
             .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
-
         debug!("Getting code for totp: {}", totp.label);
-        let current = totp.value_at(now_secs);
-        // `valid_for` is the distance to the next window boundary, so
-        // evaluating there yields the next window's code.
-        let next = totp.value_at(now_secs + current.valid_for.as_secs());
-        Ok(TotpCode {
-            value: current.code,
-            next_value: next.code,
-            valid_for_seconds: current.valid_for.as_secs(),
-        })
+        Ok(codes_at(&totp, now_secs))
+    }
+}
+
+/// The current and next window's codes for an already-parsed TOTP.
+/// Shared by the entity's [`Totp::get_code`] and the vault's by-id code
+/// read (`KeepassVault::get_totp_code`, passlane#44), so both compute the
+/// pair the same way. `valid_for` is the distance to the next window
+/// boundary, so evaluating there yields the next window's code.
+pub(crate) fn codes_at(totp: &TOTP, now_secs: u64) -> TotpCode {
+    let current = totp.value_at(now_secs);
+    let next = totp.value_at(now_secs + current.valid_for.as_secs());
+    TotpCode {
+        value: current.code,
+        next_value: next.code,
+        valid_for_seconds: current.valid_for.as_secs(),
     }
 }
 
@@ -796,17 +780,6 @@ mod tests {
             None,
             None,
         )
-    }
-
-    #[test]
-    fn into_secret_field_takes_the_asked_field_as_bytes() {
-        let card = make_card("4111111111111111");
-        let number = card.into_secret_field(SecretField::CardNumber);
-        assert_eq!(*number, b"4111111111111111".to_vec());
-
-        let card = make_card("4111111111111111");
-        let cvv = card.into_secret_field(SecretField::CardCvv);
-        assert_eq!(*cvv, b"123".to_vec());
     }
 
     #[test]
