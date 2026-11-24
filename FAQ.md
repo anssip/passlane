@@ -18,10 +18,15 @@ passlane --vault <vault> hwkey add --phone --page <approval-page-url>
 ```
 
 The page creates a **non-extractable WebCrypto HMAC key** (the raw secret
-exists exactly once, for the recovery sheet) and your **passkey** provides
-the Face ID step. From then on every open and every save of that vault asks
-the phone for an approval over the link transport — scan the QR or open the
-link, approve, paste the response back (or let the session agent hold it).
+exists exactly once, for the recovery sheet) and approval is a **passkey**
+assertion. Face ID is the usual prompt on iPhone, but be clear about what
+is enforced: the verifier requires a user-present passkey, and biometric
+verification is requested (`userVerification: "preferred"`) — a setting
+the platform may honor with Face ID rather than something the protocol
+currently requires. From then on every open and every save of that vault
+asks the phone for an approval over the link transport — scan the QR or
+open the link, approve, paste the response back (or let the session agent
+hold it).
 
 The iOS app (see the
 [passlane-ios plan](https://github.com/anssip/passlane-ios/blob/main/PLAN.md))
@@ -59,7 +64,7 @@ The trade-off: the second factor then exists in three copies — phone,
 YubiKey, paper sheet. That is the same model as backing up a YubiKey slot
 secret, which KeePass users have done for years; keep the sheet offline.
 
-## How does another KeePass client (KeePassXC, KeePass 2.x, KeePassium, StrongBox) open a phone-held vault?
+## How does another KeePass client (KeePassXC, StrongBox) open a phone-held vault?
 
 To them the vault is an ordinary KDBX4 database whose key includes a
 challenge-response component. The derivation is identical on both sides —
@@ -70,26 +75,49 @@ outer header:
 - KeePassXC 2.7.10 (`CompositeKey::transform`): `kdf.seed()` is passed as
   the challenge (its master-seed variant is the legacy KDBX3 path only)
 
-Given the same secret, every client computes the same key.
+Given the same secret, any client implementing this KDBX4
+challenge-response mode computes the same key — verified against
+KeePassXC's source and keepass-ng's; StrongBox documents the same
+("KeePassXC") mode.
+
+**KeePass 2.x is not in that set.** Its classic challenge-response support
+is the KeeChallenge plugin scheme, which KeePassXC explicitly documents
+itself as *incompatible* with — the same secret does not make a
+KeePass 2.x + KeeChallenge setup open this vault.
 
 What they **cannot** do is ask the iPhone: the approval page speaks
 passlane's approval protocol over HTTPS, and KeePass clients expect a
 USB/NFC hardware key. The bridge is the recovery sheet:
 
-1. Program the sheet's secret into a YubiKey slot, e.g. run
+1. Program the sheet's secret into a YubiKey slot: run
    `ykman otp chalresp <slot>` and enter the 40-hex-character secret at
-   its prompt.
+   its prompt (not as an argument — the prompt keeps it out of shell
+   history).
 2. In the client, add the YubiKey as a **hardware key / challenge-response**
    factor (KeePassXC: database unlock → *Add Hardware Key* → slot).
-   KeePass 2.x, KeePassium and StrongBox work the same way (NFC keys on
-   iOS).
+   StrongBox accepts NFC hardware keys on iOS — or, better, skip the
+   hardware entirely with a virtual key (next question).
 
-No KeePass client accepts a typed-in HMAC secret. Typing the secret is a
-passlane-only recovery path (`passlane hwkey remove --secret`): it opens
-the vault and **strips** the factor — see the runbook for the full
-recovery order when the holder device is lost (recover from the sheet
-first, then re-pair and re-enroll; a new pairing does not restore the old
-holder's key).
+No KeePass client accepts a typed-in HMAC secret in its unlock dialog.
+Typing the secret is a passlane-only recovery path (`passlane hwkey remove
+--secret`): it opens the vault and **strips** the factor — see the runbook
+for the full recovery order when the holder device is lost (recover from
+the sheet first, then re-pair and re-enroll; a new pairing does not
+restore the old holder's key).
+
+## Can I use StrongBox's virtual hardware keys instead of a physical YubiKey?
+
+Yes. StrongBox implements the same KeePassXC-mode challenge-response and
+lets you create a **virtual hardware key** — a software HMAC-SHA1 key —
+by entering the secret. Import the recovery sheet's secret (the
+40-hex-character string) as a virtual hardware key, and StrongBox opens
+the vault on the iPhone with no physical key at all: the same bridge as
+programming a YubiKey, software-only, and the natural choice on iOS.
+
+Two things it does not do. It does not join the approval protocol —
+StrongBox holds its own copy of the secret and opens the vault itself;
+passlane still asks its enrolled holder for approvals. And it is another
+copy of the factor, the same trade-off as the programmed YubiKey.
 
 ## Which YubiKey slot should I program?
 
