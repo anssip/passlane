@@ -462,7 +462,7 @@ fn search_entries(
             .map(|c| EntrySummary {
                 id: c.uuid().to_string(),
                 title: c.title().to_string(),
-                username: non_empty(c.username()),
+                username: summary_username(c.username()),
                 url: c.url().map(str::to_string),
                 item_type,
             })
@@ -514,10 +514,20 @@ fn matches_query(query: &str, fields: &[&str]) -> bool {
     query.is_empty() || fields.iter().any(|f| f.to_lowercase().contains(&needle))
 }
 
-/// `Some` unless empty, so an absent username reads as `None` on the
-/// foreign side instead of `Some("")`.
-fn non_empty(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_string())
+/// The username of an [`EntrySummary`]: `None` when absent. Core's loader
+/// fills a missing `UserName` field with its `"(no username)"` display
+/// placeholder, which is not account metadata — AutoFill matches on this
+/// value — so the placeholder maps to `None`. That costs a corner: a user
+/// who literally stores `"(no username)"` as their username is
+/// indistinguishable at this boundary, because the entity has already
+/// lost the field's absence. Preserving it would mean changing core's
+/// entity semantics for every CLI display; the mapping keeps the loss
+/// here, documented, instead.
+fn summary_username(value: &str) -> Option<String> {
+    match value {
+        "" | "(no username)" => None,
+        stored => Some(stored.to_string()),
+    }
 }
 
 /// One entry's one secret field, as zeroized bytes. The fetch goes
@@ -556,4 +566,30 @@ fn parse_id(id: &str) -> Result<Uuid, CoreError> {
     Uuid::parse_str(id).map_err(|_| CoreError::Vault {
         message: format!("'{id}' is not a valid entry id (a UUID)."),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_username_treats_the_display_placeholder_as_absent() {
+        // Core's loader fills a missing UserName with "(no username)"; a
+        // summary must not hand that placeholder to Swift as metadata.
+        assert_eq!(summary_username("(no username)"), None);
+        assert_eq!(summary_username(""), None);
+        assert_eq!(
+            summary_username("user@example.com"),
+            Some("user@example.com".to_string())
+        );
+        // Near-misses of the placeholder stay real usernames.
+        assert_eq!(
+            summary_username("(no username!)"),
+            Some("(no username!)".to_string())
+        );
+        assert_eq!(
+            summary_username(" (no username) "),
+            Some(" (no username) ".to_string())
+        );
+    }
 }

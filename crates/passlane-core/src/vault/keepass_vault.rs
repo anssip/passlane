@@ -467,9 +467,13 @@ impl KeepassVault {
         uuid: &Uuid,
         field: SecretField,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        // A group can carry a UUID too; every read below is entry-only
+        // (the classification predicates assume an Entry), so groups are
+        // rejected here as unfound rather than crashing the downcast.
         let node = self
             .db
             .search_node_by_uuid(*uuid)
+            .filter(|node| node_is_entry(node))
             .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
         match field {
             SecretField::Password => {
@@ -536,9 +540,12 @@ impl KeepassVault {
     /// parse buffers are scrubbed (the parsed TOTP zeroizes itself on
     /// drop), so repeated refreshes leave nothing behind.
     pub fn get_totp_code(&self, uuid: &Uuid) -> Result<TotpCode, Error> {
+        // Groups are rejected like any other non-entry id: the read below
+        // is entry-only.
         let node = self
             .db
             .search_node_by_uuid(*uuid)
+            .filter(|node| node_is_entry(node))
             .ok_or_else(|| Self::no_entry_for_field(uuid, SecretField::TotpSeed))?;
         if !node_has_totp(&node) {
             return Err(Self::no_entry_for_field(uuid, SecretField::TotpSeed));
@@ -567,6 +574,9 @@ impl KeepassVault {
     /// One card field straight off the stored entry, in either storage
     /// format, read into zeroizing storage without building the card:
     /// fetching one field must not materialize (and strand) the other.
+    /// The values mirror `get_node_payment_values` exactly — the number
+    /// trimmed to its non-empty form in both formats, the CVV as stored —
+    /// so a fetch and an entity load never disagree.
     fn payment_secret_field(entry: &Entry, field: SecretField) -> Zeroizing<Vec<u8>> {
         let cvv = matches!(field, SecretField::CardCvv);
         // Which format the card is in, by the loaders' own rule: a
@@ -577,8 +587,7 @@ impl KeepassVault {
             if cvv {
                 entry.get(PAYMENT_FIELD_CVV).unwrap_or("").to_string()
             } else {
-                entry
-                    .get(PAYMENT_FIELD_NUMBER)
+                Self::non_empty_str(entry.get(PAYMENT_FIELD_NUMBER))
                     .map(str::to_string)
                     .unwrap_or_default()
             }
@@ -588,7 +597,9 @@ impl KeepassVault {
             if cvv {
                 Self::extract_value_from_note(note, PAYMENT_FIELD_CVV)
             } else {
-                Self::extract_value_from_note(note, PAYMENT_FIELD_NUMBER)
+                Self::extract_value_from_note_opt(note, PAYMENT_FIELD_NUMBER)
+                    .and_then(|value| Self::non_empty_str(Some(&value)).map(String::from))
+                    .unwrap_or_default()
             }
         };
         Zeroizing::new(value.into_bytes())
@@ -1821,6 +1832,69 @@ mod tests {
             "{}",
             missing.message
         );
+    }
+
+    #[test]
+    fn get_secret_field_and_get_totp_code_reject_group_ids() {
+        // Groups carry UUIDs too, and `search_node_by_uuid` happily
+        // returns them; the by-id reads are entry-only and must report a
+        // group as unfound instead of crashing the entry downcast.
+        let vault = vault_with_one_of_each_kind();
+        let root_group = vault.get_root_uuid();
+
+        let err = vault
+            .get_secret_field(&root_group, SecretField::Password)
+            .unwrap_err();
+        assert!(
+            err.message.contains("No credential with id"),
+            "{}",
+            err.message
+        );
+        let err = vault
+            .get_secret_field(&root_group, SecretField::TotpSeed)
+            .unwrap_err();
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
+        let err = match vault.get_totp_code(&root_group) {
+            Err(e) => e,
+            Ok(_) => panic!("a group has no TOTP code"),
+        };
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn payment_secret_field_trims_the_number_like_the_loader() {
+        // The entity loader trims a legacy "Number: " line to its non-empty
+        // form; the direct field read must agree, or a fetch and a load
+        // would return different numbers for the same card.
+        let node = payment_entry_node(
+            "Padded Card",
+            "Name on card: U\nNumber:   4111111111111111  \nCVV: 123\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        let (number, cvv) = {
+            let node_ref = node.borrow();
+            let entry = node_ref.downcast_ref::<Entry>().unwrap();
+            (
+                KeepassVault::payment_secret_field(entry, SecretField::CardNumber),
+                KeepassVault::payment_secret_field(entry, SecretField::CardCvv),
+            )
+        };
+        assert_eq!(
+            *number,
+            KeepassVault::node_to_payment(node.clone())
+                .unwrap()
+                .number()
+                .as_bytes()
+                .to_vec()
+        );
+        assert_eq!(*cvv, b"123".to_vec());
     }
 
     #[test]
