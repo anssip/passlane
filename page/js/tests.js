@@ -1027,6 +1027,22 @@ test("handoff: copy tries the clipboard API, then selection copy, then gives up"
     ok: true,
     how: "selection-copy",
   });
+  // The pages call this with no `doc`: the browser document is the
+  // default, so the execCommand fallback actually runs in production
+  // (passlane#76, Copilot review) — proved by installing one.
+  const failingApi = { clipboard: { writeText: async () => { throw new Error("nope"); } } };
+  const savedDoc = globalThis.document;
+  globalThis.document = { execCommand: () => true };
+  try {
+    eq(
+      await copyWithFallback("the-blob", textarea, failingApi),
+      { ok: true, how: "selection-copy" },
+      "the default document's execCommand is used",
+    );
+  } finally {
+    if (savedDoc === undefined) delete globalThis.document;
+    else globalThis.document = savedDoc;
+  }
 });
 
 test("handoff: feedback names Universal Clipboard on success, long-press on failure", () => {

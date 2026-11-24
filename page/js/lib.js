@@ -144,7 +144,7 @@ export function canShare(nav = globalThis.navigator) {
  * textarea — the pragmatic last resort on iOS Safari. Returns how it
  * went, so the caller can tell the human.
  */
-export async function copyWithFallback(text, textarea, nav = globalThis.navigator, doc) {
+export async function copyWithFallback(text, textarea, nav = globalThis.navigator, doc = globalThis.document) {
   try {
     if (typeof nav?.clipboard?.writeText !== "function") throw new Error("no clipboard API");
     await nav.clipboard.writeText(text);
@@ -193,7 +193,7 @@ export function copyFeedback(outcome) {
  * and the note line the feedback lands in. Every element is optional:
  * briefly cached, older HTML without a button must not break the page.
  */
-export function wireHandoff({ textarea, copy, share, note, nav = globalThis.navigator, doc }) {
+export function wireHandoff({ textarea, copy, share, note, nav = globalThis.navigator, doc = globalThis.document }) {
   if (copy) {
     copy.addEventListener("click", async () => {
       const outcome = await copyWithFallback(textarea?.value ?? "", textarea, nav, doc);
