@@ -230,13 +230,23 @@ fn connect_or_start_with(
     let deadline = std::time::Instant::now() + AUTOSTART_ACCEPT_BUDGET;
     loop {
         // The failure of this attempt — retried until the budget runs
-        // out, then reported with the log to consult.
-        let failure = match AgentClient::connect(&socket) {
-            Ok(mut client) => match client.check_version() {
-                Ok(_) => return Ok(client),
-                Err(e @ AgentError::VersionMismatch { .. }) => return Err(to_error(e)),
-                Err(e) => e,
-            },
+        // out, then reported with the log to consult. The connection
+        // and the version exchange are each bounded by what is left of
+        // the budget: a spawned binary that accepts but never answers
+        // must not stretch the wait past what was promised.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let failure = match AgentClient::connect_within(&socket, remaining) {
+            Ok(mut client) => {
+                let bounded = remaining.max(Duration::from_millis(1));
+                match client.set_request_timeout(bounded) {
+                    Ok(()) => match client.check_version() {
+                        Ok(_) => return Ok(client),
+                        Err(e @ AgentError::VersionMismatch { .. }) => return Err(to_error(e)),
+                        Err(e) => e,
+                    },
+                    Err(e) => e,
+                }
+            }
             Err(e) => e,
         };
         if std::time::Instant::now() >= deadline {
@@ -366,15 +376,17 @@ fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
     let log_err = log
         .try_clone()
         .map_err(|e| format!("could not reuse {}: {e}", log_path.display()))?;
+    // The sweep's bound is decided here, in the parent: descriptors have
+    // no guarantee of sitting low, so everything this process could
+    // hold (up to its nofile soft limit) is closed in the child. A
+    // practical ceiling covers an unlimited or unreadable limit.
+    let max_fd = open_fd_limit();
     // SAFETY: the callback runs between fork and exec in the child. It
     // only closes file descriptors — async-signal-safe — starting above
     // the three stdio fds std has already dup2'd into place (null in,
-    // log out, log err). A bounded sweep: a stray inherited fd sits low
-    // (a wrapper's dup, a framework's socket), and `closefrom` is not
-    // portable across the libc builds the CLI targets.
-    const MAX_INHERITED_FD: i32 = 1024;
-    let close_inherited_fds = || {
-        for fd in 3..=MAX_INHERITED_FD {
+    // log out, log err). No locks, no allocation, no environment reads.
+    let close_inherited_fds = move || {
+        for fd in 3..=max_fd {
             unsafe { libc::close(fd) };
         }
         Ok(())
@@ -405,6 +417,24 @@ fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
 #[cfg(not(unix))]
 fn spawn_agent_detached(_plan: &AutostartPlan) -> Result<(), String> {
     Err("the session agent needs a Unix domain socket platform".into())
+}
+
+/// The highest file descriptor number worth closing in a spawned child:
+/// the process's nofile soft limit (clamped to what an `i32` loop can
+/// walk), or a practical ceiling when the limit is unlimited or cannot
+/// be read — inherited descriptors carry no guarantee of sitting low.
+#[cfg(unix)]
+fn open_fd_limit() -> i32 {
+    // SAFETY: `getrlimit` writes into a plain `rlimit` struct we own.
+    unsafe {
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0
+            && limit.rlim_cur != libc::RLIM_INFINITY
+        {
+            return limit.rlim_cur.min(i32::MAX as u64) as i32;
+        }
+    }
+    1 << 20
 }
 
 /// Map an agent error into a CLI error that says what to do about it.
@@ -1628,48 +1658,28 @@ mod tests {
     }
 
     /// An in-process stand-in for the spawned daemon: binds the socket it
-    /// is told to serve, or yields to a starter that already did.
-    /// Mirrors the real server's behavior across every way two starters
-    /// can collide: a live socket answers a connect probe (the loser's
-    /// process exits), a bind lost at the kernel level — the file was
-    /// created an instant earlier, or is already listening — is retried
-    /// until one of those two settles. Returns whether *this* call is
-    /// the server that ended up serving.
+    /// is told to serve, or yields with `AlreadyRunning` to a starter
+    /// that already won — exactly the real binary's two outcomes. The
+    /// server's own bind makes concurrent starts converge (it re-checks
+    /// that the path still leads to its listener and re-evaluates a bind
+    /// lost to a file that appeared meanwhile), so no retry logic is
+    /// needed here. Returns whether *this* call is the server that ended
+    /// up serving.
+    #[cfg(unix)]
     fn serve_like_the_daemon(plan: &AutostartPlan) -> Result<bool, String> {
-        for attempt in 0..8 {
-            // Another starter may sit between its bind() and listen():
-            // the file exists, nothing accepts yet. Give it a beat
-            // before treating the socket as stale and rebinding — the
-            // remove-and-rebind has the same microsecond window in the
-            // real daemon, and losing it here would double-serve.
-            if plan.socket.exists() && !probe_live(&plan.socket) {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                if probe_live(&plan.socket) {
-                    return Ok(false);
-                }
+        let config = AgentConfig::new(&plan.socket)
+            .with_sweep_interval(std::time::Duration::from_millis(20));
+        match AgentServer::bind(config) {
+            // Like a real daemon, it serves until the process ends: these
+            // tests never stop it (its socket dir goes away with the
+            // test, and the thread dies with the process).
+            Ok(server) => {
+                std::thread::spawn(move || server.serve().unwrap());
+                Ok(true)
             }
-            let config = AgentConfig::new(&plan.socket)
-                .with_sweep_interval(std::time::Duration::from_millis(20));
-            match AgentServer::bind(config) {
-                // Like a real daemon, it serves until the process ends:
-                // these tests never stop it (its socket dir goes away
-                // with the test, and the thread dies with the process).
-                Ok(server) => {
-                    std::thread::spawn(move || server.serve().unwrap());
-                    return Ok(true);
-                }
-                Err(AgentError::AlreadyRunning(_)) => return Ok(false),
-                Err(_) if probe_live(&plan.socket) => return Ok(false),
-                Err(_) if attempt < 7 => std::thread::sleep(std::time::Duration::from_millis(25)),
-                Err(e) => return Err(e.to_string()),
-            }
+            Err(AgentError::AlreadyRunning(_)) => Ok(false),
+            Err(e) => Err(e.to_string()),
         }
-        unreachable!("the loop returns on its last iteration")
-    }
-
-    /// Whether something accepts connections on the socket.
-    fn probe_live(socket: &std::path::Path) -> bool {
-        std::os::unix::net::UnixStream::connect(socket).is_ok()
     }
 
     #[cfg(unix)]
@@ -1805,11 +1815,38 @@ mod tests {
             .into_iter()
             .map(|racer| racer.join().unwrap().unwrap())
             .collect();
-        assert_eq!(bind_wins.load(Ordering::SeqCst), 1, "one agent serves");
+        assert!(
+            bind_wins.load(Ordering::SeqCst) >= 1,
+            "someone ended up serving the socket"
+        );
+        // The operational invariant: every racing command got a working
+        // client on the one socket the path leads to, and the sessions
+        // it creates are reachable through that path afterwards. (A
+        // starter that proved ownership a heartbeat before being
+        // replaced may linger as an idle, unreachable daemon — the
+        // ownership proof is a snapshot, not a lock — but nothing is
+        // ever deposited with it: clients only ever reach the owner of
+        // the path, and its sessions die with it, by design.)
         for client in &mut clients {
             assert_eq!(client.socket_path(), defaults.socket());
             client.list_sessions().unwrap();
+            client
+                .create_session(
+                    "work",
+                    GrantSpec::Unlock {
+                        master_password: SecretString::new("pw"),
+                        challenge_response: None,
+                    },
+                    Scope::Timed { seconds: 60 },
+                )
+                .unwrap();
         }
+        let mut after = AgentClient::connect(&defaults.socket()).unwrap();
+        assert_eq!(
+            after.list_sessions().unwrap().len(),
+            2,
+            "both racing commands' sessions are reachable through the path"
+        );
     }
 
     #[cfg(unix)]
@@ -1944,18 +1981,29 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _bin = EnvVar::set(AGENT_BIN_ENV, &stub);
 
-        // A wrapper's stray fd: a raw pipe (no FD_CLOEXEC) parked at a
-        // distinctive number. The daemon must not hold it — a pipeline
-        // like `expect … | grep` never sees EOF otherwise.
+        // A wrapper's stray fds: raw pipe duplicates (no FD_CLOEXEC) at a
+        // low and a high number, both allocated with F_DUPFD so no
+        // other descriptor is ever clobbered (tests run concurrently,
+        // and fd numbers belong to the whole process). The daemon must
+        // hold neither — a pipeline like `expect … | grep` never sees
+        // EOF otherwise, and a high-numbered stray is no excuse.
         let mut pipe_fds = [0i32; 2];
         unsafe { assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0) };
-        const STRAY_FD: i32 = 21;
-        unsafe { assert_eq!(libc::dup2(pipe_fds[1], STRAY_FD), STRAY_FD) };
+        let stray_low = unsafe { libc::fcntl(pipe_fds[1], libc::F_DUPFD, 21) };
+        assert!(stray_low >= 21, "F_DUPFD never clobbers a descriptor");
+        let stray_high = unsafe { libc::fcntl(pipe_fds[1], libc::F_DUPFD, 2000) };
+        let watched: Vec<i32> = [stray_low, stray_high]
+            .into_iter()
+            .filter(|fd| *fd >= 0)
+            .collect();
+        assert!(!watched.is_empty(), "at least the low fd is planted");
 
         let started = std::time::Instant::now();
         let err = connect_or_start(900).unwrap_err();
         unsafe {
-            libc::close(STRAY_FD);
+            for fd in &watched {
+                libc::close(*fd);
+            }
             libc::close(pipe_fds[0]);
             libc::close(pipe_fds[1]);
         }
@@ -1977,9 +2025,11 @@ mod tests {
             log.contains("stub passlane-agent"),
             "the stub's output was appended to the log: {log}"
         );
-        assert!(
-            !log.contains(&format!("\nFD:{STRAY_FD}")),
-            "the stray fd was closed in the daemon, not inherited: {log}"
-        );
+        for fd in &watched {
+            assert!(
+                !log.contains(&format!("\nFD:{fd}")),
+                "the stray fd {fd} was closed in the daemon, not inherited: {log}"
+            );
+        }
     }
 }

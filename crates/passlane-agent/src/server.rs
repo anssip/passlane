@@ -142,40 +142,114 @@ impl AgentServer {
     /// another agent answers on it; replaces a stale socket left behind
     /// by a crashed agent; refuses to delete a non-socket file that
     /// happens to sit on the path.
+    ///
+    /// **Concurrent starters converge on one live agent** (auto-start,
+    /// passlane#77): the exists()/connect probe and the bind can
+    /// interleave with another starter's, so a bind lost to a socket
+    /// file that appeared meanwhile is re-evaluated, and after binding
+    /// the path must *still reach this listener* — proven by a probe
+    /// connection — before the server claims it. A starter that finds
+    /// another's socket at the path exits with `AlreadyRunning`. The
+    /// proof is a snapshot, not a lock: a starter replaced a heartbeat
+    /// after proving may linger as an idle daemon reachable by no one —
+    /// nothing is ever deposited with it (clients connect through the
+    /// path, i.e. to the owner), and its sessions die with it, by
+    /// design.
     pub fn bind(config: AgentConfig) -> Result<AgentServer, AgentError> {
         let path = config.socket_path.clone();
-        if path.exists() {
-            if UnixStream::connect(&path).is_ok() {
-                return Err(AgentError::AlreadyRunning(path));
-            }
-            // Not connectable: a leftover socket from a crashed agent.
-            // Only sockets are removed — never some other file the user
-            // may care about (e.g. a --socket typo).
-            let meta = std::fs::symlink_metadata(&path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileTypeExt;
-                if meta.file_type().is_socket() {
-                    std::fs::remove_file(&path)?;
-                } else {
-                    return Err(AgentError::Protocol(format!(
-                        "'{}' exists and is not a socket; refusing to remove it",
-                        path.display()
-                    )));
-                }
-            }
-        }
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        let listener = UnixListener::bind(&path)?;
-        // Owner-only socket: local, same-user access only.
+        for attempt in 0..3 {
+            if path.exists() {
+                if UnixStream::connect(&path).is_ok() {
+                    return Err(AgentError::AlreadyRunning(path));
+                }
+                // Not connectable: a leftover socket from a crashed agent.
+                // Only sockets are removed — never some other file the user
+                // may care about (e.g. a --socket typo). A file that
+                // vanishes while we look at it is a racing starter's
+                // remove/rebind, not an error: the loop re-evaluates.
+                let meta = match std::fs::symlink_metadata(&path) {
+                    Ok(meta) => meta,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileTypeExt;
+                    if meta.file_type().is_socket() {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                            Err(e) => return Err(e.into()),
+                        }
+                    } else {
+                        return Err(AgentError::Protocol(format!(
+                            "'{}' exists and is not a socket; refusing to remove it",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+            match UnixListener::bind(&path) {
+                Ok(listener) => return Self::claim(config, path, listener),
+                // EEXIST: a file appeared at the path since the probe.
+                // EADDRINUSE (macOS): it is already bound. Either way
+                // another starter is mid-flight — re-evaluate rather
+                // than fail: it may be live now (we yield) or stale
+                // again (we replace it).
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::AddrInUse
+                    ) && attempt < 2 =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        unreachable!("the loop returns, or retries twice and returns on the third")
+    }
+
+    /// Take ownership of the just-bound socket: owner-only permissions,
+    /// then the proof that the path still leads to *this* listener. A
+    /// starter whose socket was replaced underneath it loses — the
+    /// winner serves — and must not run a daemon reachable by no one.
+    fn claim(
+        config: AgentConfig,
+        path: PathBuf,
+        listener: UnixListener,
+    ) -> Result<AgentServer, AgentError> {
+        // Owner-only permissions first: chmod'ing the path is benign
+        // whoever it leads to right now (same user, same 0600), while
+        // doing it after the proof would race the replacement's
+        // remove/rebind of the very file being permissioned.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&path)?.permissions();
+            let mut perms = match std::fs::metadata(&path) {
+                Ok(meta) => meta.permissions(),
+                // Our just-bound socket was removed by a racing starter
+                // mid-rebind: the path is theirs now, and the loser
+                // yields rather than errors.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(AgentError::AlreadyRunning(path));
+                }
+                Err(e) => return Err(e.into()),
+            };
             perms.set_mode(0o600);
-            std::fs::set_permissions(&path, perms)?;
+            match std::fs::set_permissions(&path, perms) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(AgentError::AlreadyRunning(path));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if !path_reaches(&listener, &path) {
+            return Err(AgentError::AlreadyRunning(path));
         }
         log::info!(
             "listening on {} (cap {}s)",
@@ -268,6 +342,40 @@ impl AgentServer {
         self.shared.connections.lock().map(|mut c| c.clear()).ok();
         let _ = std::fs::remove_file(&self.config.socket_path);
         log::info!("stopped; all sessions were dropped");
+    }
+}
+
+/// Whether a connection made through the path arrives at *this*
+/// listener — the proof that the path still leads to us and not to a
+/// starter that replaced our socket while we were setting up
+/// (concurrent auto-start, passlane#77). A socket fd's `fstat` identity
+/// does not match its filesystem entry on every platform, so the
+/// routing itself is checked: the probe connection either lands in our
+/// accept queue or in the replacement's. A failure to prove ownership
+/// fails closed.
+fn path_reaches(listener: &UnixListener, path: &std::path::Path) -> bool {
+    let Ok(probe) = UnixStream::connect(path) else {
+        return false;
+    };
+    drop(probe);
+    if listener.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        match listener.accept() {
+            Ok((connection, _)) => {
+                drop(connection);
+                return true;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return false,
+        }
     }
 }
 
@@ -1246,5 +1354,50 @@ mod tests {
         server.handle().stop();
         server.serve().unwrap();
         assert!(!path.exists(), "socket must be unlinked on stop");
+    }
+
+    /// A listener whose socket file was replaced no longer owns the path
+    /// — the routing check at the heart of making concurrent starters
+    /// converge (passlane#77): a connection through the path must arrive
+    /// at this listener, not at the replacement's.
+    #[test]
+    fn a_replaced_listener_no_longer_owns_the_path() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let first = UnixListener::bind(&path).unwrap();
+        assert!(path_reaches(&first, &path));
+        // Another starter removes the socket and binds its own.
+        std::fs::remove_file(&path).unwrap();
+        let second = UnixListener::bind(&path).unwrap();
+        assert!(
+            !path_reaches(&first, &path),
+            "the first listener's socket is gone from the path"
+        );
+        assert!(path_reaches(&second, &path));
+        // A path that vanished entirely proves nothing — but must fail
+        // closed, not panic.
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path_reaches(&second, &path));
+    }
+
+    /// The claim step a starter runs after binding: a starter whose
+    /// socket was replaced underneath it yields (`AlreadyRunning`) and
+    /// never serves a socket nobody can reach; the replacement claims.
+    #[test]
+    fn a_starter_that_lost_its_socket_yields_the_path() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let loser = UnixListener::bind(&path).unwrap();
+        // The race lost: another starter replaced the socket at the path.
+        std::fs::remove_file(&path).unwrap();
+        let winner = UnixListener::bind(&path).unwrap();
+        let config = AgentConfig::new(&path);
+        match AgentServer::claim(config.clone(), path.clone(), loser) {
+            Err(AgentError::AlreadyRunning(p)) => assert_eq!(p, path),
+            other => panic!("the loser must yield, got {other:?}"),
+        }
+        AgentServer::claim(config, path, winner).unwrap();
     }
 }

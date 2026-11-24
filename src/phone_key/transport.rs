@@ -364,7 +364,10 @@ impl LinkTransport {
         if !self.terminal.confirm(&question) {
             return;
         }
-        let answer_hex = passlane_approval::encoding::hex_encode(&answer.response);
+        // Zeroized: this is the phone's unlock factor in the clear — the
+        // agent copies it into its own zeroizing buffers, and this copy
+        // must not linger in freed heap memory after the deposit.
+        let answer_hex = Zeroizing::new(passlane_approval::encoding::hex_encode(&answer.response));
         match self
             .store
             .deposit(&request.vault_name, &request.challenge_hex(), &answer_hex)
