@@ -960,22 +960,42 @@ mod tests {
 
     #[test]
     fn a_failing_test_does_not_leave_the_stand_in_running() {
+        use std::time::{Duration, Instant};
         let written = Arc::new(AtomicUsize::new(0));
+        let got_going = Arc::new(AtomicBool::new(false));
         let outcome = std::panic::catch_unwind({
             let written = Arc::clone(&written);
+            let got_going = Arc::clone(&got_going);
             move || {
-                let _other_tests = OtherTests::start(written);
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                let other_tests = OtherTests::start(written);
+                // Wait for the stand-in's first write rather than sleeping
+                // a fixed time: a loaded runner may need a moment. Bounded,
+                // and reported as its own failure outside — a stand-in that
+                // never got going says nothing about the cleanup under test.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while other_tests.written.load(Ordering::Relaxed) == 0 && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                got_going.store(
+                    other_tests.written.load(Ordering::Relaxed) > 0,
+                    Ordering::Relaxed,
+                );
                 panic!("a failing assertion in the test that owns the stand-in");
             }
         });
+        // Unwinding has dropped the stand-in by now.
         assert!(outcome.is_err(), "the failing test did fail");
+        assert!(
+            got_going.load(Ordering::Relaxed),
+            "readiness: the stand-in never wrote anything, so the cleanup is untested"
+        );
         let at_the_end = written.load(Ordering::Relaxed);
         assert!(
             at_the_end > 0,
             "the stand-in got going before the test failed"
         );
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
         assert_eq!(
             written.load(Ordering::Relaxed),
             at_the_end,
