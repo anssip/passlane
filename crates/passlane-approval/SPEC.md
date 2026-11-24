@@ -135,6 +135,9 @@ characters, comfortably inside QR capacity and URL fragments.
   time is the response header's `ts`, authenticated by the signature and
   bound into the AEAD (the header is AAD). A response answering a request
   with window `[ts, exp]` is accepted when, at redemption time `now`:
+  - the response is not future-dated beyond skew: `response.ts ≤ now +
+    120s` (a decision stamped in the future is bogus regardless of the
+    window);
   - the decision was in time: `ts - 120s ≤ response.ts ≤ exp + 120s`
     (skew on the approver's clock, observed at 20–40 s in the field);
   - the redemption is bounded: `now < request.ts + 2 × (request.exp -

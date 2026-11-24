@@ -358,23 +358,30 @@ async function main() {
 
   const body = JSON.parse(fromUtf8(plaintext));
   const view = describeBody(body);
-  const window0 = decisionWindow(envelope.header, nowSeconds());
-  const fresh = window0.decidable;
   const phoneKeyRequest = isPhoneKeyOperation(body.operation);
-  if (!fresh) {
-    $("approve").disabled = true;
-    $("deny").disabled = true;
-  }
+
+  // The countdown follows the decision window (SPEC §4): the request's
+  // expiry bounds the *decision*, with a clock-skew grace on top —
+  // redemption at the terminal is allowed to run later still. It is
+  // refreshed while the page stays open, so the grace message and the
+  // closed window appear when they actually happen.
+  const refreshWindow = () => {
+    const w = decisionWindow(envelope.header, nowSeconds());
+    $("expires").textContent = w.label;
+    if (!w.decidable) {
+      $("approve").disabled = true;
+      $("deny").disabled = true;
+      clearInterval(ticker);
+    }
+  };
+  const ticker = setInterval(refreshWindow, 1000);
 
   $("request").hidden = false;
   $("op").textContent = view.op;
   $("vault").textContent = view.vault;
   $("requester").textContent = view.requester;
   $("scope").textContent = view.scope;
-  // The countdown follows the decision window (SPEC §4): the request's
-  // expiry bounds the *decision*, with a clock-skew grace on top —
-  // redemption at the terminal is allowed to run later still.
-  $("expires").textContent = window0.label;
+  refreshWindow();
 
   // A phone-held-key request is answered with the HMAC of its challenge
   // under the key this device holds for that vault. Everything the answer
@@ -515,6 +522,8 @@ async function main() {
       }
       $("response").value = blob;
       $("response-wrap").hidden = false;
+      // An answer exists: the countdown has nothing left to track.
+      clearInterval(ticker);
       $("status").textContent =
         decision === "allow"
           ? body.operation.kind === "enroll_key"
