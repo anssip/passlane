@@ -325,13 +325,22 @@ fn autostart_cap(needed_session_secs: u64) -> u64 {
 /// (`~/bin/passlane` finds the `target/release/passlane-agent` it was
 /// installed beside), else `PATH`. The override is authoritative — a
 /// value that names no executable means "no binary found"; it does not
-/// silently fall through to a discovered one.
+/// silently fall through to a discovered one — and a slashless override
+/// is resolved through `PATH`, exactly what spawning it would execute,
+/// so the file that was checked is the file that runs.
 fn find_agent_binary() -> Option<PathBuf> {
     if let Some(named) = std::env::var_os(AGENT_BIN_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return is_executable_file(&named).then_some(named);
+        if named
+            .as_os_str()
+            .to_string_lossy()
+            .contains(std::path::MAIN_SEPARATOR)
+        {
+            return is_executable_file(&named).then_some(named);
+        }
+        return find_on_path(named.as_os_str());
     }
     let name = std::ffi::OsStr::new("passlane-agent");
     if let Ok(exe) = std::env::current_exe()
@@ -340,6 +349,12 @@ fn find_agent_binary() -> Option<PathBuf> {
     {
         return Some(sibling);
     }
+    find_on_path(name)
+}
+
+/// The first executable `name` on `PATH`, if any — the same file
+/// `Command::new(name)` would run.
+fn find_on_path(name: &std::ffi::OsStr) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|dir| dir.join(name))
@@ -391,16 +406,23 @@ fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
         .map_err(|e| format!("could not reuse {}: {e}", log_path.display()))?;
     // The sweep's bound is decided here, in the parent: descriptors have
     // no guarantee of sitting low, so everything this process could
-    // hold (up to its nofile soft limit) is closed in the child. A
-    // practical ceiling covers an unlimited or unreadable limit.
+    // hold (up to its nofile soft limit, floored well above a limit a
+    // wrapper may have lowered) is covered in the child. A practical
+    // ceiling covers an unlimited or unreadable limit.
     let max_fd = open_fd_limit();
     // SAFETY: the callback runs between fork and exec in the child. It
-    // only closes file descriptors — async-signal-safe — starting above
-    // the three stdio fds std has already dup2'd into place (null in,
-    // log out, log err). No locks, no allocation, no environment reads.
+    // only sets the close-on-exec flag on file descriptors —
+    // async-signal-safe — starting above the three stdio fds std has
+    // already dup2'd into place (null in, log out, log err). Marking
+    // rather than closing: std's pipe for reporting exec failures back
+    // to the parent stays alive, so a broken binary (a missing
+    // interpreter, say) surfaces as a launch error instead of a child
+    // that aborts with the pipe gone — and the daemon still inherits
+    // nothing, the kernel closes the rest at exec. No locks, no
+    // allocation, no environment reads.
     let close_inherited_fds = move || {
         for fd in 3..=max_fd {
-            unsafe { libc::close(fd) };
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
         }
         Ok(())
     };
@@ -2062,5 +2084,44 @@ mod tests {
                 "the stray fd {fd} was closed in the daemon, not inherited: {log}"
             );
         }
+    }
+
+    /// A binary that cannot exec — a script whose interpreter is
+    /// missing — surfaces as a *launch* error, promptly: the pre-exec
+    /// sweep marks descriptors close-on-exec instead of closing them,
+    /// so the exec-failure pipe std relies on survives, and `spawn`
+    /// reports the failure instead of leaving an aborted child and a
+    /// socket that never answers.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_binary_fails_the_launch_promptly_not_as_a_timeout() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVar::set("HOME", home.path());
+        let defaults = DefaultSocketDir::new();
+        let broken = defaults.dir.path().join("broken-agent");
+        std::fs::write(&broken, "#!/nonexistent/interpreter\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _bin = EnvVar::set(AGENT_BIN_ENV, &broken);
+
+        let started = std::time::Instant::now();
+        let err = connect_or_start(900).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "a launch failure is reported promptly, not after the poll budget"
+        );
+        assert!(
+            err.message.contains("could not start the session agent"),
+            "the launch error itself is reported: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("did not serve"),
+            "not mistaken for a socket timeout: {}",
+            err.message
+        );
     }
 }
