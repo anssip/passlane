@@ -36,6 +36,33 @@ pub enum Error {
     #[error("message TTL exceeds the policy maximum")]
     Ttl,
 
+    /// The approval decision's timestamp falls outside the validity
+    /// window of the request it answers (SPEC §4 decision-time
+    /// freshness): the approver decided too early or too late.
+    #[error(
+        "the approval decision at {ts} falls outside the request window \
+            {window_start}..={window_end}"
+    )]
+    DecisionOutsideWindow {
+        /// The response header's authenticated timestamp.
+        ts: u64,
+        /// The request's creation time (minus tolerated clock skew).
+        window_start: u64,
+        /// The request's expiry (plus tolerated clock skew).
+        window_end: u64,
+    },
+
+    /// A response was opened after the total-lifetime bound for its
+    /// request (SPEC §4): late redemption is bounded so the replay
+    /// window stays small.
+    #[error("the response was redeemed at {now}, past the redemption deadline {deadline}")]
+    RedemptionTooLate {
+        /// When the receiver opened the envelope.
+        now: u64,
+        /// The latest acceptable redemption time.
+        deadline: u64,
+    },
+
     /// The session scope requested exceeds the policy maximum.
     #[error("session scope of {0}s exceeds the policy maximum")]
     SessionTooLong(u64),

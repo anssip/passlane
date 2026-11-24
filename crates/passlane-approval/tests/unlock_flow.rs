@@ -291,6 +291,176 @@ fn phone_held_key_enrollment_flow() {
     assert_ne!(wrong_sheet, unlock_response);
 }
 
+/// The passlane#73 scenario, end to end at the protocol level: an
+/// approval decided inside the request window but redeemed after the
+/// relay round trip (link → phone → passkey → copy → paste) is honored,
+/// across realistic device clock skew, exactly once, and only inside the
+/// total-lifetime bound. Reported as #61 finding 1 and again during the
+/// first phone-held-key enrollment (2026-11-24, 20–40 s skew observed).
+#[test]
+fn late_redemption_of_an_in_time_approval() {
+    let mut rng = OsRng;
+    let policy = Policy::default();
+    let skew = policy.max_clock_skew_secs;
+
+    let cli = IdentityKeys::generate(&mut rng).unwrap();
+    let phone = IdentityKeys::generate(&mut rng).unwrap();
+    let cli_pin = PeerPin::new(
+        "cli",
+        PublicKey(cli.encryption_public()),
+        PublicKey::from_bytes(&cli.verifying_key().to_sec1_bytes()).unwrap(),
+        0,
+    );
+    let phone_pin = PeerPin::new(
+        "phone",
+        PublicKey(phone.encryption_public()),
+        PublicKey::from_bytes(&phone.verifying_key().to_sec1_bytes()).unwrap(),
+        0,
+    );
+
+    // 09:30:00 — the CLI emits an unlock request, TTL 300 s.
+    let t0 = 1_760_000_000u64;
+    let request = seal(
+        &mut rng,
+        &cli,
+        &phone_pin,
+        Body::ApprovalRequest {
+            vault_id: "work".into(),
+            vault_name: "work".into(),
+            operation: Operation::Unlock,
+            requester: "anssi@macbook-pro".into(),
+            scope: Scope::Once,
+            challenge: Some(SecretHex::from_bytes(&[0x5fu8; 32])),
+        },
+        t0,
+        &policy,
+    )
+    .unwrap();
+    let (req_ts, req_exp) = (request.header().ts, request.header().exp);
+    assert_eq!(req_exp - req_ts, policy.ttl_secs);
+
+    // The phone answers with its own clock. Both observed skew
+    // directions: ahead (ts stamped later than the truth) and behind.
+    let answer = |decision_at: u64| {
+        seal_reply(
+            &mut OsRng,
+            &phone,
+            &cli_pin.clone(),
+            Body::ApprovalResponse {
+                decision: Decision::Allow,
+                scope: Scope::Once,
+                response: Some(SecretHex::from_bytes(&hmac_sha1(
+                    &[0xa1u8; 20],
+                    &[0x5fu8; 32],
+                ))),
+            },
+            &request.header().rid,
+            decision_at,
+            &policy,
+        )
+        .unwrap()
+    };
+
+    // 09:34:xx — past the request's 09:35:00 expiry is refused; decided
+    // inside the window (skew-extended) it is honored. This is the exact
+    // shape of the #61 report: decision at 09:30:52, expiry 09:33:26,
+    // redemption ~09:34.
+    let in_time = answer(req_exp - 8); // decided just inside the window
+    let mut store = InMemoryNonceStore::default();
+    let redeemed_at = req_exp + 34; // the relay round trip outlasted exp
+    let body = open_reply(
+        &cli,
+        std::slice::from_ref(&phone_pin),
+        &in_time,
+        req_ts,
+        req_exp,
+        redeemed_at,
+        &policy,
+        &mut store,
+    )
+    .expect("an in-time decision redeemed late is honored");
+    assert!(matches!(
+        &*body,
+        Body::ApprovalResponse {
+            decision: Decision::Allow,
+            ..
+        }
+    ));
+
+    // ...exactly once: the same blob again is a replay.
+    assert!(matches!(
+        open_reply(
+            &cli,
+            std::slice::from_ref(&phone_pin),
+            &in_time,
+            req_ts,
+            req_exp,
+            redeemed_at + 1,
+            &policy,
+            &mut store
+        ),
+        Err(Error::Replay)
+    ));
+
+    // Clock skew, both directions, on the decision stamp: the phone 40 s
+    // behind stamps a decision before the request existed; 40 s ahead
+    // stamps one past the expiry. Both are inside the skew window and
+    // redeem late without issue.
+    for decision_at in [req_ts - 40, req_exp + 40] {
+        let mut store = InMemoryNonceStore::default();
+        assert!(
+            open_reply(
+                &cli,
+                std::slice::from_ref(&phone_pin),
+                &answer(decision_at),
+                req_ts,
+                req_exp,
+                req_exp + 120,
+                &policy,
+                &mut store,
+            )
+            .is_ok(),
+            "decision at {decision_at} (skew-extended window) must redeem"
+        );
+    }
+
+    // A decision the skew cannot explain — 121 s past expiry — is
+    // refused however promptly it is redeemed.
+    let late = answer(req_exp + skew + 1);
+    assert!(matches!(
+        open_reply(
+            &cli,
+            std::slice::from_ref(&phone_pin),
+            &late,
+            req_ts,
+            req_exp,
+            req_exp + 10,
+            &policy,
+            &mut InMemoryNonceStore::default(),
+        ),
+        Err(Error::DecisionOutsideWindow { .. })
+    ));
+
+    // The total-lifetime bound: 2 × the request TTL after creation,
+    // nothing redeems any more.
+    let bound = policy.redemption_deadline(req_ts, req_exp);
+    assert_eq!(bound, req_ts + 2 * policy.ttl_secs);
+    let mut fresh_store = InMemoryNonceStore::default();
+    assert!(matches!(
+        open_reply(
+            &cli,
+            std::slice::from_ref(&phone_pin),
+            &answer(req_ts + 60),
+            req_ts,
+            req_exp,
+            bound,
+            &policy,
+            &mut fresh_store,
+        ),
+        Err(Error::RedemptionTooLate { deadline, .. }) if deadline == bound
+    ));
+}
+
 #[test]
 fn file_backed_replay_across_instances() {
     let mut rng = OsRng;

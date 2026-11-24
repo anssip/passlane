@@ -1037,6 +1037,37 @@ function assertNotEqual(a, b, what) {
   if (a === b) throw new Error(`${what}: values must differ (${a})`);
 }
 
+// -- decision window (late redemption, SPEC §4 / passlane#73) ---------------
+
+{
+  const { decisionWindow, MAX_CLOCK_SKEW_SECS } = await import("./approve.js");
+  const header = { ts: 1000, exp: 1300 };
+
+  test("decision window: in time shows the expiry countdown", () => {
+    const w = decisionWindow(header, 1100);
+    eq(w.decidable, true, "decidable");
+    eq(w.secondsLeft, 200 + MAX_CLOCK_SKEW_SECS, "skew-extended seconds left");
+    if (!w.label.includes("expires in 200s")) throw new Error(`label: ${w.label}`);
+  });
+
+  test("decision window: past expiry but inside skew still decides", () => {
+    // The relay round trip took past the request's expiry: the owner's
+    // decision is stamped now and the CLI honors it within skew.
+    const w = decisionWindow(header, 1300 + 40);
+    eq(w.decidable, true, "decidable inside skew");
+    eq(w.secondsLeft, MAX_CLOCK_SKEW_SECS - 40, "grace seconds left");
+    if (!w.label.includes("clock skew")) throw new Error(`label: ${w.label}`);
+  });
+
+  test("decision window: past expiry + skew is closed", () => {
+    const edge = decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS);
+    eq(edge.decidable, false, "closed at the boundary");
+    eq(edge.secondsLeft, 0, "no seconds left");
+    if (!edge.label.includes("EXPIRED")) throw new Error(`label: ${edge.label}`);
+    eq(decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1).decidable, false, "and after");
+  });
+}
+
 /** CBOR text string header + bytes (lengths under 24 only). */
 function cborText(s) {
   const bytes = utf8(s);

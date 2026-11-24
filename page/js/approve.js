@@ -41,6 +41,34 @@ import {
 const $ = (id) => document.getElementById(id);
 
 /**
+ * The maximum device clock skew the CLI's freshness rules tolerate
+ * (SPEC §4; the Rust `Policy` default `max_clock_skew_secs`). Observed
+ * phone/Mac skew in the field: 20–40 s.
+ */
+export const MAX_CLOCK_SKEW_SECS = 120;
+
+/**
+ * The decision window of a request as this device's clock sees it
+ * (SPEC §4, passlane#73): the CLI honors an answer whose authenticated
+ * `ts` falls inside `header.ts - skew .. header.exp + skew`, even when
+ * it is redeemed later (bounded by the request's total lifetime). The
+ * decision time is *this device's* clock at the moment of deciding, so
+ * Approve stays usable a skew-window past the displayed expiry. Pure, so
+ * the node tests cover the wiring.
+ */
+export function decisionWindow(header, now) {
+  const deadline = header.exp + MAX_CLOCK_SKEW_SECS;
+  const decidable = now < deadline;
+  const secondsLeft = decidable ? Math.max(0, deadline - now) : 0;
+  const label = decidable
+    ? now < header.exp
+      ? `expires in ${Math.max(0, header.exp - now)}s (link transport — no proximity signal)`
+      : `past expiry — an answer made now still counts within clock skew (${secondsLeft}s left); the terminal accepts it late`
+    : "EXPIRED — re-run the command to emit a fresh request";
+  return { decidable, secondsLeft, label };
+}
+
+/**
  * Verify the request envelope's sender signature (SPEC §3: ECDSA P-256
  * over the transcript). HPKE base mode encrypts but does not authenticate
  * the sender, so the page must check this before showing anything
@@ -326,22 +354,23 @@ async function main() {
 
   const body = JSON.parse(fromUtf8(plaintext));
   const view = describeBody(body);
-  const fresh = nowSeconds() < envelope.header.exp;
+  const window0 = decisionWindow(envelope.header, nowSeconds());
+  const fresh = window0.decidable;
   const phoneKeyRequest = isPhoneKeyOperation(body.operation);
   if (!fresh) {
     $("approve").disabled = true;
     $("deny").disabled = true;
   }
-  const ttlLeft = Math.max(0, envelope.header.exp - nowSeconds());
 
   $("request").hidden = false;
   $("op").textContent = view.op;
   $("vault").textContent = view.vault;
   $("requester").textContent = view.requester;
   $("scope").textContent = view.scope;
-  $("expires").textContent = fresh
-    ? `expires in ${ttlLeft}s (link transport — no proximity signal)`
-    : "EXPIRED — re-run the command to emit a fresh request";
+  // The countdown follows the decision window (SPEC §4): the request's
+  // expiry bounds the *decision*, with a clock-skew grace on top —
+  // redemption at the terminal is allowed to run later still.
+  $("expires").textContent = window0.label;
 
   // A phone-held-key request is answered with the HMAC of its challenge
   // under the key this device holds for that vault. Everything the answer
@@ -417,14 +446,17 @@ async function main() {
   };
 
   const decide = async (decision, reason) => {
-    // Recheck the clock at decision time: a request opened before expiry
-    // must not stay approvable past its deadline (the CLI would refuse
-    // the answer anyway).
-    if (nowSeconds() >= envelope.header.exp) {
+    // Recheck the clock at decision time: the decision must fall inside
+    // the request's skew-extended window (SPEC §4) — the CLI judges the
+    // answer by this timestamp, not by when the paste lands at the
+    // terminal.
+    const window = decisionWindow(envelope.header, nowSeconds());
+    if (!window.decidable) {
       $("approve").disabled = true;
       $("deny").disabled = true;
       $("status").textContent =
-        "The request expired while this page was open; nothing was answered. Re-run the command to emit a fresh request.";
+        "The request expired while this page was open (beyond what clock skew can cover); " +
+          "nothing was answered. Re-run the command to emit a fresh request.";
       return;
     }
     // An answer exists only for an Allow, and only from here on in this

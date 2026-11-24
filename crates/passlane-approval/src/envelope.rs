@@ -542,11 +542,91 @@ pub fn open(
     policy: &Policy,
     nonce_store: &mut dyn NonceStore,
 ) -> Result<Zeroizing<Body>> {
+    open_inner(
+        local,
+        peers,
+        envelope,
+        now,
+        policy,
+        nonce_store,
+        Freshness::Standalone,
+    )
+}
+
+/// Open an approval **response** that answers a request whose freshness
+/// window is `(request_ts, request_exp)` — the request envelope's own
+/// header, or the pending record a redeeming CLI holds for it.
+///
+/// Identical verification to [`open`] except in freshness (SPEC §4,
+/// passlane#73): the response is judged by **when the decision was made**
+/// — its authenticated `ts`, tolerance-skewed against the request's
+/// window — not by when it is redeemed, so a relay round trip that
+/// outlasts the request does not void an in-time approval. Redemption is
+/// still bounded: it must happen before
+/// [`Policy::redemption_deadline`](crate::policy::Policy::redemption_deadline).
+/// The response's own `exp` no longer caps redemption, so the replay
+/// nonce is recorded until the redemption deadline rather than the
+/// response expiry — the entry must outlive the window in which the blob
+/// could otherwise be presented a second time.
+// Eight parameters, mirroring `open` plus the request window: the
+// freshness rules need the pair, and a builder would split a single
+// verification into call-chain fragments.
+#[allow(clippy::too_many_arguments)]
+pub fn open_reply(
+    local: &IdentityKeys,
+    peers: &[PeerPin],
+    envelope: &Envelope,
+    request_ts: u64,
+    request_exp: u64,
+    now: u64,
+    policy: &Policy,
+    nonce_store: &mut dyn NonceStore,
+) -> Result<Zeroizing<Body>> {
+    open_inner(
+        local,
+        peers,
+        envelope,
+        now,
+        policy,
+        nonce_store,
+        Freshness::Reply {
+            request_ts,
+            request_exp,
+        },
+    )
+}
+
+/// Which freshness rules [`open_inner`] applies.
+enum Freshness {
+    /// Receiver wall-clock: reject `now >= exp` (requests, and responses
+    /// with no request window at hand).
+    Standalone,
+    /// Decision-time (passlane#73): the response's `ts` must fall inside
+    /// the request's skew-extended window, and `now` before the request's
+    /// redemption deadline.
+    Reply { request_ts: u64, request_exp: u64 },
+}
+
+fn open_inner(
+    local: &IdentityKeys,
+    peers: &[PeerPin],
+    envelope: &Envelope,
+    now: u64,
+    policy: &Policy,
+    nonce_store: &mut dyn NonceStore,
+    freshness: Freshness,
+) -> Result<Zeroizing<Body>> {
     if envelope.header.v != VERSION {
         return Err(Error::Version(envelope.header.v));
     }
     validate_header_shapes(&envelope.header, false)?;
-    policy.validate(&envelope.header, now)?;
+    match freshness {
+        Freshness::Standalone => policy.validate(&envelope.header, now)?,
+        Freshness::Reply {
+            request_ts,
+            request_exp,
+        } => policy.validate_reply(request_ts, request_exp, &envelope.header, now)?,
+    }
 
     let peer = peers
         .iter()
@@ -598,11 +678,20 @@ pub fn open(
     if nonce_store.seen(&envelope.header.skid, &envelope.header.n) {
         return Err(Error::Replay);
     }
-    nonce_store.record(
-        &envelope.header.skid,
-        &envelope.header.n,
-        envelope.header.exp,
-    );
+    // The nonce entry must outlive any moment the same blob could be
+    // presented again: a standalone message is dead at its own expiry, a
+    // late-redeemed reply only at the request's redemption deadline.
+    let nonce_exp = match freshness {
+        Freshness::Standalone => envelope.header.exp,
+        Freshness::Reply {
+            request_ts,
+            request_exp,
+        } => envelope
+            .header
+            .exp
+            .max(policy.redemption_deadline(request_ts, request_exp)),
+    };
+    nonce_store.record(&envelope.header.skid, &envelope.header.n, nonce_exp);
     Ok(Zeroizing::new(body))
 }
 
@@ -902,6 +991,159 @@ mod tests {
                 &mut store
             ),
             Err(Error::Expired(_))
+        ));
+    }
+
+    // -- late redemption (passlane#73, SPEC §4) --
+
+    /// Seal a phone→CLI Allow response answering a request sealed at
+    /// `request_now`, with the decision made at `decision_now`. Returns
+    /// the CLI keys, the phone pin, the request and the response.
+    fn sealed_reply_at(
+        request_now: u64,
+        decision_now: u64,
+    ) -> (IdentityKeys, PeerPin, Envelope, Envelope) {
+        let (cli, phone, phone_pin, cli_pin) = cli_and_phone();
+        let policy = Policy::default();
+        let request = seal(
+            &mut OsRng,
+            &cli,
+            &phone_pin,
+            sample_request(),
+            request_now,
+            &policy,
+        )
+        .unwrap();
+        let answer = seal_reply(
+            &mut OsRng,
+            &phone,
+            &cli_pin,
+            Body::ApprovalResponse {
+                decision: Decision::Allow,
+                scope: Scope::Once,
+                response: Some(crate::message::SecretHex::from_bytes(&[3u8; 20])),
+            },
+            &request.header().rid,
+            decision_now,
+            &policy,
+        )
+        .unwrap();
+        (cli, phone_pin, request, answer)
+    }
+
+    /// An approval decided inside the request window is honored when it
+    /// is redeemed later — past the response's own expiry and the
+    /// request's — inside the total-lifetime bound.
+    #[test]
+    fn reply_decided_in_time_opens_after_both_expiries() {
+        let (cli, phone_pin, request, answer) = sealed_reply_at(1000, 1250);
+        let policy = Policy::default();
+        // request exp 1300, response exp 1550, redemption bound 1600.
+        let mut store = crate::replay::InMemoryNonceStore::default();
+        let opened = open_reply(
+            &cli,
+            std::slice::from_ref(&phone_pin),
+            &answer,
+            request.header().ts,
+            request.header().exp,
+            1560,
+            &policy,
+            &mut store,
+        )
+        .unwrap();
+        assert!(matches!(
+            &*opened,
+            Body::ApprovalResponse {
+                decision: Decision::Allow,
+                ..
+            }
+        ));
+        // The standalone rules would have refused it twice over.
+        assert!(matches!(
+            policy.validate(answer.header(), 1560),
+            Err(Error::Expired(_))
+        ));
+    }
+
+    /// The same blob presented a second time is refused exactly once —
+    /// and its nonce entry survives pruning past the response's expiry,
+    /// because it was recorded until the redemption deadline.
+    #[test]
+    fn reply_replay_refused_exactly_once_even_after_pruning() {
+        let (cli, phone_pin, request, answer) = sealed_reply_at(1000, 1250);
+        let policy = Policy::default();
+        let mut store = crate::replay::InMemoryNonceStore::default();
+        let window = (request.header().ts, request.header().exp);
+        assert!(
+            open_reply(
+                &cli,
+                std::slice::from_ref(&phone_pin),
+                &answer,
+                window.0,
+                window.1,
+                1560,
+                &policy,
+                &mut store
+            )
+            .is_ok()
+        );
+        // Pruning with the response long expired must not resurrect the
+        // blob: the entry lives to the redemption deadline (1600).
+        store.prune(1580);
+        assert!(matches!(
+            open_reply(
+                &cli,
+                std::slice::from_ref(&phone_pin),
+                &answer,
+                window.0,
+                window.1,
+                1581,
+                &policy,
+                &mut store
+            ),
+            Err(Error::Replay)
+        ));
+    }
+
+    /// A decision stamped outside the request's skew-extended window is
+    /// refused however promptly it is redeemed — and a redemption past
+    /// the bound is refused however timely the decision was.
+    #[test]
+    fn reply_out_of_window_and_past_bound_are_refused() {
+        let policy = Policy::default();
+
+        // Decision made after the request expired, beyond skew.
+        let (cli, phone_pin, request, answer) =
+            sealed_reply_at(1000, 1300 + policy.max_clock_skew_secs + 1);
+        assert!(matches!(
+            open_reply(
+                &cli,
+                std::slice::from_ref(&phone_pin),
+                &answer,
+                request.header().ts,
+                request.header().exp,
+                1400,
+                &policy,
+                &mut crate::replay::InMemoryNonceStore::default()
+            ),
+            Err(Error::DecisionOutsideWindow { .. })
+        ));
+
+        // In-time decision, redeemed past the total-lifetime bound.
+        let (cli, phone_pin, request, answer) = sealed_reply_at(1000, 1250);
+        let deadline = policy.redemption_deadline(request.header().ts, request.header().exp);
+        assert!(matches!(
+            open_reply(
+                &cli,
+                std::slice::from_ref(&phone_pin),
+                &answer,
+                request.header().ts,
+                request.header().exp,
+                deadline,
+                &policy,
+                &mut crate::replay::InMemoryNonceStore::default()
+            ),
+            Err(Error::RedemptionTooLate { deadline: d, .. }) if d == deadline
         ));
     }
 

@@ -115,7 +115,8 @@ pub use crate::error::{Error, Result};
 /// Everything worth importing in one `use`.
 pub mod prelude {
     pub use crate::envelope::{
-        Envelope, Signature, attach_webauthn_assertion, open, seal, seal_reply, seal_webauthn,
+        Envelope, Signature, attach_webauthn_assertion, open, open_reply, seal, seal_reply,
+        seal_webauthn,
     };
     pub use crate::error::{Error, Result};
     pub use crate::keys::{IdentityKeys, PeerPin, PublicKey, WebauthnPin};

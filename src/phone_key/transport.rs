@@ -58,6 +58,10 @@ pub(crate) struct Shown<'a> {
     pub rid: &'a str,
     /// Unix seconds after which the request can no longer be approved.
     pub exp: u64,
+    /// Unix seconds until a response to this request can still be
+    /// redeemed (SPEC §4's total-lifetime bound): the approver decides
+    /// inside the window, the relay round trip may take longer.
+    pub redeem_until: u64,
     /// The link belongs on stdout (an agent relays it) rather than stderr.
     pub link_on_stdout: bool,
 }
@@ -101,13 +105,21 @@ impl Terminal for RealTerminal {
              link there), approve the request, and paste the response below.",
             request.vault_name
         );
-        // How long the person has, in the terms they think in.
+        // How long the person has, in the terms they think in: the
+        // approver must decide by the expiry, the pasted answer is
+        // accepted until the redemption bound.
         let left = shown.exp.saturating_sub(crate::approvals::now_secs());
         if let Some(at) = chrono::DateTime::from_timestamp(shown.exp as i64, 0) {
             eprintln!(
                 "The request expires at {} (in about {} minute(s)).",
                 at.with_timezone(&chrono::Local).format("%H:%M:%S"),
                 left.div_ceil(60)
+            );
+        }
+        if let Some(at) = chrono::DateTime::from_timestamp(shown.redeem_until as i64, 0) {
+            eprintln!(
+                "An answer approved in time is accepted until {} even if it arrives later.",
+                at.with_timezone(&chrono::Local).format("%H:%M:%S")
             );
         }
     }
@@ -214,6 +226,7 @@ impl ResponseSource for LinkTransport {
             link: &emitted.link,
             rid: &emitted.rid,
             exp: emitted.exp,
+            redeem_until: emitted.redeem_until,
             link_on_stdout: !self.interactive,
         });
 
@@ -249,7 +262,10 @@ impl LinkTransport {
             request.describe()
         );
         for attempt in 1..=MAX_PASTE_ATTEMPTS {
-            if crate::approvals::now_secs() >= emitted.exp {
+            // Redemption, not request expiry, bounds the paste: an answer
+            // decided inside the window still counts while this command
+            // waits (SPEC §4, passlane#73).
+            if crate::approvals::now_secs() >= emitted.redeem_until {
                 break;
             }
             let Some(blob) = self.terminal.read_response(&prompt) else {
@@ -341,8 +357,12 @@ impl LinkTransport {
                 self.relay_guidance(request, emitted)
             )));
         }
+        // Wait as long as an answer can still be redeemed: the approver
+        // decides inside the request window, but the relay round trip —
+        // and `passlane approve --response` — may land after it, until
+        // the request's total-lifetime bound (SPEC §4, passlane#73).
         let left = emitted
-            .exp
+            .redeem_until
             .saturating_sub(crate::approvals::now_secs())
             .max(1);
         let deadline = Instant::now() + self.max_wait.unwrap_or(Duration::from_secs(left));

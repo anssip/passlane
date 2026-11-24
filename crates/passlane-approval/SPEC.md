@@ -123,12 +123,36 @@ characters, comfortably inside QR capacity and URL fragments.
 ## 4. Freshness and replay
 
 - `nonce`: 16 random bytes per envelope. Receivers record
-  `(skid, nonce) → exp` **only after** full verification, so unverified
-  envelopes cannot poison the store. Entries are pruned after `exp`.
-- `ts`/`exp`: receiver policy (defaults): reject `ts > now + 120s` (skew),
-  reject `exp - ts > 900s` (TTL cap), reject `now >= exp`.
+  `(skid, nonce) → expiry` **only after** full verification, so unverified
+  envelopes cannot poison the store. Entries are pruned once expired.
+- `ts`/`exp` for **requests** (and any message opened on its own): receiver
+  policy (defaults): reject `ts > now + 120s` (skew), reject `exp - ts >
+  900s` (TTL cap), reject `now >= exp`.
+- `ts`/`exp` for **responses** are validated by *decision time, not
+  redemption time* (passlane#73): a relay round trip — link, phone,
+  passkey, copy, paste — can outlast the request, and an approval the
+  owner made in time must not be voided by slow transport. The decision
+  time is the response header's `ts`, authenticated by the signature and
+  bound into the AEAD (the header is AAD). A response answering a request
+  with window `[ts, exp]` is accepted when, at redemption time `now`:
+  - the decision was in time: `ts - 120s ≤ response.ts ≤ exp + 120s`
+    (skew on the approver's clock, observed at 20–40 s in the field);
+  - the redemption is bounded: `now < request.ts + 2 × (request.exp -
+    request.ts)` — the total-lifetime bound, which keeps the replay
+    window small;
+  - the response's own TTL shape is sane (`exp - ts ≤ 900s`), though its
+    `exp` no longer caps redemption.
+  The replay nonce for such a response is recorded until the redemption
+  deadline (not the response expiry), so pruning cannot resurrect a blob
+  while its request is still redeemable; the pending-request store
+  refuses a second redemption of the same `rid` on top of that.
 - `rid`: request id; a response for a request must echo it (the CLI matches
   pending requests by `rid` before accepting an approval).
+- Request TTLs: 300 s for repeated asks (agent reveals), 900 s for the
+  single-shot human ceremonies (`enroll_key`, `save`), whose round trip
+  includes printing a recovery sheet and finding a terminal. The
+  redemption bound scales with the request's actual TTL, so a ceremony's
+  answers stay redeemable for 2 × 900 s.
 - Rate limiting is a **hook** (`RateLimiter` trait, sliding-window reference
   impl): the phone throttles *displays* (approval fatigue), the CLI
   throttles *emission*.

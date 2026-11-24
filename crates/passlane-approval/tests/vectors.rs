@@ -40,6 +40,9 @@ fn to_policy(p: &PolicyJson) -> Policy {
         max_ttl_secs: p.max_ttl_secs,
         max_clock_skew_secs: p.max_clock_skew_secs,
         max_session_secs: p.max_session_secs,
+        // Not carried by the committed v1 vectors: the ceremony TTL plays
+        // no part in them, and the default keeps them reproducible.
+        ..Policy::default()
     }
 }
 
