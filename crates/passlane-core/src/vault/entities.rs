@@ -8,6 +8,7 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 use std::time::SystemTimeError;
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::generator::SPECIAL;
 
@@ -353,6 +354,27 @@ impl PaymentCard {
             format!("•••• {}", num)
         }
     }
+
+    /// One card secret as zeroized bytes, consuming the card: the
+    /// field-at-a-time read of [`KeepassVault::get_secret_field`]
+    /// (passlane#44). The other card secret — the CVV when the number is
+    /// fetched, and vice versa — is scrubbed on the way out, so taking one
+    /// field does not strand the other in freed memory as a plain string.
+    /// Any non-card field reads as the number: this is the card read, and
+    /// [`KeepassVault::get_secret_field`] routes card fields here only.
+    ///
+    /// [`KeepassVault::get_secret_field`]: crate::vault::keepass_vault::KeepassVault::get_secret_field
+    pub fn into_secret_field(mut self, field: SecretField) -> Zeroizing<Vec<u8>> {
+        if matches!(field, SecretField::CardCvv) {
+            let cvv = std::mem::take(&mut self.cvv).into_bytes();
+            self.number.zeroize();
+            Zeroizing::new(cvv)
+        } else {
+            let number = std::mem::take(&mut self.number).into_bytes();
+            self.cvv.zeroize();
+            Zeroizing::new(number)
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -462,6 +484,35 @@ pub struct TotpCode {
     /// (passlane#44).
     pub next_value: String,
     pub valid_for_seconds: u64,
+}
+
+/// One secret field of an entry, named for a field-at-a-time read: the
+/// fetch API behind the read-only FFI surface (passlane#44), where a
+/// secret crosses the boundary alone — never inside a list of entities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretField {
+    /// A credential's password.
+    Password,
+    /// A TOTP entry's seed, as its base32 text from the `otpauth://` URL.
+    TotpSeed,
+    /// A secure note's body.
+    NoteBody,
+    /// A payment card's number.
+    CardNumber,
+    /// A payment card's verification code.
+    CardCvv,
+}
+
+impl SecretField {
+    /// The entry kind this field belongs to, as named in error messages.
+    pub fn item_name(&self) -> &'static str {
+        match self {
+            SecretField::Password => "credential",
+            SecretField::TotpSeed => "TOTP entry",
+            SecretField::NoteBody => "note",
+            SecretField::CardNumber | SecretField::CardCvv => "payment card",
+        }
+    }
 }
 
 impl Totp {
@@ -745,6 +796,17 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn into_secret_field_takes_the_asked_field_as_bytes() {
+        let card = make_card("4111111111111111");
+        let number = card.into_secret_field(SecretField::CardNumber);
+        assert_eq!(*number, b"4111111111111111".to_vec());
+
+        let card = make_card("4111111111111111");
+        let cvv = card.into_secret_field(SecretField::CardCvv);
+        assert_eq!(*cvv, b"123".to_vec());
     }
 
     #[test]

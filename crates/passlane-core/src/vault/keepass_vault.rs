@@ -1,5 +1,7 @@
 use crate::challenge::{ChallengeFactor, validate_for_enrollment};
-use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
+use crate::vault::entities::{
+    Address, Credential, Error, Expiry, Note, PaymentCard, SecretField, Totp, TotpCode,
+};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::db::DatabaseSaveError;
@@ -20,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub struct KeepassVault {
     password: String,
@@ -432,6 +434,97 @@ impl KeepassVault {
 
     fn get_root(&self) -> SerializableNodePtr {
         self.db.root.clone()
+    }
+
+    /// One entry's one secret field, fetched by UUID: the field-at-a-time
+    /// read behind the read-only FFI surface (passlane#44). Only the
+    /// asked-for field of the one named entry is materialized — no
+    /// whole-category entity lists, so unfetched secrets are never loaded
+    /// as plain strings on this path — and the buffer zeroizes on drop.
+    pub fn get_secret_field(
+        &self,
+        uuid: &Uuid,
+        field: SecretField,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let node = self
+            .db
+            .search_node_by_uuid(*uuid)
+            .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
+        match field {
+            SecretField::Password => {
+                if !node_looks_like_credential(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a credential is an entry");
+                Ok(Zeroizing::new(
+                    entry.get_password().unwrap_or_default().as_bytes().to_vec(),
+                ))
+            }
+            SecretField::TotpSeed => {
+                if !node_has_totp(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a TOTP node is an entry");
+                let raw = entry
+                    .get_raw_otp_value()
+                    .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
+                let totp = TOTP::from_str(&normalize_otp_url(raw))
+                    .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
+                // Canonical base32, exactly what the stored entity's
+                // `secret()` reads from the URL.
+                Ok(Zeroizing::new(totp.get_secret().into_bytes()))
+            }
+            SecretField::NoteBody => {
+                if !node_looks_like_note(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node.downcast_ref::<Entry>().expect("a note is an entry");
+                Ok(Zeroizing::new(
+                    entry.get_notes().unwrap_or_default().as_bytes().to_vec(),
+                ))
+            }
+            SecretField::CardNumber | SecretField::CardCvv => {
+                if !node_looks_like_payment(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                // One entry's card, consumed by the field extraction: the
+                // sibling secret is scrubbed there, not stranded.
+                match Self::node_to_payment(node) {
+                    Some(card) => Ok(card.into_secret_field(field)),
+                    None => Err(Self::no_entry_for_field(uuid, field)),
+                }
+            }
+        }
+    }
+
+    /// The current and next TOTP code of one entry, fetched by UUID — the
+    /// by-entry read behind the FFI surface's `totp_now()` (passlane#44);
+    /// no whole-category entity list is materialized.
+    pub fn get_totp_code(&self, uuid: &Uuid) -> Result<TotpCode, Error> {
+        let node = self
+            .db
+            .search_node_by_uuid(*uuid)
+            .ok_or_else(|| Self::no_entry_for_field(uuid, SecretField::TotpSeed))?;
+        if !node_has_totp(&node) {
+            return Err(Self::no_entry_for_field(uuid, SecretField::TotpSeed));
+        }
+        Self::node_to_totp(node).get_code()
+    }
+
+    /// The shared "no such entry for this field" error, named by the
+    /// field's entry kind.
+    fn no_entry_for_field(uuid: &Uuid, field: SecretField) -> Error {
+        Error::new(&format!(
+            "No {} with id '{uuid}' was found in this vault.",
+            field.item_name()
+        ))
     }
 
     fn get_root_uuid(&self) -> Uuid {
@@ -1523,6 +1616,158 @@ mod tests {
         let config = DatabaseConfig::default();
         assert_eq!(config.version, DatabaseVersion::KDB4(1));
         assert!(matches!(config.kdf_config, KdfConfig::Argon2 { .. }));
+    }
+
+    /// A scratch vault with one entry of each kind, for the
+    /// field-at-a-time reads (passlane#44). Nothing here writes to the
+    /// file afterwards.
+    fn vault_with_one_of_each_kind() -> KeepassVault {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path = path.to_str().unwrap().to_string();
+        // The temp dir must outlive the vault; leaking into the test
+        // process is the same trade the CLI-side action tests make.
+        std::mem::forget(dir);
+        let mut vault = KeepassVault::new(&path, "field-fetch-test-password", None, None).unwrap();
+        vault
+            .save_credentials(&vec![Credential::new(
+                None,
+                "hunter2",
+                "GitHub",
+                "user@example.com",
+                None,
+                None,
+            )])
+            .unwrap();
+        vault
+            .save_totp(&Totp::new(
+                None,
+                "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&digits=6",
+                "user",
+                "GitHub",
+                "JBSWY3DPEHPK3PXP",
+                "SHA1",
+                30,
+                6,
+                None,
+            ))
+            .unwrap();
+        vault
+            .save_note(&Note::new(None, "Wifi password", "wpa-passphrase", None))
+            .unwrap();
+        vault
+            .save_payment(PaymentCard::new(
+                None,
+                "Personal",
+                "John Doe",
+                "4111111111111111",
+                "123",
+                Expiry {
+                    month: 12,
+                    year: 2030,
+                },
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        vault
+    }
+
+    fn saved_id(vault: &KeepassVault, grep: &str) -> Uuid {
+        *vault
+            .grep(Some(grep))
+            .first()
+            .expect("the credential")
+            .uuid()
+    }
+
+    #[test]
+    fn get_secret_field_fetches_each_field_of_its_own_entry() {
+        let vault = vault_with_one_of_each_kind();
+
+        let credential = saved_id(&vault, "github");
+        assert_eq!(
+            *vault
+                .get_secret_field(&credential, SecretField::Password)
+                .unwrap(),
+            b"hunter2".to_vec()
+        );
+
+        let totps = vault.find_totp(Some("github"));
+        let totp = totps.first().expect("the totp").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&totp, SecretField::TotpSeed)
+                .unwrap(),
+            b"JBSWY3DPEHPK3PXP".to_vec()
+        );
+
+        let notes = vault.find_notes();
+        let note = notes.first().expect("the note").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&note, SecretField::NoteBody)
+                .unwrap(),
+            b"wpa-passphrase".to_vec()
+        );
+
+        let cards = vault.find_payments();
+        let card = *cards.first().expect("the card").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&card, SecretField::CardNumber)
+                .unwrap(),
+            b"4111111111111111".to_vec()
+        );
+        assert_eq!(
+            *vault.get_secret_field(&card, SecretField::CardCvv).unwrap(),
+            b"123".to_vec()
+        );
+    }
+
+    #[test]
+    fn get_secret_field_rejects_other_kinds_and_unknown_ids() {
+        let vault = vault_with_one_of_each_kind();
+        let credential = saved_id(&vault, "github");
+
+        // A field fetched from the wrong kind of entry finds nothing...
+        let err = vault
+            .get_secret_field(&credential, SecretField::NoteBody)
+            .unwrap_err();
+        assert!(err.message.contains("No note with id"), "{}", err.message);
+        // ...as does an id no entry carries.
+        let missing = vault
+            .get_secret_field(&Uuid::nil(), SecretField::Password)
+            .unwrap_err();
+        assert!(
+            missing.message.contains("No credential with id"),
+            "{}",
+            missing.message
+        );
+    }
+
+    #[test]
+    fn get_totp_code_reads_one_entry_by_id() {
+        let vault = vault_with_one_of_each_kind();
+        let totps = vault.find_totp(Some("github"));
+        let totp = totps.first().expect("the totp").id();
+        let code = vault.get_totp_code(&totp).unwrap();
+        assert_eq!(code.value.len(), 6);
+        assert_eq!(code.next_value.len(), 6);
+        assert!((1..=30).contains(&code.valid_for_seconds));
+
+        // An id that is no TOTP entry is an error, not an empty code.
+        let credential = saved_id(&vault, "github");
+        let err = match vault.get_totp_code(&credential) {
+            Err(e) => e,
+            Ok(_) => panic!("a credential has no TOTP code"),
+        };
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

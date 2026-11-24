@@ -19,6 +19,21 @@
 //! zeroizes its own copies on drop, and this crate scrubs the copies the
 //! foreign side handed over.
 //!
+//! # Known limitation: UniFFI's transport buffers are not wiped
+//!
+//! Every value that crosses the boundary rides a `RustBuffer` that
+//! UniFFI's generic machinery allocates and frees — for a secret going
+//! out (`as_bytes`) or coming in (the password, the challenge secret)
+//! alike, that transport allocation is freed without zeroization, and
+//! there is no per-type hook to change that (a secret-holding object
+//! constructed from a string param would cross the very same buffer).
+//! Every copy this crate and core own *is* scrubbed: the decoded inputs,
+//! the fetch intermediates, the `SecretBytes` buffer, the worker's
+//! opening credentials. What remains is one unwiped transport copy per
+//! crossing, freed back to the allocator — the same residual exposure
+//! UniFFI gives every secret-bearing consumer, accepted here explicitly
+//! rather than papered over.
+//!
 //! # Threading
 //!
 //! keepass-ng's node graph is `Rc`-based, so core's [`KeepassVault`] is
@@ -40,7 +55,8 @@ use std::panic::{AssertUnwindSafe, UnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, mpsc};
 
 use passlane_core::challenge::ChallengeFactor as CoreChallengeFactor;
-use passlane_core::vault::entities as entities;
+use passlane_core::vault::entities;
+use passlane_core::vault::entities::SecretField as CoreSecretField;
 use passlane_core::vault::keepass_vault::KeepassVault;
 use passlane_core::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault};
 use uuid::Uuid;
@@ -74,14 +90,14 @@ pub enum SecretField {
     CardCvv,
 }
 
-impl SecretField {
-    /// The entry kind this field belongs to, as named in error messages.
-    fn item_name(&self) -> &'static str {
-        match self {
-            SecretField::Password => "credential",
-            SecretField::TotpSeed => "TOTP entry",
-            SecretField::NoteBody => "note",
-            SecretField::CardNumber | SecretField::CardCvv => "payment card",
+impl From<SecretField> for CoreSecretField {
+    fn from(field: SecretField) -> Self {
+        match field {
+            SecretField::Password => CoreSecretField::Password,
+            SecretField::TotpSeed => CoreSecretField::TotpSeed,
+            SecretField::NoteBody => CoreSecretField::NoteBody,
+            SecretField::CardNumber => CoreSecretField::CardNumber,
+            SecretField::CardCvv => CoreSecretField::CardCvv,
         }
     }
 }
@@ -289,6 +305,13 @@ impl PasslaneVault {
                     keyfile_path,
                     challenge.as_ref(),
                 );
+                // Core has copied both into the vault it returned, so the
+                // boundary copies have nothing left to protect — scrub
+                // them now (Zeroizing/ZeroizeOnDrop on drop) instead of
+                // holding them for the whole session the request loop
+                // runs.
+                drop(password);
+                drop(challenge);
                 match vault {
                     Ok(vault) => {
                         // Dropping `opened_tx` on the error paths below is
@@ -497,74 +520,28 @@ fn non_empty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-/// One entry's one secret field, as zeroized bytes. The lists core offers
-/// load whole entities; the secret never leaves this function except as
-/// the returned buffer.
+/// One entry's one secret field, as zeroized bytes. The fetch goes
+/// through core's field-at-a-time read (`get_secret_field`), which
+/// materializes only the asked-for field of the one named entry — no
+/// whole-category entity lists — and scrubs what it cannot avoid
+/// materializing; see the module docs for the one copy UniFFI's
+/// transport adds on top.
 fn fetch_secret(
     vault: &KeepassVault,
     id: &str,
     field: SecretField,
 ) -> Result<Zeroizing<Vec<u8>>, CoreError> {
-    let not_found = || no_entry(field, id);
-    let bytes = match field {
-        SecretField::Password => {
-            let uuid = parse_id(id)?;
-            vault
-                .grep(None)
-                .into_iter()
-                .find(|c| *c.uuid() == uuid)
-                .ok_or_else(not_found)?
-                .password()
-                .as_bytes()
-                .to_vec()
-        }
-        SecretField::TotpSeed => {
-            let uuid = parse_id(id)?;
-            vault
-                .find_totp(None)
-                .into_iter()
-                .find(|t| *t.id() == uuid)
-                .ok_or_else(not_found)?
-                .secret()
-                .as_bytes()
-                .to_vec()
-        }
-        SecretField::NoteBody => {
-            let uuid = parse_id(id)?;
-            vault
-                .find_notes()
-                .into_iter()
-                .find(|n| n.id() == uuid)
-                .ok_or_else(not_found)?
-                .content()
-                .as_bytes()
-                .to_vec()
-        }
-        SecretField::CardNumber | SecretField::CardCvv => {
-            let uuid = parse_id(id)?;
-            let card = vault
-                .find_payments()
-                .into_iter()
-                .find(|p| *p.id() == uuid)
-                .ok_or_else(not_found)?;
-            match field {
-                SecretField::CardNumber => card.number().as_bytes().to_vec(),
-                _ => card.cvv().as_bytes().to_vec(),
-            }
-        }
-    };
-    Ok(Zeroizing::new(bytes))
+    vault
+        .get_secret_field(&parse_id(id)?, field.into())
+        .map_err(CoreError::from)
 }
 
-/// The current and next TOTP code of one entry, straight from core.
+/// The current and next TOTP code of one entry, read by id through core's
+/// single-entry accessor.
 fn current_totp_code(vault: &KeepassVault, id: &str) -> Result<TotpCode, CoreError> {
-    let uuid = parse_id(id)?;
     let code = vault
-        .find_totp(None)
-        .into_iter()
-        .find(|t| *t.id() == uuid)
-        .ok_or_else(|| no_entry(SecretField::TotpSeed, id))?
-        .get_code()?;
+        .get_totp_code(&parse_id(id)?)
+        .map_err(CoreError::from)?;
     Ok(TotpCode {
         code: code.value,
         next_code: code.next_value,
@@ -579,13 +556,4 @@ fn parse_id(id: &str) -> Result<Uuid, CoreError> {
     Uuid::parse_str(id).map_err(|_| CoreError::Vault {
         message: format!("'{id}' is not a valid entry id (a UUID)."),
     })
-}
-
-fn no_entry(field: SecretField, id: &str) -> CoreError {
-    CoreError::Vault {
-        message: format!(
-            "No {} with id '{id}' was found in this vault.",
-            field.item_name()
-        ),
-    }
 }

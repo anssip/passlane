@@ -29,7 +29,9 @@ else
     lib="target/release/libpasslane_ffi.$([ "$(uname)" = Darwin ] && echo dylib || echo so)"
 fi
 
-rm -rf "$out_dir"
+# The out-dir is created, never cleaned: bindgen overwrites its own
+# files, and deleting what else is in a caller-supplied directory is not
+# this script's business.
 mkdir -p "$out_dir"
 cargo run -p uniffi-bindgen -- generate --library "$lib" --language "$language" --out-dir "$out_dir"
 echo "Bindings written to $out_dir/"
