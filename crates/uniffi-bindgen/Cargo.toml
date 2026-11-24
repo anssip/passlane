@@ -1,0 +1,13 @@
+[package]
+name = "uniffi-bindgen"
+version = "0.32.2"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+description = "The uniffi-bindgen CLI as a workspace bin (uniffi-bindgen is not cargo-installable since UniFFI ~0.30)"
+
+[dependencies]
+# `cli` is what turns the library into the bindgen entry points; it must
+# stay on the same version line as passlane-ffi's `uniffi` dependency so
+# the generated bindings match the scaffolding.
+uniffi = { version = "0.32", features = ["cli"] }

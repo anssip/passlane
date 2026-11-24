@@ -8,3 +8,4 @@ page/cloudfront-config.json
 page/r53-acm-validation.json
 page/r53-alias.json
 page/cloudfront-config.json
+crates/passlane-ffi/bindings/

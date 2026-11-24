@@ -1,5 +1,7 @@
 use crate::challenge::{ChallengeFactor, validate_for_enrollment};
-use crate::vault::entities::{Address, Credential, Error, Expiry, Note, PaymentCard, Totp};
+use crate::vault::entities::{
+    Address, Credential, Error, Expiry, Note, PaymentCard, SecretField, Totp, TotpCode, codes_at,
+};
 use crate::vault::vault_trait::{NoteVault, PasswordVault, PaymentVault, TotpVault, Vault};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use keepass_ng::db::DatabaseSaveError;
@@ -20,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub struct KeepassVault {
     password: String,
@@ -88,6 +90,11 @@ impl From<keepass_ng::Error> for Error {
 /// Normalize an `otpauth://` URL so its `secret=` value passes strict RFC 4648
 /// base32 decoding: uppercase letters, strip whitespace, and pad with `=` to the
 /// next multiple of 8 characters. Other parts of the URL are left untouched.
+///
+/// The secret is scrubbed where it is worked on: the cleaning happens in one
+/// pre-allocated buffer that is zeroized before this returns, so the only
+/// seed-bearing allocation left behind is the returned URL itself — which every
+/// caller that does not keep it must zeroize too (the seed rides inside it).
 fn normalize_otp_url(url: &str) -> String {
     let secret_start = if let Some(pos) = url.find("?secret=") {
         pos + "?secret=".len()
@@ -100,22 +107,30 @@ fn normalize_otp_url(url: &str) -> String {
     let end_offset = after.find('&').unwrap_or(after.len());
     let raw_secret = &after[..end_offset];
 
-    let cleaned: String = raw_secret
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_uppercase();
-    let unpadded = cleaned.trim_end_matches('=');
-    let pad_len = (8 - (unpadded.len() % 8)) % 8;
-    let normalized = format!("{}{}", unpadded, "=".repeat(pad_len));
+    // One working buffer: cleaned, unpadded and re-padded in place, sized
+    // up front so it never reallocates (a growing buffer would strand
+    // seed copies in freed memory no zeroization can reach).
+    let mut cleaned = String::with_capacity(raw_secret.len() + 8);
+    cleaned.extend(
+        raw_secret
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_ascii_uppercase()),
+    );
+    while cleaned.ends_with('=') {
+        cleaned.pop();
+    }
+    let pad_len = (8 - (cleaned.len() % 8)) % 8;
+    cleaned.extend(std::iter::repeat('=').take(pad_len));
 
     let secret_end = secret_start + end_offset;
-    format!(
-        "{}{}{}",
-        &url[..secret_start],
-        normalized,
-        &url[secret_end..]
-    )
+    let mut normalized =
+        String::with_capacity(secret_start + cleaned.len() + (url.len() - secret_end));
+    normalized.push_str(&url[..secret_start]);
+    normalized.push_str(&cleaned);
+    normalized.push_str(&url[secret_end..]);
+    cleaned.zeroize();
+    normalized
 }
 
 fn node_has_totp(node: &NodePtr) -> bool {
@@ -128,7 +143,15 @@ fn node_has_totp(node: &NodePtr) -> bool {
         raw.is_some()
     );
     match raw {
-        Some(url) => TOTP::from_str(&normalize_otp_url(url)).is_ok(),
+        // The normalized URL carries the seed, and the parsed TOTP
+        // zeroizes itself on drop — scrub the URL copy here so classifying
+        // an entry leaves no seed material behind.
+        Some(url) => {
+            let mut normalized = normalize_otp_url(url);
+            let parses = TOTP::from_str(&normalized).is_ok();
+            normalized.zeroize();
+            parses
+        }
         None => false,
     }
 }
@@ -432,6 +455,174 @@ impl KeepassVault {
 
     fn get_root(&self) -> SerializableNodePtr {
         self.db.root.clone()
+    }
+
+    /// One entry's one secret field, fetched by UUID: the field-at-a-time
+    /// read behind the read-only FFI surface (passlane#44). Only the
+    /// asked-for field of the one named entry is materialized — no
+    /// whole-category entity lists — every working buffer the fetch
+    /// creates is scrubbed, and the returned buffer zeroizes on drop.
+    pub fn get_secret_field(
+        &self,
+        uuid: &Uuid,
+        field: SecretField,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        // A group can carry a UUID too; every read below is entry-only
+        // (the classification predicates assume an Entry), so groups are
+        // rejected here as unfound rather than crashing the downcast.
+        let node = self
+            .db
+            .search_node_by_uuid(*uuid)
+            .filter(|node| node_is_entry(node))
+            .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
+        match field {
+            SecretField::Password => {
+                if !node_looks_like_credential(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a credential is an entry");
+                Ok(Zeroizing::new(
+                    entry.get_password().unwrap_or_default().as_bytes().to_vec(),
+                ))
+            }
+            SecretField::TotpSeed => {
+                if !node_has_totp(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a TOTP node is an entry");
+                let raw = entry
+                    .get_raw_otp_value()
+                    .ok_or_else(|| Self::no_entry_for_field(uuid, field))?;
+                // The normalized URL carries the seed inside it and the
+                // parsed TOTP zeroizes itself on drop: scrub the URL the
+                // moment the parse is done with it.
+                let mut normalized = normalize_otp_url(raw);
+                let parsed = TOTP::from_str(&normalized);
+                normalized.zeroize();
+                let totp = parsed
+                    .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
+                // Canonical base32, exactly what the stored entity's
+                // `secret()` reads from the URL.
+                Ok(Zeroizing::new(totp.get_secret().into_bytes()))
+            }
+            SecretField::NoteBody => {
+                if !node_looks_like_note(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node.downcast_ref::<Entry>().expect("a note is an entry");
+                Ok(Zeroizing::new(
+                    entry.get_notes().unwrap_or_default().as_bytes().to_vec(),
+                ))
+            }
+            SecretField::CardNumber | SecretField::CardCvv => {
+                if !node_looks_like_payment(&node) {
+                    return Err(Self::no_entry_for_field(uuid, field));
+                }
+                let node = node.borrow();
+                let entry = node
+                    .downcast_ref::<Entry>()
+                    .expect("a payment card is an entry");
+                Ok(Self::payment_secret_field(entry, field))
+            }
+        }
+    }
+
+    /// The current and next TOTP code of one entry, fetched by UUID — the
+    /// by-entry read behind the FFI surface's `totp_now()` (passlane#44);
+    /// no whole-category entity list is materialized, and the seed-bearing
+    /// parse buffers are scrubbed (the parsed TOTP zeroizes itself on
+    /// drop), so repeated refreshes leave nothing behind.
+    pub fn get_totp_code(&self, uuid: &Uuid) -> Result<TotpCode, Error> {
+        // Groups are rejected like any other non-entry id: the read below
+        // is entry-only.
+        let node = self
+            .db
+            .search_node_by_uuid(*uuid)
+            .filter(|node| node_is_entry(node))
+            .ok_or_else(|| Self::no_entry_for_field(uuid, SecretField::TotpSeed))?;
+        if !node_has_totp(&node) {
+            return Err(Self::no_entry_for_field(uuid, SecretField::TotpSeed));
+        }
+        let mut raw = {
+            let node = node.borrow();
+            let entry = node
+                .downcast_ref::<Entry>()
+                .expect("a TOTP node is an entry");
+            entry
+                .get_raw_otp_value()
+                .ok_or_else(|| Self::no_entry_for_field(uuid, SecretField::TotpSeed))?
+                .to_string()
+        };
+        let mut normalized = normalize_otp_url(&raw);
+        let parsed = TOTP::from_str(&normalized);
+        normalized.zeroize();
+        raw.zeroize();
+        let totp = parsed.map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| Error::new(&e.to_string()))?;
+        Ok(codes_at(&totp, now.as_secs()))
+    }
+
+    /// One card field straight off the stored entry, in either storage
+    /// format, read into zeroizing storage without building the card:
+    /// fetching one field must not materialize (and strand) the other.
+    /// The values mirror `get_node_payment_values` exactly — the number
+    /// trimmed to its non-empty form in both formats, the CVV as stored —
+    /// so a fetch and an entity load never disagree, and every owned
+    /// copy the extraction makes is scrubbed except the one inside the
+    /// returned buffer.
+    fn payment_secret_field(entry: &Entry, field: SecretField) -> Zeroizing<Vec<u8>> {
+        let cvv = matches!(field, SecretField::CardCvv);
+        // Which format the card is in, by the loaders' own rule: a
+        // non-empty "Number" attribute plus a parseable "Expiry" one.
+        let is_custom_format = Self::non_empty_str(entry.get(PAYMENT_FIELD_NUMBER)).is_some()
+            && Expiry::from_str(entry.get(PAYMENT_FIELD_EXPIRY).unwrap_or("").trim()).is_ok();
+        let value: String = if is_custom_format {
+            if cvv {
+                entry.get(PAYMENT_FIELD_CVV).unwrap_or("").to_string()
+            } else {
+                Self::non_empty_str(entry.get(PAYMENT_FIELD_NUMBER))
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            }
+        } else {
+            // Legacy "Key: value" notes lines, with the loaders' defaults.
+            let note = entry.get_notes().unwrap_or("");
+            if cvv {
+                Self::extract_value_from_note(note, PAYMENT_FIELD_CVV)
+            } else {
+                // The extracted line is an owned copy of the number;
+                // trimming must not strand it; the trimmed value that
+                // crosses out is the only copy left unscrubbed — inside
+                // the Zeroizing buffer.
+                let mut extracted = Self::extract_value_from_note_opt(note, PAYMENT_FIELD_NUMBER);
+                let trimmed = extracted
+                    .as_deref()
+                    .and_then(|value| Self::non_empty_str(Some(value)))
+                    .map(str::to_string)
+                    .unwrap_or_default();
+                extracted.zeroize();
+                trimmed
+            }
+        };
+        Zeroizing::new(value.into_bytes())
+    }
+
+    /// The shared "no such entry for this field" error, named by the
+    /// field's entry kind.
+    fn no_entry_for_field(uuid: &Uuid, field: SecretField) -> Error {
+        Error::new(&format!(
+            "No {} with id '{uuid}' was found in this vault.",
+            field.item_name()
+        ))
     }
 
     fn get_root_uuid(&self) -> Uuid {
@@ -1523,6 +1714,249 @@ mod tests {
         let config = DatabaseConfig::default();
         assert_eq!(config.version, DatabaseVersion::KDB4(1));
         assert!(matches!(config.kdf_config, KdfConfig::Argon2 { .. }));
+    }
+
+    /// A scratch vault with one entry of each kind, for the
+    /// field-at-a-time reads (passlane#44). Nothing here writes to the
+    /// file afterwards.
+    fn vault_with_one_of_each_kind() -> KeepassVault {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        let path = path.to_str().unwrap().to_string();
+        // The temp dir must outlive the vault; leaking into the test
+        // process is the same trade the CLI-side action tests make.
+        std::mem::forget(dir);
+        let mut vault = KeepassVault::new(&path, "field-fetch-test-password", None, None).unwrap();
+        vault
+            .save_credentials(&vec![Credential::new(
+                None,
+                "hunter2",
+                "GitHub",
+                "user@example.com",
+                None,
+                None,
+            )])
+            .unwrap();
+        vault
+            .save_totp(&Totp::new(
+                None,
+                "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&digits=6",
+                "user",
+                "GitHub",
+                "JBSWY3DPEHPK3PXP",
+                "SHA1",
+                30,
+                6,
+                None,
+            ))
+            .unwrap();
+        vault
+            .save_note(&Note::new(None, "Wifi password", "wpa-passphrase", None))
+            .unwrap();
+        vault
+            .save_payment(PaymentCard::new(
+                None,
+                "Personal",
+                "John Doe",
+                "4111111111111111",
+                "123",
+                Expiry {
+                    month: 12,
+                    year: 2030,
+                },
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        vault
+    }
+
+    fn saved_id(vault: &KeepassVault, grep: &str) -> Uuid {
+        *vault
+            .grep(Some(grep))
+            .first()
+            .expect("the credential")
+            .uuid()
+    }
+
+    #[test]
+    fn get_secret_field_fetches_each_field_of_its_own_entry() {
+        let vault = vault_with_one_of_each_kind();
+
+        let credential = saved_id(&vault, "github");
+        assert_eq!(
+            *vault
+                .get_secret_field(&credential, SecretField::Password)
+                .unwrap(),
+            b"hunter2".to_vec()
+        );
+
+        let totps = vault.find_totp(Some("github"));
+        let totp = totps.first().expect("the totp").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&totp, SecretField::TotpSeed)
+                .unwrap(),
+            b"JBSWY3DPEHPK3PXP".to_vec()
+        );
+
+        let notes = vault.find_notes();
+        let note = notes.first().expect("the note").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&note, SecretField::NoteBody)
+                .unwrap(),
+            b"wpa-passphrase".to_vec()
+        );
+
+        let cards = vault.find_payments();
+        let card = *cards.first().expect("the card").id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&card, SecretField::CardNumber)
+                .unwrap(),
+            b"4111111111111111".to_vec()
+        );
+        assert_eq!(
+            *vault.get_secret_field(&card, SecretField::CardCvv).unwrap(),
+            b"123".to_vec()
+        );
+    }
+
+    #[test]
+    fn get_secret_field_rejects_other_kinds_and_unknown_ids() {
+        let vault = vault_with_one_of_each_kind();
+        let credential = saved_id(&vault, "github");
+
+        // A field fetched from the wrong kind of entry finds nothing...
+        let err = vault
+            .get_secret_field(&credential, SecretField::NoteBody)
+            .unwrap_err();
+        assert!(err.message.contains("No note with id"), "{}", err.message);
+        // ...as does an id no entry carries.
+        let missing = vault
+            .get_secret_field(&Uuid::nil(), SecretField::Password)
+            .unwrap_err();
+        assert!(
+            missing.message.contains("No credential with id"),
+            "{}",
+            missing.message
+        );
+    }
+
+    #[test]
+    fn get_secret_field_and_get_totp_code_reject_group_ids() {
+        // Groups carry UUIDs too, and `search_node_by_uuid` happily
+        // returns them; the by-id reads are entry-only and must report a
+        // group as unfound instead of crashing the entry downcast.
+        let vault = vault_with_one_of_each_kind();
+        let root_group = vault.get_root_uuid();
+
+        let err = vault
+            .get_secret_field(&root_group, SecretField::Password)
+            .unwrap_err();
+        assert!(
+            err.message.contains("No credential with id"),
+            "{}",
+            err.message
+        );
+        let err = vault
+            .get_secret_field(&root_group, SecretField::TotpSeed)
+            .unwrap_err();
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
+        let err = match vault.get_totp_code(&root_group) {
+            Err(e) => e,
+            Ok(_) => panic!("a group has no TOTP code"),
+        };
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn payment_secret_field_trims_the_number_like_the_loader() {
+        // The entity loader trims a legacy "Number: " line to its non-empty
+        // form; the direct field read must agree, or a fetch and a load
+        // would return different numbers for the same card.
+        let node = payment_entry_node(
+            "Padded Card",
+            "Name on card: U\nNumber:   4111111111111111  \nCVV: 123\nExpiry: 12/30\nColor: \nBilling Address: ",
+        );
+        let (number, cvv) = {
+            let node_ref = node.borrow();
+            let entry = node_ref.downcast_ref::<Entry>().unwrap();
+            (
+                KeepassVault::payment_secret_field(entry, SecretField::CardNumber),
+                KeepassVault::payment_secret_field(entry, SecretField::CardCvv),
+            )
+        };
+        assert_eq!(
+            *number,
+            KeepassVault::node_to_payment(node.clone())
+                .unwrap()
+                .number()
+                .as_bytes()
+                .to_vec()
+        );
+        assert_eq!(*cvv, b"123".to_vec());
+    }
+
+    #[test]
+    fn get_totp_code_reads_one_entry_by_id() {
+        let vault = vault_with_one_of_each_kind();
+        let totps = vault.find_totp(Some("github"));
+        let totp = totps.first().expect("the totp").id();
+        let code = vault.get_totp_code(&totp).unwrap();
+        assert_eq!(code.value.len(), 6);
+        assert_eq!(code.next_value.len(), 6);
+        assert!((1..=30).contains(&code.valid_for_seconds));
+
+        // An id that is no TOTP entry is an error, not an empty code.
+        let credential = saved_id(&vault, "github");
+        let err = match vault.get_totp_code(&credential) {
+            Err(e) => e,
+            Ok(_) => panic!("a credential has no TOTP code"),
+        };
+        assert!(
+            err.message.contains("No TOTP entry with id"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn get_secret_field_reads_legacy_notes_format_cards() {
+        // The legacy fixture (passlane 3.2) stores its card in "Key: value"
+        // notes lines: the field fetch must read the same values the
+        // entity loader does, in either storage format.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/resources/legacy-passlane3.2-kdbx4.0.kdbx");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.kdbx");
+        std::fs::copy(&fixture, &path).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        let vault = KeepassVault::open("fixture-password", &path, None, None).unwrap();
+
+        let cards = vault.find_payments();
+        let card = cards.first().expect("the legacy card");
+        let id = *card.id();
+        assert_eq!(
+            *vault
+                .get_secret_field(&id, SecretField::CardNumber)
+                .unwrap(),
+            card.number().as_bytes().to_vec()
+        );
+        assert_eq!(
+            *vault.get_secret_field(&id, SecretField::CardCvv).unwrap(),
+            card.cvv().as_bytes().to_vec()
+        );
     }
 
     #[test]

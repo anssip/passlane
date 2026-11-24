@@ -1,0 +1,32 @@
+[package]
+name = "passlane-ffi"
+version = "4.0.0"
+edition = "2024"
+rust-version = "1.89"
+authors = ["Anssi Piirainen <anssip@email.com>"]
+license = "GPL-3.0-or-later"
+description = "UniFFI bindings for the passlane vault API: the read-only v1 surface the iOS app consumes"
+repository = "https://github.com/anssip/passlane"
+keywords = ["keepass", "password-manager", "ffi", "uniffi"]
+categories = ["api-bindings"]
+
+[dependencies]
+# The FFI surface is a thin image of core's entities and vault traits. No
+# `usb` feature: the phone has no USB, so only virtual challenge-response
+# keys exist here (same configuration as the iOS core build).
+passlane-core = { path = "../passlane-core", version = "4.0.0" }
+uniffi = "0.32"
+uuid = "1.8.0"
+# Zeroizing for the secrets that cross the boundary (master password,
+# challenge secret, every fetched field) — same version as passlane-core.
+zeroize = "1.8"
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[lib]
+name = "passlane_ffi"
+# `staticlib` is what the iOS XCFramework (#45) packs; `cdylib` is what
+# `uniffi-bindgen --library` reads the component metadata from; `lib` keeps
+# the Rust tests able to link the crate.
+crate-type = ["lib", "cdylib", "staticlib"]

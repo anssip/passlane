@@ -457,20 +457,72 @@ impl Display for Totp {
 
 pub struct TotpCode {
     pub value: String,
+    /// The code of the window that follows the current one: what a UI
+    /// pre-renders so the countdown ring can roll straight into it
+    /// (passlane#44).
+    pub next_value: String,
     pub valid_for_seconds: u64,
+}
+
+/// One secret field of an entry, named for a field-at-a-time read: the
+/// fetch API behind the read-only FFI surface (passlane#44), where a
+/// secret crosses the boundary alone — never inside a list of entities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretField {
+    /// A credential's password.
+    Password,
+    /// A TOTP entry's seed, as its base32 text from the `otpauth://` URL.
+    TotpSeed,
+    /// A secure note's body.
+    NoteBody,
+    /// A payment card's number.
+    CardNumber,
+    /// A payment card's verification code.
+    CardCvv,
+}
+
+impl SecretField {
+    /// The entry kind this field belongs to, as named in error messages.
+    pub fn item_name(&self) -> &'static str {
+        match self {
+            SecretField::Password => "credential",
+            SecretField::TotpSeed => "TOTP entry",
+            SecretField::NoteBody => "note",
+            SecretField::CardNumber | SecretField::CardCvv => "payment card",
+        }
+    }
 }
 
 impl Totp {
     pub fn get_code(&self) -> Result<TotpCode, Error> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+        self.get_code_at(now.as_secs())
+    }
+
+    /// [`Self::get_code`] for a fixed unix timestamp, so the window
+    /// arithmetic is deterministically testable. Both codes are computed
+    /// from one timestamp: taking `now` twice could straddle a window
+    /// boundary and report the window that just began as the next one.
+    fn get_code_at(&self, now_secs: u64) -> Result<TotpCode, Error> {
         let totp = TOTP::from_str(&self.url)
             .map_err(|e| Error::new(&format!("Failed to parse totp url: {:?}", e)))?;
-
         debug!("Getting code for totp: {}", totp.label);
-        let code = totp.value_now()?;
-        Ok(TotpCode {
-            value: code.code,
-            valid_for_seconds: code.valid_for.as_secs(),
-        })
+        Ok(codes_at(&totp, now_secs))
+    }
+}
+
+/// The current and next window's codes for an already-parsed TOTP.
+/// Shared by the entity's [`Totp::get_code`] and the vault's by-id code
+/// read (`KeepassVault::get_totp_code`, passlane#44), so both compute the
+/// pair the same way. `valid_for` is the distance to the next window
+/// boundary, so evaluating there yields the next window's code.
+pub(crate) fn codes_at(totp: &TOTP, now_secs: u64) -> TotpCode {
+    let current = totp.value_at(now_secs);
+    let next = totp.value_at(now_secs + current.valid_for.as_secs());
+    TotpCode {
+        value: current.code,
+        next_value: next.code,
+        valid_for_seconds: current.valid_for.as_secs(),
     }
 }
 
@@ -864,7 +916,9 @@ mod tests {
     fn totp_fixture() -> Totp {
         Totp::new(
             None,
-            "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+            // `digits=6` is explicit so the URL agrees with the entity's
+            // digits field; keepass-ng would otherwise default to 8.
+            "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&digits=6",
             "user",
             "GitHub",
             "JBSWY3DPEHPK3PXP",
@@ -873,6 +927,42 @@ mod tests {
             6,
             None,
         )
+    }
+
+    #[test]
+    fn get_code_returns_the_current_and_the_next_window() {
+        let totp = totp_fixture();
+        // 0 and 29 are inside the same 30-second window.
+        let at_0 = totp.get_code_at(0).unwrap();
+        let at_29 = totp.get_code_at(29).unwrap();
+        assert_eq!(at_0.value, at_29.value);
+        assert_eq!(at_0.next_value, at_29.next_value);
+        assert_eq!(at_0.valid_for_seconds, 30);
+        assert_eq!(at_29.valid_for_seconds, 1);
+        // The next code is the current code of the window that follows.
+        let at_30 = totp.get_code_at(30).unwrap();
+        assert_eq!(at_29.next_value, at_30.value);
+        let at_59 = totp.get_code_at(59).unwrap();
+        let at_60 = totp.get_code_at(60).unwrap();
+        assert_eq!(at_59.next_value, at_60.value);
+        assert_eq!(at_30.next_value, at_60.value);
+        // Codes are digit strings of the configured length.
+        for code in [&at_0.value, &at_0.next_value] {
+            assert_eq!(code.len(), 6);
+            assert!(code.chars().all(|c| c.is_ascii_digit()), "{code}");
+        }
+    }
+
+    #[test]
+    fn get_code_agrees_with_the_fixed_time_computation() {
+        let totp = totp_fixture();
+        let live = totp.get_code().unwrap();
+        // The live call may land in any window of the period, but the
+        // current code is always six digits and the remaining time is
+        // within the period.
+        assert_eq!(live.value.len(), 6);
+        assert!(live.value.chars().all(|c| c.is_ascii_digit()));
+        assert!((1..=30).contains(&live.valid_for_seconds));
     }
 
     #[test]
