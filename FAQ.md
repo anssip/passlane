@@ -98,9 +98,10 @@ USB/NFC hardware key. The bridge is the recovery sheet:
    StrongBox accepts NFC hardware keys on iOS — or, better, skip the
    hardware entirely with a virtual key (next question).
 
-No KeePass client accepts a typed-in HMAC secret in its unlock dialog.
-Typing the secret is a passlane-only recovery path (`passlane hwkey remove
---secret`): it opens the vault and **strips** the factor — see the runbook
+StrongBox can use the sheet's secret by importing it as a virtual hardware
+key (see below), without removing the factor. In passlane, the typed-secret
+recovery command `passlane hwkey remove --secret` opens the vault and
+**strips** the factor — see the runbook
 for the full recovery order when the holder device is lost (recover from
 the sheet first, then re-pair and re-enroll; a new pairing does not
 restore the old holder's key).
