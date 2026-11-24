@@ -576,7 +576,9 @@ impl KeepassVault {
     /// fetching one field must not materialize (and strand) the other.
     /// The values mirror `get_node_payment_values` exactly — the number
     /// trimmed to its non-empty form in both formats, the CVV as stored —
-    /// so a fetch and an entity load never disagree.
+    /// so a fetch and an entity load never disagree, and every owned
+    /// copy the extraction makes is scrubbed except the one inside the
+    /// returned buffer.
     fn payment_secret_field(entry: &Entry, field: SecretField) -> Zeroizing<Vec<u8>> {
         let cvv = matches!(field, SecretField::CardCvv);
         // Which format the card is in, by the loaders' own rule: a
@@ -597,9 +599,18 @@ impl KeepassVault {
             if cvv {
                 Self::extract_value_from_note(note, PAYMENT_FIELD_CVV)
             } else {
-                Self::extract_value_from_note_opt(note, PAYMENT_FIELD_NUMBER)
-                    .and_then(|value| Self::non_empty_str(Some(&value)).map(String::from))
-                    .unwrap_or_default()
+                // The extracted line is an owned copy of the number;
+                // trimming must not strand it; the trimmed value that
+                // crosses out is the only copy left unscrubbed — inside
+                // the Zeroizing buffer.
+                let mut extracted = Self::extract_value_from_note_opt(note, PAYMENT_FIELD_NUMBER);
+                let trimmed = extracted
+                    .as_deref()
+                    .and_then(|value| Self::non_empty_str(Some(value)))
+                    .map(str::to_string)
+                    .unwrap_or_default();
+                extracted.zeroize();
+                trimmed
             }
         };
         Zeroizing::new(value.into_bytes())
