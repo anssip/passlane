@@ -562,6 +562,12 @@ impl AgentClient {
             path.display()
         )))
     }
+
+    /// Unsupported on this platform (see [`AgentClient::connect`]); the
+    /// timeout is moot when there is never anything to connect to.
+    pub fn connect_within(path: &Path, _timeout: Duration) -> Result<AgentClient, AgentError> {
+        Self::connect(path)
+    }
 }
 
 #[cfg(not(unix))]
