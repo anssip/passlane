@@ -50,16 +50,20 @@ export const MAX_CLOCK_SKEW_SECS = 120;
 /**
  * The decision window of a request as this device's clock sees it
  * (SPEC §4, passlane#73): the CLI honors an answer whose authenticated
- * `ts` falls inside `header.ts - skew .. header.exp + skew`, even when
- * it is redeemed later (bounded by the request's total lifetime). The
- * decision time is *this device's* clock at the moment of deciding, so
- * Approve stays usable a skew-window past the displayed expiry. Pure, so
- * the node tests cover the wiring.
+ * `ts` falls inside the request's skew-extended window — inclusively on
+ * both ends, exactly like the Rust `Policy::validate_reply`:
+ * `header.ts - skew ≤ decision ≤ header.exp + skew`. The decision time
+ * is *this device's* clock at the moment of deciding, so Approve stays
+ * usable a skew-window past the displayed expiry (and a skew-window
+ * before the request seems to have existed, for a clock running behind).
+ * Redemption at the terminal is bounded separately, by the request's
+ * total lifetime. Pure, so the node tests cover the wiring.
  */
 export function decisionWindow(header, now) {
-  const deadline = header.exp + MAX_CLOCK_SKEW_SECS;
-  const decidable = now < deadline;
-  const secondsLeft = decidable ? Math.max(0, deadline - now) : 0;
+  const from = header.ts - MAX_CLOCK_SKEW_SECS;
+  const to = header.exp + MAX_CLOCK_SKEW_SECS;
+  const decidable = from <= now && now <= to;
+  const secondsLeft = decidable ? Math.max(0, to - now) : 0;
   const label = decidable
     ? now < header.exp
       ? `expires in ${Math.max(0, header.exp - now)}s (link transport — no proximity signal)`

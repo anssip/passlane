@@ -1059,12 +1059,27 @@ function assertNotEqual(a, b, what) {
     if (!w.label.includes("clock skew")) throw new Error(`label: ${w.label}`);
   });
 
-  test("decision window: past expiry + skew is closed", () => {
-    const edge = decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS);
-    eq(edge.decidable, false, "closed at the boundary");
-    eq(edge.secondsLeft, 0, "no seconds left");
-    if (!edge.label.includes("EXPIRED")) throw new Error(`label: ${edge.label}`);
-    eq(decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1).decidable, false, "and after");
+  test("decision window: boundaries match the CLI's inclusive interval", () => {
+    // The same skew-extended window the Rust Policy::validate_reply
+    // enforces, inclusively on both ends: a decision stamped exactly at
+    // either edge is accepted by the CLI, so the page must allow it too.
+    eq(decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS).decidable, true, "upper edge");
+    eq(decisionWindow(header, 1000 - MAX_CLOCK_SKEW_SECS).decidable, true, "lower edge");
+    // One second past either edge the CLI refuses (DecisionOutsideWindow)
+    // — pressing Approve there would only produce a refused paste.
+    eq(
+      decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1).decidable,
+      false,
+      "past the upper edge",
+    );
+    eq(
+      decisionWindow(header, 1000 - MAX_CLOCK_SKEW_SECS - 1).decidable,
+      false,
+      "before the lower edge",
+    );
+    const closed = decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1);
+    eq(closed.secondsLeft, 0, "no seconds left");
+    if (!closed.label.includes("EXPIRED")) throw new Error(`label: ${closed.label}`);
   });
 }
 

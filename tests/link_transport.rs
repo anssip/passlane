@@ -86,8 +86,9 @@ fn page_fixture_opens_in_rust() {
 /// page, and the pending request its link transport emitted.
 struct Scratch {
     dir: std::path::PathBuf,
+    /// Keeps the scratch directory alive and cleans it up on drop.
     #[allow(dead_code)]
-    keeper: std::path::PathBuf,
+    keeper: tempfile::TempDir,
     cli: IdentityKeys,
     page: IdentityKeys,
     passkey: p256::ecdsa::SigningKey,
@@ -95,18 +96,13 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Self {
-        let dir_holder = tempfile::tempdir().unwrap();
-        let dir = dir_holder.path().join("approvals");
-        let keeper = dir_holder.keep();
-        Self::build(keeper, dir)
-    }
-
-    fn build(keeper: std::path::PathBuf, dir: std::path::PathBuf) -> Self {
+        let keeper = tempfile::tempdir().unwrap();
+        let dir = keeper.path().join("approvals");
         std::fs::create_dir_all(&dir).unwrap();
         // The scratch HOME the subprocesses get (they must not touch the
         // developer's real one); it has to exist before passlane creates
         // `~/.passlane` inside it.
-        std::fs::create_dir_all(keeper.join("home")).unwrap();
+        std::fs::create_dir_all(keeper.path().join("home")).unwrap();
         let cli = IdentityKeys::generate(&mut OsRng).unwrap();
         let page = IdentityKeys::generate(&mut OsRng).unwrap();
         let passkey = {
@@ -268,7 +264,7 @@ impl Scratch {
     fn run(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_passlane"))
             .args(args)
-            .env("HOME", self.keeper.join("home"))
+            .env("HOME", self.keeper.path().join("home"))
             .env("PASSLANE_APPROVALS_DIR", &self.dir)
             .env(
                 "PASSLANE_APPROVAL_LOG",
