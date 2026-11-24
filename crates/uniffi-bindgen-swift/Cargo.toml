@@ -1,0 +1,13 @@
+[package]
+name = "uniffi-bindgen-swift"
+version = "0.32.2"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+description = "The Swift-specific uniffi-bindgen CLI (modulemap/XCFramework output) as a workspace bin"
+
+[dependencies]
+# Same version line as passlane-ffi's `uniffi` dependency; the Swift
+# frontend generates the modulemap and XCFramework packaging that the
+# plain bindgen does not (used by the passlane-ios build, passlane#45).
+uniffi = { version = "0.32", features = ["cli"] }

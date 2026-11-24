@@ -29,6 +29,8 @@ jobs:
   ios:
     # The no-USB configuration must build for iOS, where libusb does not
     # exist: the vault still opens with password, keyfile and virtual keys.
+    # passlane-ffi rides along: the UniFFI surface the iOS app consumes
+    # (passlane#44) must stay buildable for both device and simulator.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +39,8 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - run: cargo build --locked -p passlane-core --no-default-features --target aarch64-apple-ios
       - run: cargo build --locked -p passlane-core --no-default-features --target aarch64-apple-ios-sim
+      - run: cargo build --locked -p passlane-ffi --target aarch64-apple-ios
+      - run: cargo build --locked -p passlane-ffi --target aarch64-apple-ios-sim
 
   audit:
     runs-on: ubuntu-latest

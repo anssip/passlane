@@ -64,7 +64,7 @@ The codebase uses an action-based pattern where all user commands are implemente
 
 ### Workspace Layout
 
-The repo is a cargo workspace: the root package is the `passlane` CLI, and `crates/*` holds shared library crates (`passlane-core`, `passlane-approval`). `passlane-core` carries the platform-independent logic (KeePass vault, password generator, pure hardware-key config) so the CLI and the iOS app share a single kdbx implementation; its `usb` cargo feature (off by default, enabled by the CLI) gates real YubiKey support, keeping libusb out of mobile builds.
+The repo is a cargo workspace: the root package is the `passlane` CLI, and `crates/*` holds shared library crates (`passlane-core`, `passlane-approval`, `passlane-agent`, and `passlane-ffi` — the UniFFI surface the iOS app consumes, issue #44; `crates/uniffi-bindgen*` are the workspace-bin bindgen CLIs it generates bindings with). `passlane-core` carries the platform-independent logic (KeePass vault, password generator, pure hardware-key config) so the CLI and the iOS app share a single kdbx implementation; its `usb` cargo feature (off by default, enabled by the CLI) gates real YubiKey support, keeping libusb out of mobile builds.
 
 ```
 crates/passlane-core/    # Platform-independent core (lib crate), consumed by the CLI
