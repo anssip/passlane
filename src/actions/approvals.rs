@@ -138,12 +138,16 @@ impl ApprovalsAction {
         };
         // A pending record outlives its request so a decision already
         // made can be redeemed late (SPEC §4) — but relaying its *link*
-        // starts a fresh decision, and the decision window (expiry plus
-        // clock skew) may have closed while the record lives on. Handing
-        // out a link the approver can no longer answer usefully would
-        // only produce a refused paste.
-        let decision_deadline = record.exp + Policy::default().max_clock_skew_secs;
-        if approvals::now_secs() > decision_deadline {
+        // starts a fresh decision, and the decision window may have
+        // closed while the record lives on. The decision is stamped on
+        // the approver's clock, which may lag this machine's by up to the
+        // skew window, so a link can still produce an acceptable decision
+        // until `exp + 2 × skew` local time — never past the redemption
+        // deadline, past which nothing redeems anyway.
+        let policy = Policy::default();
+        let decision_deadline = (record.exp + 2 * policy.max_clock_skew_secs)
+            .min(policy.redemption_deadline(record.created, record.exp));
+        if approvals::now_secs() >= decision_deadline {
             return Err(Error::new(&format!(
                 "request {} expired at {} — its decision window closed at {}, so relaying the \
                  link can no longer produce an approval (a response already made in time is \
@@ -151,7 +155,7 @@ impl ApprovalsAction {
                 &record.rid[..record.rid.len().min(8)],
                 record.exp,
                 decision_deadline,
-                Policy::default().redemption_deadline(record.created, record.exp),
+                policy.redemption_deadline(record.created, record.exp),
             )));
         }
         match (&record.state, &record.link) {

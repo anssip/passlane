@@ -522,8 +522,9 @@ fn binary_approve_honors_a_late_redeemed_in_time_approval() {
 }
 
 /// `approvals link` relays a link to start a *fresh* decision, so it must
-/// refuse once the decision window (expiry + clock skew) has closed —
-/// even though the record survives for late redemption (passlane#73).
+/// refuse once the decision window has closed on every plausible approver
+/// clock (expiry + 2 × skew for a lagging phone) — even though the record
+/// survives for late redemption (passlane#73).
 #[test]
 fn binary_approvals_link_refuses_past_the_decision_window() {
     let now = passlane_time();
@@ -543,9 +544,10 @@ fn binary_approvals_link_refuses_past_the_decision_window() {
         "the relayable link"
     );
 
-    // Window closed (expired 200 s ago, past the 120 s skew), but still
-    // redeemable (deadline now + 100): the record lives, the link does not.
-    let old_rid = scratch.emit_request_as_of("staging", "password", now - 500, Some(now - 200));
+    // Window closed on every clock (expired 250 s ago, past the
+    // 2 × skew lagging-phone grace), but still redeemable (deadline
+    // now + 50): the record lives, the link does not.
+    let old_rid = scratch.emit_request_as_of("staging", "password", now - 550, Some(now - 250));
     let refused = scratch.run(&["approvals", "link", &old_rid[..8]]);
     assert!(
         !refused.status.success(),
@@ -559,17 +561,27 @@ fn binary_approvals_link_refuses_past_the_decision_window() {
         "{stderr}"
     );
     assert!(
-        stderr.contains(&format!("{}", now - 200 + skew)),
+        stderr.contains(&format!("{}", now - 250 + 2 * skew)),
         "{stderr}"
     );
 
-    // The pending record itself is still there — the refusal is about the
-    // link, not the record's existence.
-    let pending = scratch.run(&["approvals", "pending"]);
+    // A request expired 100 s ago is still linkable: the decision is
+    // stamped on the approver's clock, which may lag this machine's by a
+    // full skew window, so a link remains useful until exp + 2 × skew.
+    let lagging = scratch.emit_request_as_of("ci", "password", now - 400, Some(now - 100));
+    let out = scratch.run(&["approvals", "link", &lagging[..8]]);
     assert!(
-        String::from_utf8_lossy(&pending.stdout).contains("staging"),
-        "the redeemable record survives"
+        out.status.success(),
+        "a lagging approver clock keeps the link useful: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
+
+    // The pending records themselves are still there — the refusal is
+    // about the link, not the records' existence.
+    let pending = scratch.run(&["approvals", "pending"]);
+    let stdout = String::from_utf8_lossy(&pending.stdout);
+    assert!(stdout.contains("staging"), "the redeemable record survives");
+    assert!(stdout.contains("ci"), "the redeemable record survives");
 }
 
 // Keep the InMemoryNonceStore import honest: it is the crate's own replay
