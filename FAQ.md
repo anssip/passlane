@@ -57,8 +57,8 @@ same HMAC-SHA1 challenge-response scheme, so:
 2. The **recovery sheet** contains exactly that secret. Program it into a
    YubiKey slot (see the caution below).
 3. Both devices now answer the challenge identically. The phone is the
-   primary holder in passlane; the YubiKey opens the vault everywhere
-   KeePass works.
+   primary holder in passlane; the YubiKey opens the vault in clients
+   supporting KeePassXC-compatible KDBX4 challenge-response (see below).
 
 The trade-off: the second factor then exists in three copies — phone,
 YubiKey, paper sheet. That is the same model as backing up a YubiKey slot
