@@ -18,10 +18,14 @@ function makeElement() {
     textContent: "",
     value: "",
     listeners: {},
+    children: [],
     addEventListener(type, fn) {
       (this.listeners[type] ??= []).push(fn);
     },
     setAttribute() {},
+    prepend(child) {
+      this.children.unshift(child);
+    },
   };
 }
 
@@ -107,6 +111,32 @@ export async function runDomTests() {
       "the fragment error must be visible",
     );
     assert(elements.start.disabled === true, "start must stay disabled on a bad link");
+    uninstallDom();
+  });
+
+  // The response label, created when cached HTML predates it: a
+  // versionless, file-by-file deploy can serve the new approve.js
+  // against old markup for a few minutes (passlane#72, Copilot review).
+  // approve.js's main() runs at import but returns early on the empty
+  // hash; the export is what this exercises.
+  await test("dom: the response label is created when cached HTML lacks it", async () => {
+    const elements = installDom({ withLinkId: false, hash: "" });
+    const approve = await import(`../js/approve.js?dom=${Date.now()}-${Math.random()}`);
+    elements["response-wrap"] = makeElement();
+    const created = approve.ensureResponseLabel();
+    assert(created !== null, "a label is created");
+    assert(
+      elements["response-wrap"].children[0] === created,
+      "prepended into the response wrap",
+    );
+    assert(created.id === "response-label" && created.className === "note");
+    // Already present: the same element comes back, nothing re-created.
+    elements["response-label"] = created;
+    assert(approve.ensureResponseLabel() === created, "idempotent");
+    // And with no wrap at all there is nothing to label — not a throw.
+    const bare = installDom({ withLinkId: false, hash: "" });
+    const again = await import(`../js/approve.js?dom2=${Date.now()}-${Math.random()}`);
+    assert(again.ensureResponseLabel() === null, "no wrap: null, no crash");
     uninstallDom();
   });
 

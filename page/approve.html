@@ -48,17 +48,50 @@
       </p>
     </div>
     <div id="response-wrap" hidden>
+      <p id="response-label" class="note"></p>
       <p>Paste this response into the terminal:</p>
       <textarea id="response" rows="6" readonly></textarea>
-      <button id="copy">Copy</button>
+      <p id="copy-note" class="note" aria-live="polite"></p>
+      <div class="actions">
+        <button id="copy">Copy</button>
+        <button id="share" class="secondary">Share…</button>
+      </div>
     </div>
   </main>
   <script type="module" src="./js/approve.js"></script>
   <script type="module">
-    document.getElementById("copy")?.addEventListener("click", async () => {
-      const response = document.getElementById("response");
-      await navigator.clipboard.writeText(response.value);
-    });
+    // The handoff (passlane#76): copy with fallbacks and visible
+    // feedback, plus the share sheet (AirDrop on iOS) — one shared
+    // implementation in js/lib.js.
+    //
+    // A namespace import, because a versionless deploy can briefly
+    // serve this fresh HTML against cached older js/lib.js (assets are
+    // cached longer than HTML): then wireHandoff does not exist, and
+    // leaving the new buttons visible-but-inert would regress Copy for
+    // those minutes. The shim keeps Copy working with the pre-change
+    // behavior and hides Share, which only the new library can wire.
+    import * as lib from "./js/lib.js";
+    if (typeof lib.wireHandoff === "function") {
+      lib.wireHandoff({
+        textarea: document.getElementById("response"),
+        copy: document.getElementById("copy"),
+        share: document.getElementById("share"),
+        note: document.getElementById("copy-note"),
+      });
+    } else {
+      const copy = document.getElementById("copy");
+      const textarea = document.getElementById("response");
+      copy?.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(textarea?.value ?? "");
+          copy.textContent = "Copied ✓";
+        } catch {
+          copy.textContent = "Copy failed — long-press below";
+        }
+      });
+      const share = document.getElementById("share");
+      if (share) share.hidden = true;
+    }
   </script>
 </body>
 </html>

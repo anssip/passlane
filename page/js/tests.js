@@ -902,6 +902,253 @@ test("approve page: the card describes phone-key operations", () => {
   eq(view2.op, "Supply the challenge-response for saving vault 'work'");
 });
 
+// -- labeled, expiring responses (passlane#72) ----------------------------------
+
+const { responseLabel, expiredResponseLabel, scheduleResponseExpiry, shortRid } = await import(
+  "./approve.js"
+);
+
+test("approve page: a response is labeled with the request it answers", () => {
+  const rid = "51d9af44c2b3e4d5f60718293a4b5c6d";
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "save" } }, rid),
+    `answers: SAVE vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "unlock" } }, rid),
+    `answers: OPEN vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel({ vault_name: "default", operation: { kind: "enroll_key" } }, rid),
+    `answers: CREATE the key for vault 'default' · 51d9af44…`,
+  );
+  eq(
+    responseLabel(
+      { operation: { kind: "reveal", entry: "github", field: "password" } },
+      rid,
+    ),
+    `answers: REVEAL password of 'github' · 51d9af44…`,
+  );
+  // Two requests a person could mix up must be tellable apart by the label.
+  const other = "fe523a8199b7c6d5e4f3021122334455";
+  const a = responseLabel({ vault_name: "default", operation: { kind: "save" } }, rid);
+  const b = responseLabel({ vault_name: "default", operation: { kind: "save" } }, other);
+  if (a === b) throw new Error("labels of different requests must differ");
+  if (!a.includes("51d9af44") || !b.includes("fe523a81")) throw new Error(`${a} / ${b}`);
+});
+
+test("approve page: response labels survive short or absent ids", () => {
+  eq(shortRid("51d9af44"), "51d9af44…");
+  eq(shortRid(null), "…");
+  eq(shortRid(undefined), "…");
+  eq(responseLabel({ vault_name: "w", operation: { kind: "save" } }, null), "answers: SAVE vault 'w' · …");
+  eq(responseLabel({ vault_name: "w", operation: { kind: "weird" } }, "51d9af44…"), "answers: weird · 51d9af44…");
+});
+
+test("approve page: a lapsed response says it is no longer accepted", () => {
+  const label = expiredResponseLabel("answers: SAVE vault 'default' · 51d9af44…");
+  if (!label.startsWith("EXPIRED — answers: SAVE vault 'default' · 51d9af44…")) throw new Error(label);
+  if (!label.includes("no longer accepted")) throw new Error(label);
+  if (!label.includes("fresh request")) throw new Error(label);
+});
+
+test("approve page: response expiry fires at the request's deadline", () => {
+  const now = 1_000;
+  // Already lapsed: expires at once, no timer.
+  let fired = 0;
+  eq(scheduleResponseExpiry(now - 1, now, () => fired++), null);
+  eq(fired, 1, "a lapsed request's response is expired immediately");
+  // Live: scheduled with the exact remaining time, fires when run.
+  let ran = null;
+  const handle = scheduleResponseExpiry(
+    now + 5,
+    now,
+    () => fired++,
+    (fn, ms) => {
+      ran = ms;
+      return "timer-handle";
+    },
+  );
+  eq(ran, 5_000, "the timer waits exactly the request's remaining life");
+  eq(handle, "timer-handle");
+  // Exactly at the deadline is already lapsed, not scheduled.
+  eq(scheduleResponseExpiry(now, now, () => fired++, () => { throw new Error("no timer"); }), null);
+  eq(fired, 2);
+  // Fractional "now" (Date.now()/1000): the sub-second remainder is
+  // kept, so the visual expiry never lags the true deadline by a
+  // second — and never fires early either.
+  let fractional = null;
+  scheduleResponseExpiry(
+    1_005,
+    1_000.999,
+    () => fired++,
+    (fn, ms) => {
+      fractional = ms;
+      return null;
+    },
+  );
+  eq(fractional, 4_001, "4000.1 ms rounds up, never truncates early");
+});
+
+// -- the handoff: copy with fallbacks, feedback, share (passlane#76) ------------
+
+const { canShare, copyWithFallback, copyFeedback, wireHandoff } = await import("./lib.js");
+
+test("handoff: copy tries the clipboard API, then selection copy, then gives up", async () => {
+  const textarea = { value: "the-blob", selectCalls: 0, select() { this.selectCalls++; } };
+  // API works: used alone.
+  let apiText = null;
+  eq(
+    await copyWithFallback("the-blob", textarea, {
+      clipboard: { writeText: async (t) => { apiText = t; } },
+    }),
+    { ok: true, how: "clipboard-api" },
+  );
+  eq(apiText, "the-blob");
+  eq(textarea.selectCalls, 0, "no selection needed");
+  // API rejects: execCommand over the selection carries it.
+  eq(
+    await copyWithFallback("the-blob", textarea, {
+      clipboard: { writeText: async () => { throw new Error("not allowed"); } },
+    }, { execCommand: () => true }),
+    { ok: true, how: "selection-copy" },
+  );
+  eq(textarea.selectCalls, 1, "the textarea was selected for the fallback");
+  // Both fail: a visible failure, not a silent one.
+  eq(
+    await copyWithFallback("the-blob", textarea, {
+      clipboard: { writeText: async () => { throw new Error("not allowed"); } },
+    }, { execCommand: () => false }),
+    { ok: false, how: "none" },
+  );
+  eq(textarea.selectCalls, 2);
+  // No clipboard API at all: straight to the selection copy.
+  eq(await copyWithFallback("the-blob", textarea, {}, { execCommand: () => true }), {
+    ok: true,
+    how: "selection-copy",
+  });
+  // The pages call this with no `doc`: the browser document is the
+  // default, so the execCommand fallback actually runs in production
+  // (passlane#76, Copilot review) — proved by installing one.
+  const failingApi = { clipboard: { writeText: async () => { throw new Error("nope"); } } };
+  const savedDoc = globalThis.document;
+  globalThis.document = { execCommand: () => true };
+  try {
+    eq(
+      await copyWithFallback("the-blob", textarea, failingApi),
+      { ok: true, how: "selection-copy" },
+      "the default document's execCommand is used",
+    );
+  } finally {
+    if (savedDoc === undefined) delete globalThis.document;
+    else globalThis.document = savedDoc;
+  }
+});
+
+test("handoff: feedback names Universal Clipboard on success, long-press on failure", () => {
+  const ok = copyFeedback({ ok: true, how: "clipboard-api" });
+  eq(ok.button, "Copied ✓");
+  if (!ok.note.includes("Universal Clipboard can take a few seconds")) throw new Error(ok.note);
+  const fell = copyFeedback({ ok: true, how: "selection-copy" });
+  eq(fell.button, "Copied ✓");
+  const bad = copyFeedback({ ok: false, how: "none" });
+  if (!bad.button.startsWith("Copy failed")) throw new Error(bad.button);
+  if (!bad.note.includes("Long-press")) throw new Error(bad.note);
+  if (!bad.note.includes("Copy")) throw new Error(bad.note);
+});
+
+/** A stub element good enough for wireHandoff: listeners it can fire. */
+function stubElement() {
+  return {
+    hidden: false,
+    disabled: false,
+    textContent: "",
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] ??= []).push(fn);
+    },
+    async click() {
+      await Promise.all((this.listeners.click ?? []).map((fn) => fn()));
+    },
+  };
+}
+
+test("handoff: the Copy button shows what happened and falls back", async () => {
+  const textarea = Object.assign(stubElement(), {
+    value: "the-blob",
+    select() {},
+  });
+  const copy = stubElement();
+  const note = stubElement();
+  wireHandoff({
+    textarea,
+    copy,
+    share: null,
+    note,
+    nav: { clipboard: { writeText: async () => { throw new Error("nope"); } } },
+    doc: { execCommand: () => true },
+  });
+  await copy.click();
+  eq(copy.textContent, "Copied ✓", "the fallback copied");
+  if (!note.textContent.includes("Universal Clipboard")) throw new Error(note.textContent);
+
+  // And says so when nothing worked.
+  const copy2 = stubElement();
+  const note2 = stubElement();
+  wireHandoff({
+    textarea,
+    copy: copy2,
+    share: null,
+    note: note2,
+    nav: { clipboard: { writeText: async () => { throw new Error("nope"); } } },
+    doc: { execCommand: () => false },
+  });
+  await copy2.click();
+  if (!copy2.textContent.startsWith("Copy failed")) throw new Error(copy2.textContent);
+  if (!note2.textContent.includes("Long-press")) throw new Error(note2.textContent);
+});
+
+test("handoff: Share offers the sheet and hides where there is none", async () => {
+  eq(canShare({ share: async () => {} }), true);
+  eq(canShare({}), false);
+  eq(canShare(undefined), false);
+
+  // No navigator.share: the button is hidden, clicking does nothing.
+  const hidden = stubElement();
+  wireHandoff({ textarea: { value: "b" }, copy: null, share: hidden, note: null, nav: {} });
+  eq(hidden.hidden, true, "hidden without navigator.share");
+  eq(hidden.listeners.click?.length ?? 0, 0, "and inert");
+
+  // With it: the blob is handed to the sheet; a dismissed sheet is not
+  // a failure; a real error says how to escape.
+  const shared = [];
+  const share = stubElement();
+  const note = stubElement();
+  wireHandoff({
+    textarea: { value: "the-blob" },
+    copy: null,
+    share,
+    note,
+    nav: {
+      share: async (payload) => {
+        shared.push(payload);
+        if (shared.length === 2) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        if (shared.length === 3) throw new Error("no targets");
+      },
+    },
+  });
+  eq(share.hidden, false);
+  await share.click();
+  eq(shared, [{ text: "the-blob" }]);
+  eq(note.textContent, "Shared.");
+  await share.click();
+  eq(note.textContent, "Shared.", "a dismissed sheet is not a failure");
+  await share.click();
+  if (!note.textContent.includes("long-press")) throw new Error(note.textContent);
+});
+
+
+
 // -- the enrollment ceremony (SPEC §6, with both CLI keys bound) --------------
 
 test("enrollment confirmation code mirrors the Rust derivation", async () => {

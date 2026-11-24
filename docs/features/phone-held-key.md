@@ -12,6 +12,10 @@ $ passlane hwkey add --phone
 Asking 'approval-page' to create the key for vault 'work'. On that device:
 print or save the recovery sheet it shows, then scan or type the secret
 back from that copy — the key is not enrolled until you do.
+This enrollment needs 2 approvals from that device: create the key, then
+save the vault with it. Each approval answers its own fresh request —
+paste only the response the terminal is waiting for; a response from an
+earlier request is refused.
 Approval needed to creating a phone-held key for vault 'work' (request 4f2a…):
 https://approve.example/approve.html#UExBUA…        ← link (stdout)
 █████▀▀█▀ …                                       ← QR (stderr)
@@ -54,7 +58,17 @@ a command with no terminal and no keychain opens through one, which is
 the point (#61 finding 4). Two paths deliver it to the command that
 needs it:
 - **Interactive terminal**: the response is pasted into the waiting
-  command and consumed on the spot.
+  command and consumed on the spot. One paste, one verdict: a rejected
+  paste ends the command — the message names which request the blob
+  answered (the rid travels in the response envelope header, decodable
+  even on a rejection) versus which one the prompt waited for, with the
+  re-run guidance. There is no re-prompt; the recovery for a dead blob
+  is a fresh request, and that comes from re-running the command.
+  Multi-approval ceremonies are announced up front (an enrollment is
+  "2 approvals: create the key, then save the vault"), and the approval
+  page labels each response with the request it answers and expires it
+  visually once that request lapses, so the current response is always
+  identifiable on both ends.
 - **Anywhere else** (`passlane approve --response` from another shell,
   an agent relaying over chat): the answer is held **in memory by the
   session agent**, keyed by the exact challenge it answers — the seed

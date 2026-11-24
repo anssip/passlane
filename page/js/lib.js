@@ -122,6 +122,106 @@ export function nowSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
+// -- the blob/response handoff (passlane#76) -----------------------------------
+//
+// One implementation shared by approve.html and enroll.html for the thing
+// both pages end with: a blob of text that must get from this screen to
+// the waiting terminal. The async Clipboard API alone is not enough on
+// iOS Safari — it can reject (gesture context, permissions) and even a
+// successful write syncs to Universal Clipboard unreliably — so the
+// handoff tries every path, always shows what happened, and keeps the
+// share sheet (whose AirDrop the user asked for) one tap away.
+
+/** Whether this platform has a share sheet (`navigator.share`). */
+export function canShare(nav = globalThis.navigator) {
+  return typeof nav?.share === "function";
+}
+
+/**
+ * Copy `text` by every means a browser allows, best first, staying
+ * inside the click's user activation: the async Clipboard API, then
+ * (when it rejects) deprecated `execCommand("copy")` over the selected
+ * textarea — the pragmatic last resort on iOS Safari. Returns how it
+ * went, so the caller can tell the human.
+ */
+export async function copyWithFallback(text, textarea, nav = globalThis.navigator, doc = globalThis.document) {
+  try {
+    if (typeof nav?.clipboard?.writeText !== "function") throw new Error("no clipboard API");
+    await nav.clipboard.writeText(text);
+    return { ok: true, how: "clipboard-api" };
+  } catch {
+    // Fall through to the selection copy.
+  }
+  if (textarea && typeof textarea.select === "function") {
+    textarea.select();
+    try {
+      if (doc?.execCommand?.("copy")) return { ok: true, how: "selection-copy" };
+    } catch {
+      // Neither path worked.
+    }
+  }
+  return { ok: false, how: "none" };
+}
+
+/**
+ * What the Copy button and the note beside the blob say after an
+ * attempt. Success carries the Universal Clipboard patience note;
+ * failure names the escape that reliably syncs: the native long-press
+ * → Copy path.
+ */
+export function copyFeedback(outcome) {
+  return outcome.ok
+    ? {
+        button: "Copied ✓",
+        note:
+          "Copied — paste it on the Mac. Universal Clipboard can take a few seconds; " +
+          "if nothing arrives there, use Share (AirDrop) or long-press the text → Copy.",
+      }
+    : {
+        button: "Copy failed — long-press below",
+        note:
+          "Could not copy automatically. Long-press the text above and choose Copy — " +
+          "the native copy path reaches the Mac reliably — or use Share.",
+      };
+}
+
+/**
+ * Wire one handoff: the Copy button (fallbacks + visible feedback), a
+ * Share button that offers the platform share sheet (on iOS that
+ * includes AirDrop — a web page cannot invoke AirDrop directly, this
+ * is the supported route), hidden where the platform has no share,
+ * and the note line the feedback lands in. Every element is optional:
+ * briefly cached, older HTML without a button must not break the page.
+ */
+export function wireHandoff({ textarea, copy, share, note, nav = globalThis.navigator, doc = globalThis.document }) {
+  if (copy) {
+    copy.addEventListener("click", async () => {
+      const outcome = await copyWithFallback(textarea?.value ?? "", textarea, nav, doc);
+      const feedback = copyFeedback(outcome);
+      copy.textContent = feedback.button;
+      if (note) note.textContent = feedback.note;
+    });
+  }
+  if (share) {
+    if (!canShare(nav)) {
+      share.hidden = true;
+    } else {
+      share.addEventListener("click", async () => {
+        try {
+          await nav.share({ text: textarea?.value ?? "" });
+          if (note) note.textContent = "Shared.";
+        } catch (e) {
+          // A dismissed share sheet is a choice, not a failure.
+          if (e?.name !== "AbortError" && note) {
+            note.textContent = "Sharing failed — long-press the text and Copy instead.";
+          }
+        }
+      });
+    }
+  }
+}
+
+
 /**
  * Convert a WebCrypto ECDSA signature (raw r||s, 64 bytes) to the DER
  * SEQUENCE(INTEGER r, INTEGER s) encoding the protocol's signature block
