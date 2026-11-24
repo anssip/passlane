@@ -122,11 +122,14 @@ export function expiredResponseLabel(label) {
 /**
  * Run `expire` when the request's clock runs out. Pure scheduling: the
  * timer is injected so the node tests can fire it deterministically.
- * A request already lapsed expires immediately; the handle is returned
- * for cancellation.
+ * `nowSeconds` may be fractional — flooring it to whole seconds would
+ * let the visual expiry lag the true deadline by up to a second, past
+ * the point where the CLI already refuses the blob — so the remaining
+ * milliseconds are computed from the (possibly fractional) timestamps
+ * and rounded up: never early, at most a millisecond late.
  */
 export function scheduleResponseExpiry(expSeconds, nowSeconds, expire, timer = setTimeout) {
-  const ms = (expSeconds - nowSeconds) * 1000;
+  const ms = Math.ceil(expSeconds * 1000 - nowSeconds * 1000);
   if (ms <= 0) {
     expire();
     return null;
@@ -537,7 +540,9 @@ async function main() {
       // refuses it), so it must stop looking current (passlane#72).
       const label = responseLabel(body, envelope.header.rid);
       $("response-label").textContent = label;
-      scheduleResponseExpiry(envelope.header.exp, nowSeconds(), () => {
+      // Date.now()/1000, not the flooring nowSeconds(): a fractional
+      // "now" keeps the deadline honest to the millisecond.
+      scheduleResponseExpiry(envelope.header.exp, Date.now() / 1000, () => {
         const wrap = $("response-wrap");
         if (wrap) wrap.classList.add("expired");
         $("response-label").textContent = expiredResponseLabel(label);

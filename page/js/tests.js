@@ -974,6 +974,20 @@ test("approve page: response expiry fires at the request's deadline", () => {
   // Exactly at the deadline is already lapsed, not scheduled.
   eq(scheduleResponseExpiry(now, now, () => fired++, () => { throw new Error("no timer"); }), null);
   eq(fired, 2);
+  // Fractional "now" (Date.now()/1000): the sub-second remainder is
+  // kept, so the visual expiry never lags the true deadline by a
+  // second — and never fires early either.
+  let fractional = null;
+  scheduleResponseExpiry(
+    1_005,
+    1_000.999,
+    () => fired++,
+    (fn, ms) => {
+      fractional = ms;
+      return null;
+    },
+  );
+  eq(fractional, 4_001, "4000.1 ms rounds up, never truncates early");
 });
 
 

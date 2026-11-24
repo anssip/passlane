@@ -120,11 +120,12 @@ fn short(rid: &str) -> &str {
 }
 
 /// The message that ends the command after one rejected paste
-/// (passlane#72): the verifier's precise reason, which request the
-/// rejected blob says it answers versus which one this prompt waits
-/// for (when the blob is an envelope at all — its rid travels in the
-/// cleartext header, decodable even on a rejection), and the re-run
-/// guidance. Nothing here re-prompts.
+/// (passlane#72): the verifier's precise reason, and — when the blob is
+/// an envelope at all — that it does answer this command's request even
+/// though the response itself did not verify. (A blob answering a
+/// *different* request never reaches verification: it is refused
+/// beforehand, without spending anything, by the caller's rid
+/// pre-check.) Nothing here re-prompts.
 fn rejected_paste_message(
     reason: &str,
     blob: &str,
@@ -133,14 +134,6 @@ fn rejected_paste_message(
 ) -> String {
     let mut message = format!("The pasted response was not accepted: {reason}");
     match answered_request(blob) {
-        Some(answered) if answered != expected_rid => {
-            message.push_str(&format!(
-                " It answers request {}…; this prompt waits for request {}… ({}).",
-                short(&answered),
-                short(expected_rid),
-                request.describe()
-            ));
-        }
         Some(answered) => {
             message.push_str(&format!(
                 " It does answer this command's request {}… ({}), but the response itself did \
@@ -318,6 +311,19 @@ impl LinkTransport {
                 "cancelled at the terminal: no response was given".into(),
             ));
         };
+        // The response must answer the request this command emitted, not
+        // any other pending one — and that is checked from the
+        // envelope's cleartext header BEFORE verification, because a
+        // verified response spends the request it answers (replay
+        // nonce, consumed/denied state): a blob belonging to another
+        // command must not burn that command's approval.
+        if let Some(answered) = answered_request(&blob)
+            && answered != emitted.rid
+        {
+            return Err(ResponseError::Unavailable(
+                self.wrong_request_message(&answered, request, emitted),
+            ));
+        }
         // The verifier hands the answer over before recording anything;
         // here it is used immediately, so the request ends as consumed.
         let handed = std::cell::RefCell::new(None);
@@ -327,41 +333,23 @@ impl LinkTransport {
                 Ok(())
             });
         match verified {
-            Ok(verified) => {
-                // The response must answer the request this command
-                // emitted, not any other pending one: an answer pasted
-                // to a different unlock or save must not pass as this
-                // gate's confirmation.
-                let answered_rid = match &verified.outcome {
-                    ApproveOutcome::Allowed { rid, .. } | ApproveOutcome::Denied { rid, .. } => rid,
-                };
-                if answered_rid != &emitted.rid {
-                    return Err(ResponseError::Unavailable(format!(
-                        "That response answers request {}…, not this command's request {}… ({}); \
-                         it was not used. Re-run the command to ask again.",
-                        short(answered_rid),
-                        short(&emitted.rid),
-                        request.describe()
-                    )));
+            Ok(verified) => match verified.outcome {
+                ApproveOutcome::Allowed { .. } => {
+                    // verify_response refuses a challenge request
+                    // approved without an answer, so this is Some.
+                    Ok(Answer {
+                        response: handed.into_inner().ok_or_else(|| {
+                            ResponseError::Unavailable(
+                                "the approved response carried no answer".into(),
+                            )
+                        })?,
+                        origin: AnswerOrigin::LinkTransport,
+                    })
                 }
-                match verified.outcome {
-                    ApproveOutcome::Allowed { .. } => {
-                        // verify_response refuses a challenge request
-                        // approved without an answer, so this is Some.
-                        Ok(Answer {
-                            response: handed.into_inner().ok_or_else(|| {
-                                ResponseError::Unavailable(
-                                    "the approved response carried no answer".into(),
-                                )
-                            })?,
-                            origin: AnswerOrigin::LinkTransport,
-                        })
-                    }
-                    ApproveOutcome::Denied { reason, .. } => Err(ResponseError::Denied(
-                        reason.unwrap_or_else(|| "no reason given".into()),
-                    )),
-                }
-            }
+                ApproveOutcome::Denied { reason, .. } => Err(ResponseError::Denied(
+                    reason.unwrap_or_else(|| "no reason given".into()),
+                )),
+            },
             Err(e) => Err(ResponseError::Unavailable(rejected_paste_message(
                 &e,
                 &blob,
@@ -369,6 +357,47 @@ impl LinkTransport {
                 &emitted.rid,
             ))),
         }
+    }
+
+    /// Why a pasted blob answering request `answered` does not satisfy
+    /// this command's prompt: what that request's state is (already
+    /// used, denied, still waiting on its own command — read from the
+    /// pending store, without touching anything), next to the request
+    /// this prompt waits for. Nothing was spent in producing it.
+    fn wrong_request_message(
+        &self,
+        answered: &str,
+        request: &PhoneRequest,
+        emitted: &EmittedRequest,
+    ) -> String {
+        let state = PendingStore::load(&self.dir)
+            .ok()
+            .and_then(|pending| pending.find(answered).cloned());
+        let why = match state {
+            Some(record) => match record.state {
+                RequestState::Consumed => " (already approved and used)".to_string(),
+                RequestState::Granted { .. } => " (already approved)".to_string(),
+                RequestState::Denied => " (already denied)".to_string(),
+                RequestState::Pending => {
+                    if crate::approvals::now_secs() >= record.exp {
+                        " (expired)".to_string()
+                    } else {
+                        " (another command's live request)".to_string()
+                    }
+                }
+            },
+            None => " (no pending request with that id — it may have expired and been pruned)"
+                .to_string(),
+        };
+        format!(
+            "That response answers request {}{}{}; this prompt waits for request {}… ({}). It \
+             was not used, and nothing was spent. Re-run the command to ask again.",
+            short(answered),
+            "…",
+            why,
+            short(&emitted.rid),
+            request.describe()
+        )
     }
 
     /// Someone elsewhere approves and runs `passlane approve --response`;
@@ -884,9 +913,9 @@ pub(crate) mod tests {
     #[test]
     fn interactive_a_wrong_blob_is_rejected_once_and_names_both_requests() {
         // The blob answers an earlier, still-pending request (a different
-        // command's). It verifies — and is refused as this command's
-        // confirmation, with both request ids in the message so the mixup
-        // explains itself.
+        // command's). It is refused BEFORE verification — so the other
+        // command's approval is not spent — with both request ids in the
+        // message so the mixup explains itself.
         let pasted: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let keys_slot: Arc<Mutex<Option<Arc<Mutex<PageKeys>>>>> = Arc::new(Mutex::new(None));
         let rig = Rig::new(true, false, {
@@ -906,7 +935,8 @@ pub(crate) mod tests {
         let _ = rig.ask(Operation::Unlock).unwrap_err();
         let shown = rig.terminal().shown();
         let keys = keys_slot.lock().unwrap().clone().unwrap();
-        *pasted.lock().unwrap() = Some(page_answer(&keys.lock().unwrap(), &shown[0], Some(ANSWER)));
+        let blob = page_answer(&keys.lock().unwrap(), &shown[0], Some(ANSWER));
+        *pasted.lock().unwrap() = Some(blob.clone());
         let err = rig.ask(Operation::Save).unwrap_err();
         let ResponseError::Unavailable(message) = &err else {
             panic!("{err:?}")
@@ -923,6 +953,10 @@ pub(crate) mod tests {
             "names the expected one: {message}"
         );
         assert!(
+            message.contains("another command's live request"),
+            "says what state the answered request is in: {message}"
+        );
+        assert!(
             message.contains(&format!("saving vault '{}'", pending[1].vault)),
             "says what the prompt waits for: {message}"
         );
@@ -934,6 +968,15 @@ pub(crate) mod tests {
             rig.terminal().prompts(),
             2,
             "one prompt per command, no retry"
+        );
+        // The refusal happened before verification, so it spent nothing:
+        // the abandoned request is still pending, and its response still
+        // verifies for whoever asks under that rid again.
+        assert_eq!(pending[0].state, RequestState::Pending, "{message}");
+        let redeemed = approvals::verify_response(&rig.dir, &blob, Disposition::Grant, &|_| Ok(()));
+        assert!(
+            redeemed.is_ok(),
+            "the wrong-pasted blob is still redeemable: {redeemed:?}"
         );
     }
 
@@ -965,7 +1008,7 @@ pub(crate) mod tests {
         let pending = rig.pending();
         assert!(
             message.contains("already approved and used"),
-            "the verifier's reason is carried through: {message}"
+            "names the spent request's state: {message}"
         );
         assert!(
             message.contains(&pending[0].rid[..8]),
