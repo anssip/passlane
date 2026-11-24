@@ -214,6 +214,9 @@ async function main() {
         const { blob, confirmationCode } = await runEnrollment(parsed);
         $("blob").value = JSON.stringify(blob);
         $("blob-wrap").hidden = false;
+        // Auto-selected on reveal (passlane#76): the long-press → Copy
+        // fallback is one gesture shorter.
+        $("blob")?.select?.();
         $("code").textContent = confirmationCode;
         $("code-wrap").hidden = false;
         $("status").textContent =

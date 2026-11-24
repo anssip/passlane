@@ -51,14 +51,26 @@
       <p id="response-label" class="note"></p>
       <p>Paste this response into the terminal:</p>
       <textarea id="response" rows="6" readonly></textarea>
-      <button id="copy">Copy</button>
+      <p id="copy-note" class="note" aria-live="polite"></p>
+      <div class="actions">
+        <button id="copy">Copy</button>
+        <button id="share" class="secondary">Share…</button>
+      </div>
     </div>
   </main>
   <script type="module" src="./js/approve.js"></script>
   <script type="module">
-    document.getElementById("copy")?.addEventListener("click", async () => {
-      const response = document.getElementById("response");
-      await navigator.clipboard.writeText(response.value);
+    // The handoff (passlane#76): copy with fallbacks and visible
+    // feedback, plus the share sheet (AirDrop on iOS) — one shared
+    // implementation in js/lib.js. A namespace import with a guarded
+    // call, so briefly cached older lib.js (versionless deploy) leaves
+    // the page working rather than failing the module.
+    import * as lib from "./js/lib.js";
+    lib.wireHandoff?.({
+      textarea: document.getElementById("response"),
+      copy: document.getElementById("copy"),
+      share: document.getElementById("share"),
+      note: document.getElementById("copy-note"),
     });
   </script>
 </body>

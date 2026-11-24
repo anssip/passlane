@@ -137,6 +137,28 @@ export function scheduleResponseExpiry(expSeconds, nowSeconds, expire, timer = s
   return timer(expire, ms);
 }
 
+/**
+ * The response label element for `#response-wrap`, created when absent.
+ * The page deploys versionlessly, file by file (page/deploy.md): this
+ * script can briefly run against cached HTML that predates the label
+ * (passlane#72). Creating it keeps the produced response labeled — and
+ * keeps the expiry callback alive — instead of throwing after the
+ * response is already shown. `null` only when even `#response-wrap` is
+ * missing, in which case nothing was produced to label.
+ */
+export function ensureResponseLabel(doc = document) {
+  let el = doc.getElementById("response-label");
+  if (!el) {
+    el = doc.createElement("p");
+    el.id = "response-label";
+    el.className = "note";
+    const wrap = doc.getElementById("response-wrap");
+    if (!wrap) return null;
+    wrap.prepend(el);
+  }
+  return el;
+}
+
 
 /**
  * The challenge of a phone-held-key request, as bytes — or null when the
@@ -535,19 +557,32 @@ async function main() {
       }
       $("response").value = blob;
       $("response-wrap").hidden = false;
+      // Auto-selected the moment it appears: the long-press → Copy
+      // fallback (the path that reliably reaches Universal Clipboard)
+      // is one gesture shorter (passlane#76).
+      $("response")?.select?.();
       // Label the response with the request it answers, and let it age
       // with that request: past its expiry the blob is dead (the CLI
       // refuses it), so it must stop looking current (passlane#72).
+      // The label element is created when cached HTML predates it, so
+      // labeling and expiry never depend on the markup landing first.
+      const labelEl = ensureResponseLabel();
       const label = responseLabel(body, envelope.header.rid);
-      $("response-label").textContent = label;
+      if (labelEl) labelEl.textContent = label;
       // Date.now()/1000, not the flooring nowSeconds(): a fractional
       // "now" keeps the deadline honest to the millisecond.
       scheduleResponseExpiry(envelope.header.exp, Date.now() / 1000, () => {
         const wrap = $("response-wrap");
         if (wrap) wrap.classList.add("expired");
-        $("response-label").textContent = expiredResponseLabel(label);
-        const copy = $("copy");
-        if (copy) copy.disabled = true;
+        if (labelEl) labelEl.textContent = expiredResponseLabel(label);
+        for (const id of ["copy", "share"]) {
+          const button = $(id);
+          if (button) button.disabled = true;
+        }
+        // The copy feedback ("paste it on the Mac…") must not outlive
+        // the blob it promised.
+        const note = $("copy-note");
+        if (note) note.textContent = "";
       });
       $("status").textContent =
         decision === "allow"
