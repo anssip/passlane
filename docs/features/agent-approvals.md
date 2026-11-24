@@ -178,7 +178,11 @@ limiting hook (SPEC §4) belongs to the session agent (passlane#54).
 
 `passlane approvals list` / `pending` / `remove <label>` manage the pins
 and show what is awaiting an answer. Requests expire with their envelope
-(a few minutes); expired requests are pruned automatically.
+(a few minutes; enroll/save ceremonies carry a longer TTL); expired
+requests are pruned automatically. An answer the owner made in time is
+still redeemable after the request expired — up to twice the request's
+TTL from creation (SPEC §4) — so a slow relay round trip does not void a
+timely decision; replays are refused exactly once.
 
 ### The approval log
 

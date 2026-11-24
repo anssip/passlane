@@ -251,6 +251,10 @@ pub struct EmittedRequest {
     pub envelope: String,
     /// Unix seconds after which the request can no longer be approved.
     pub exp: u64,
+    /// Unix seconds after which a response to this request can no longer
+    /// be redeemed (SPEC §4's total-lifetime bound — the approver's
+    /// decision must be in time; the relay round trip may take longer).
+    pub redeem_until: u64,
 }
 
 /// What a request is about, as the pending store records it.
@@ -302,17 +306,20 @@ pub fn emit_to(
 ) -> Result<EmittedRequest, String> {
     let identity = load_identity(dir)?;
     let now = now_secs();
-    let envelope = passlane_approval::envelope::seal(
-        &mut OsRng,
-        &identity,
-        peer,
-        body,
-        now,
-        &Policy::default(),
-    )
-    .map_err(|e| format!("could not seal the approval request: {e}"))?;
+    // Ceremony requests (enroll_key, save) are single-shot human
+    // ceremonies — the relay round trip includes printing a recovery
+    // sheet and finding a terminal — so they carry the longer TTL
+    // (passlane#73). Their redemption bound scales with it.
+    let policy = match target.kind {
+        RequestKind::EnrollKey | RequestKind::Save => Policy::default().for_ceremony(),
+        _ => Policy::default(),
+    };
+    let envelope =
+        passlane_approval::envelope::seal(&mut OsRng, &identity, peer, body, now, &policy)
+            .map_err(|e| format!("could not seal the approval request: {e}"))?;
     let rid = envelope.header().rid.clone();
     let exp = envelope.header().exp;
+    let redeem_until = policy.redemption_deadline(now, exp);
     let encoded = envelope.to_base64url();
     let link = approve_link(&link_base_for(dir, peer), &encoded);
     // The request was sealed to this approver; only its response may
@@ -345,6 +352,7 @@ pub fn emit_to(
         link,
         envelope: encoded,
         exp,
+        redeem_until,
     })
 }
 
@@ -583,10 +591,17 @@ pub fn verify_response(
                 return Err(format!("request {rid} was already denied"))
             }
         }
-        if now >= record.exp {
+        // Freshness by decision time (SPEC §4, passlane#73): the approver
+        // must have decided inside the request's window, but the relay
+        // round trip may outlast it — a response is redeemable until the
+        // request's total-lifetime bound, not its own expiry. Both clocks
+        // here are this machine's (it minted the request).
+        let redeem_deadline = Policy::default().redemption_deadline(record.created, record.exp);
+        if now >= redeem_deadline {
             return Err(format!(
-                "the request expired at {}; emit a new one by re-running the command",
-                record.exp
+                "the request expired at {} and the window for redeeming its answers closed at \
+                 {}; emit a new one by re-running the command",
+                record.exp, redeem_deadline
             ));
         }
         // The approver the request was sealed to is the only one who may
@@ -605,16 +620,19 @@ pub fn verify_response(
         }
 
         // Full verification (the replay nonce is recorded in memory by
-        // open() only once everything above it passed). Pruning the
-        // replay store here — under its own lock, before the rewrite —
-        // keeps `.approval_nonces` bounded by the replay window.
+        // open_reply() only once everything above it passed, and lives
+        // until the redemption deadline). Pruning the replay store here —
+        // under its own lock, before the rewrite — keeps
+        // `.approval_nonces` bounded by the replay window.
         use passlane_approval::replay::NonceStore;
         nonces.prune(now);
 
-        let body = passlane_approval::envelope::open(
+        let body = passlane_approval::envelope::open_reply(
             &identity,
             &peers,
             &envelope,
+            record.created,
+            record.exp,
             now,
             &Policy::default(),
             &mut nonces,
@@ -653,10 +671,13 @@ pub fn verify_response(
                         record.requested_timed.unwrap()
                     ));
                 }
-                // A once-grant is bounded by the request envelope's own expiry
-                // (it lives only to be consumed); a timed grant by its window.
+                // A once-grant is bounded by the request envelope's own
+                // expiry (it lives only to be consumed) — extended to the
+                // redemption deadline when the approval was redeemed late
+                // but decided in time, so the re-run that consumes it
+                // finds it live; a timed grant by its window.
                 let until = if once {
-                    record.exp
+                    record.exp.max(redeem_deadline)
                 } else {
                     now + scope.seconds()
                 };
@@ -1088,8 +1109,10 @@ pub(crate) fn mock_page_answer(
     )
 }
 
-/// [`mock_page_answer`] sealed at an explicit time — a blob whose
-/// envelope is already expired, for the rejected-paste paths.
+/// [`mock_page_answer`] sealed at an explicit time — the decision time
+/// the response header's authenticated `ts` carries: what late-redemption
+/// rules (SPEC §4, passlane#73) are validated against, and how the
+/// rejected-paste paths build blobs whose envelopes are already expired.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mock_page_answer_at(
@@ -1100,7 +1123,7 @@ pub(crate) fn mock_page_answer_at(
     decision: Decision,
     answer: Option<[u8; 20]>,
     scope: Scope,
-    now: u64,
+    decision_at: u64,
 ) -> Envelope {
     let cli_pin = PeerPin::new(
         "cli",
@@ -1118,7 +1141,7 @@ pub(crate) fn mock_page_answer_at(
             response: answer.map(|bytes| passlane_approval::message::SecretHex::from_bytes(&bytes)),
         },
         request_rid,
-        now,
+        decision_at,
         &Policy::default(),
     )
     .unwrap();
@@ -1962,6 +1985,249 @@ mod tests {
             ));
             let pending = PendingStore::load(dir).unwrap();
             assert_eq!(pending.records()[0].state, RequestState::Denied);
+        }
+    }
+
+    // -- late redemption (passlane#73, SPEC §4) -------------------------------
+
+    /// A pending record as it looks after a real relay round trip: emitted
+    /// `created..exp` (both possibly in the past), a reveal for `entry`.
+    /// Written straight to the store's file — even a record past its
+    /// redemption deadline must be present so `verify_response`'s own
+    /// bound check (not pruning) is what refuses it.
+    fn fabricate_pending(
+        dir: &std::path::Path,
+        holder: &PeerPin,
+        created: u64,
+        exp: u64,
+        entry: &str,
+    ) -> String {
+        use rand::RngCore;
+        let mut rid_bytes = [0u8; 16];
+        OsRng.fill_bytes(&mut rid_bytes);
+        let record = PendingRequest {
+            rid: passlane_approval::encoding::hex_encode(&rid_bytes),
+            vault: "default".into(),
+            entry_id: format!("uuid-{entry}"),
+            entry: entry.into(),
+            field: "password".into(),
+            created,
+            exp,
+            requested_timed: None,
+            kind: RequestKind::Reveal,
+            challenge: None,
+            link: None,
+            holder_kid: holder.enc_kid().ok(),
+            state: RequestState::Pending,
+        };
+        let rid = record.rid.clone();
+        let path = dir.join("approval_pending.json");
+        let mut records: Vec<PendingRequest> = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        records.push(record);
+        std::fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
+        rid
+    }
+
+    /// The #61/#73 shape: the owner decided inside the request's window,
+    /// the relay round trip (link, phone, passkey, copy, paste) outlasted
+    /// the request — the approval is honored, exactly once, and the grant
+    /// it releases is consumable.
+    #[test]
+    fn an_in_time_approval_redeemed_late_is_honored_exactly_once() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin.clone(), None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let now = now_secs();
+            // Request emitted 400 s ago with the default 300 s TTL: it
+            // expired 100 s ago. The decision was made 200 s ago — in
+            // time. The paste is arriving only now: 400 s after creation,
+            // inside the 2×TTL bound (deadline now + 200).
+            let rid = fabricate_pending(dir, &pin, now - 400, now - 100, "GitHub");
+            let blob = mock_page_answer_at(
+                &cli,
+                &page,
+                &passkey,
+                &rid,
+                Decision::Allow,
+                None,
+                Scope::Once,
+                now - 200,
+            )
+            .to_base64url();
+
+            let outcome = approve_response(dir, &blob).unwrap();
+            let ApproveOutcome::Allowed {
+                rid: got,
+                once,
+                until,
+                ..
+            } = outcome
+            else {
+                panic!("expected Allow, got {outcome:?}")
+            };
+            assert_eq!(got, rid);
+            assert!(once);
+            // The once-grant lives to the redemption deadline — the re-run
+            // that consumes it must find it live despite the late arrival.
+            assert_eq!(until, now + 200);
+            assert_eq!(
+                consume_grant(dir, "default", "uuid-GitHub", "password"),
+                Some(rid.clone())
+            );
+
+            // Exactly once: the same blob presented again is refused.
+            let err = approve_response(dir, &blob).unwrap_err();
+            assert!(err.contains("already approved"), "{err}");
+        }
+    }
+
+    /// The bound on late redemption: past 2× the request's TTL, nothing
+    /// redeems and nothing is released, whatever the decision says.
+    #[test]
+    fn a_redemption_past_the_total_lifetime_bound_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin.clone(), None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let now = now_secs();
+            // Emitted 700 s ago, expired 400 s ago: the redemption window
+            // closed 100 s ago (deadline = created + 2×300).
+            let rid = fabricate_pending(dir, &pin, now - 700, now - 400, "GitHub");
+            let blob = mock_page_answer_at(
+                &cli,
+                &page,
+                &passkey,
+                &rid,
+                Decision::Allow,
+                None,
+                Scope::Once,
+                now - 500,
+            )
+            .to_base64url();
+
+            let err = approve_response(dir, &blob).unwrap_err();
+            assert!(
+                err.contains("window for redeeming its answers closed"),
+                "{err}"
+            );
+            assert!(err.contains("re-running the command"), "{err}");
+            // The refusal names no replay (nothing was recorded).
+            assert!(!err.contains("replayed"), "{err}");
+            // Nothing was released — and the dead record itself was pruned
+            // by the very transaction that refused it.
+            assert!(PendingStore::load(dir).unwrap().records().is_empty());
+            assert_eq!(
+                consume_grant(dir, "default", "uuid-GitHub", "password"),
+                None
+            );
+        }
+    }
+
+    /// The decision window is the request's, skew-extended in both
+    /// directions: a phone clock ~40 s off in either direction decides in
+    /// time; beyond `max_clock_skew_secs` past expiry (or before
+    /// creation) the decision is not in time.
+    #[test]
+    fn the_decision_window_tolerates_clock_skew_both_ways() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, page, passkey) = mock_page();
+            pin_approver(dir, pin.clone(), None).unwrap();
+            let cli = load_identity(dir).unwrap();
+            let now = now_secs();
+            let skew = Policy::default().max_clock_skew_secs;
+            let (created, exp) = (now - 400, now - 100);
+
+            for decision_at in [created - 40, exp + 40] {
+                let rid = fabricate_pending(dir, &pin, created, exp, "GitHub");
+                let blob = mock_page_answer_at(
+                    &cli,
+                    &page,
+                    &passkey,
+                    &rid,
+                    Decision::Allow,
+                    None,
+                    Scope::Once,
+                    decision_at,
+                )
+                .to_base64url();
+                approve_response(dir, &blob)
+                    .unwrap_or_else(|e| panic!("decision at {decision_at} must redeem: {e}"));
+            }
+
+            for decision_at in [created - skew - 1, exp + skew + 1] {
+                let rid = fabricate_pending(dir, &pin, created, exp, "GitHub");
+                let blob = mock_page_answer_at(
+                    &cli,
+                    &page,
+                    &passkey,
+                    &rid,
+                    Decision::Allow,
+                    None,
+                    Scope::Once,
+                    decision_at,
+                )
+                .to_base64url();
+                let err = approve_response(dir, &blob).unwrap_err();
+                assert!(
+                    err.contains("outside the request window"),
+                    "decision at {decision_at}: {err}"
+                );
+            }
+        }
+    }
+
+    /// Ceremony requests (enroll_key, save) carry the longer TTL and a
+    /// redemption bound scaled to it; ordinary asks keep the short one.
+    #[test]
+    fn ceremony_requests_carry_the_longer_ttl_and_redemption_bound() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path();
+        {
+            let (pin, _page, _passkey) = mock_page();
+            pin_approver(dir, pin, None).unwrap();
+            let policy = Policy::default();
+
+            let emitted = emit_challenge(dir, RequestKind::Unlock, &[0x01; 32]);
+            let record = PendingStore::load(dir).unwrap().records()[0].clone();
+            assert_eq!(record.exp - record.created, policy.ttl_secs);
+            assert_eq!(emitted.redeem_until, record.created + 2 * policy.ttl_secs);
+
+            for (kind, challenge) in [
+                (RequestKind::EnrollKey, [0x02u8; 32]),
+                (RequestKind::Save, [0x03u8; 32]),
+            ] {
+                let emitted = emit_challenge(dir, kind, &challenge);
+                let record = PendingStore::load(dir)
+                    .unwrap()
+                    .records()
+                    .iter()
+                    .find(|r| r.rid == emitted.rid)
+                    .unwrap()
+                    .clone();
+                assert_eq!(
+                    record.exp - record.created,
+                    policy.for_ceremony().ttl_secs,
+                    "{kind:?}"
+                );
+                assert_eq!(
+                    emitted.redeem_until,
+                    record.created + 2 * policy.for_ceremony().ttl_secs,
+                    "{kind:?}"
+                );
+                // The ceremony TTL stays inside the receiver's cap, so the
+                // request itself opens under the default policy.
+                assert!(policy.for_ceremony().ttl_secs <= policy.max_ttl_secs);
+            }
         }
     }
 

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use passlane_approval::error::Result;
 use passlane_approval::message::Operation;
+use passlane_approval::policy::Policy;
 
 /// The store's file name inside the approvals state directory.
 const PENDING_FILENAME: &str = "approval_pending.json";
@@ -145,10 +146,16 @@ impl PendingRequest {
     }
 
     /// Is this record still worth keeping at `now`? A record lives until
-    /// its envelope expiry; a granted record lives as long as its reuse
-    /// window — which for `Scope::Timed` approvals can outlive `exp`.
+    /// its envelope expiry; a **pending** record lives on to its request's
+    /// redemption deadline (SPEC §4, passlane#73) — an in-time decision
+    /// may be redeemed after the request expired, and the response it
+    /// answers must still find its record; a granted record lives as long
+    /// as its reuse window — which for `Scope::Timed` approvals can
+    /// outlive `exp`.
     fn live_at(&self, now: u64) -> bool {
-        self.exp > now || self.grant_live(now)
+        self.exp > now
+            || Policy::default().redemption_deadline(self.created, self.exp) > now
+            || self.grant_live(now)
     }
 }
 
@@ -560,7 +567,14 @@ mod tests {
         let rids: Vec<&str> = s.records().iter().map(|r| r.rid.as_str()).collect();
         assert_eq!(rids, vec!["live", "timed"]);
 
+        // "timed" dies with its reuse window; "live" — still pending —
+        // now lives to its redemption deadline (created + 2×ttl =
+        // 3000), because an in-time decision may be redeemed that late.
         s.prune(2300);
+        let rids: Vec<&str> = s.records().iter().map(|r| r.rid.as_str()).collect();
+        assert_eq!(rids, vec!["live"]);
+
+        s.prune(3000);
         assert!(s.records().is_empty());
     }
 
@@ -589,6 +603,27 @@ mod tests {
                 until: 1500
             }
         );
+    }
+
+    #[test]
+    fn prune_keeps_an_expired_pending_request_until_its_redemption_deadline() {
+        // passlane#73: the request expired 100 s ago (created 400 s ago,
+        // ttl 300), so its redemption deadline is 200 s in the future —
+        // an in-time decision redeemed late must still find the record.
+        let now = 10_000u64;
+        let mut pending = record("a", "GitHub", RequestState::Pending);
+        pending.created = now - 400;
+        pending.exp = now - 100;
+        let mut s = store(vec![pending.clone()]);
+        s.prune(now);
+        assert_eq!(s.records().len(), 1, "lives to its redemption deadline");
+
+        // One second past the deadline it is dead, whatever its state of
+        // the moment (nothing granted anything by then).
+        let deadline = Policy::default().redemption_deadline(pending.created, pending.exp);
+        assert_eq!(deadline, now + 200);
+        s.prune(deadline);
+        assert!(s.records().is_empty());
     }
 
     #[test]

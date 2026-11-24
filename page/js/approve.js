@@ -41,6 +41,49 @@ import {
 const $ = (id) => document.getElementById(id);
 
 /**
+ * The maximum device clock skew the CLI's freshness rules tolerate
+ * (SPEC §4; the Rust `Policy` default `max_clock_skew_secs`). Observed
+ * phone/Mac skew in the field: 20–40 s.
+ */
+export const MAX_CLOCK_SKEW_SECS = 120;
+
+/**
+ * The decision window of a request as this device's clock sees it
+ * (SPEC §4, passlane#73): the CLI honors an answer whose authenticated
+ * `ts` falls inside the request's skew-extended window — inclusively on
+ * both ends, exactly like the Rust `Policy::validate_reply`:
+ * `header.ts - skew ≤ decision ≤ header.exp + skew`. The decision time
+ * is *this device's* clock at the moment of deciding, so Approve stays
+ * usable a skew-window past the displayed expiry (and a skew-window
+ * before the request seems to have existed, for a clock running behind).
+ * Redemption at the terminal is bounded separately, by the request's
+ * total lifetime. Pure, so the node tests cover the wiring.
+ */
+export function decisionWindow(header, now) {
+  const from = header.ts - MAX_CLOCK_SKEW_SECS;
+  const to = header.exp + MAX_CLOCK_SKEW_SECS;
+  const decidable = from <= now && now <= to;
+  const secondsLeft = decidable ? Math.max(0, to - now) : 0;
+  const label = decidable
+    ? now < header.exp
+      ? `expires in ${Math.max(0, header.exp - now)}s (link transport — no proximity signal)`
+      : `past expiry — an answer made now still counts within clock skew (${secondsLeft}s left); the terminal accepts it late`
+    : "EXPIRED — re-run the command to emit a fresh request";
+  return { decidable, secondsLeft, label };
+}
+
+/**
+ * When a response to this request can no longer be redeemed: the request's
+ * total-lifetime bound — creation plus two of its TTLs (SPEC §4,
+ * passlane#73), the mirror of the Rust `Policy::redemption_deadline`.
+ * A decision made in time stays redeemable until then, however long the
+ * relay round trip took.
+ */
+export function redemptionDeadline(header) {
+  return header.ts + 2 * (header.exp - header.ts);
+}
+
+/**
  * Verify the request envelope's sender signature (SPEC §3: ECDSA P-256
  * over the transcript). HPKE base mode encrypts but does not authenticate
  * the sender, so the page must check this before showing anything
@@ -111,12 +154,13 @@ export function responseLabel(body, rid) {
 }
 
 /**
- * What the label becomes once the request lapses: the blob is dead —
- * the CLI refuses it — and the person holding the phone should know
- * before walking it to a terminal that can no longer accept it.
+ * What the label becomes once the request's redemption window lapses:
+ * the blob is dead — the CLI refuses to redeem it — and the person
+ * holding the phone should know before walking it to a terminal that
+ * can no longer accept it.
  */
 export function expiredResponseLabel(label) {
-  return `EXPIRED — ${label} (no longer accepted; the computer must emit a fresh request)`;
+  return `EXPIRED — ${label} (no longer redeemable; the computer must emit a fresh request)`;
 }
 
 /**
@@ -404,22 +448,30 @@ async function main() {
 
   const body = JSON.parse(fromUtf8(plaintext));
   const view = describeBody(body);
-  const fresh = nowSeconds() < envelope.header.exp;
   const phoneKeyRequest = isPhoneKeyOperation(body.operation);
-  if (!fresh) {
-    $("approve").disabled = true;
-    $("deny").disabled = true;
-  }
-  const ttlLeft = Math.max(0, envelope.header.exp - nowSeconds());
+
+  // The countdown follows the decision window (SPEC §4): the request's
+  // expiry bounds the *decision*, with a clock-skew grace on top —
+  // redemption at the terminal is allowed to run later still. It is
+  // refreshed while the page stays open, so the grace message and the
+  // closed window appear when they actually happen.
+  const refreshWindow = () => {
+    const w = decisionWindow(envelope.header, nowSeconds());
+    $("expires").textContent = w.label;
+    if (!w.decidable) {
+      $("approve").disabled = true;
+      $("deny").disabled = true;
+      clearInterval(ticker);
+    }
+  };
+  const ticker = setInterval(refreshWindow, 1000);
 
   $("request").hidden = false;
   $("op").textContent = view.op;
   $("vault").textContent = view.vault;
   $("requester").textContent = view.requester;
   $("scope").textContent = view.scope;
-  $("expires").textContent = fresh
-    ? `expires in ${ttlLeft}s (link transport — no proximity signal)`
-    : "EXPIRED — re-run the command to emit a fresh request";
+  refreshWindow();
 
   // A phone-held-key request is answered with the HMAC of its challenge
   // under the key this device holds for that vault. Everything the answer
@@ -495,14 +547,17 @@ async function main() {
   };
 
   const decide = async (decision, reason) => {
-    // Recheck the clock at decision time: a request opened before expiry
-    // must not stay approvable past its deadline (the CLI would refuse
-    // the answer anyway).
-    if (nowSeconds() >= envelope.header.exp) {
+    // Recheck the clock at decision time: the decision must fall inside
+    // the request's skew-extended window (SPEC §4) — the CLI judges the
+    // answer by this timestamp, not by when the paste lands at the
+    // terminal.
+    const window = decisionWindow(envelope.header, nowSeconds());
+    if (!window.decidable) {
       $("approve").disabled = true;
       $("deny").disabled = true;
       $("status").textContent =
-        "The request expired while this page was open; nothing was answered. Re-run the command to emit a fresh request.";
+        "The request expired while this page was open (beyond what clock skew can cover); " +
+          "nothing was answered. Re-run the command to emit a fresh request.";
       return;
     }
     // An answer exists only for an Allow, and only from here on in this
@@ -541,6 +596,20 @@ async function main() {
         assert: assertWithPasskey,
         answerHex,
       });
+      // The envelope's ts was stamped when this decision started; the
+      // human-present authorization has only just completed, and a
+      // passkey prompt left open can outlast the window. An
+      // authorization that closed the decision window is not an
+      // in-time decision: discard the response before it leaves this
+      // page or any key transition is committed.
+      if (!decisionWindow(envelope.header, nowSeconds()).decidable) {
+        $("approve").disabled = true;
+        $("deny").disabled = true;
+        $("status").textContent =
+          "The request's decision window closed while the passkey prompt was open; " +
+            "nothing was answered. Re-run the command to emit a fresh request.";
+        return;
+      }
       if (pendingTransition) {
         await mutateApprover(record.rkid, (current) => {
           let next = current;
@@ -561,17 +630,22 @@ async function main() {
       // fallback (the path that reliably reaches Universal Clipboard)
       // is one gesture shorter (passlane#76).
       $("response")?.select?.();
+      // An answer exists: the countdown has nothing left to track.
+      clearInterval(ticker);
       // Label the response with the request it answers, and let it age
-      // with that request: past its expiry the blob is dead (the CLI
-      // refuses it), so it must stop looking current (passlane#72).
+      // with that request: an in-time decision is redeemed until the
+      // request's total-lifetime bound — creation + 2 × its TTL (SPEC
+      // §4, passlane#73) — so that, not the request's expiry, is when
+      // the blob is dead and must stop looking current (passlane#72).
       // The label element is created when cached HTML predates it, so
       // labeling and expiry never depend on the markup landing first.
       const labelEl = ensureResponseLabel();
       const label = responseLabel(body, envelope.header.rid);
       if (labelEl) labelEl.textContent = label;
       // Date.now()/1000, not the flooring nowSeconds(): a fractional
-      // "now" keeps the deadline honest to the millisecond.
-      scheduleResponseExpiry(envelope.header.exp, Date.now() / 1000, () => {
+      // "now" keeps the deadline honest to the millisecond. Approver
+      // clock skew makes this cosmetic by at most the skew window.
+      scheduleResponseExpiry(redemptionDeadline(envelope.header), Date.now() / 1000, () => {
         const wrap = $("response-wrap");
         if (wrap) wrap.classList.add("expired");
         if (labelEl) labelEl.textContent = expiredResponseLabel(label);

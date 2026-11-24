@@ -945,10 +945,10 @@ test("approve page: response labels survive short or absent ids", () => {
   eq(responseLabel({ vault_name: "w", operation: { kind: "weird" } }, "51d9af44…"), "answers: weird · 51d9af44…");
 });
 
-test("approve page: a lapsed response says it is no longer accepted", () => {
+test("approve page: a lapsed response says it is no longer redeemable", () => {
   const label = expiredResponseLabel("answers: SAVE vault 'default' · 51d9af44…");
   if (!label.startsWith("EXPIRED — answers: SAVE vault 'default' · 51d9af44…")) throw new Error(label);
-  if (!label.includes("no longer accepted")) throw new Error(label);
+  if (!label.includes("no longer redeemable")) throw new Error(label);
   if (!label.includes("fresh request")) throw new Error(label);
 });
 
@@ -1282,6 +1282,64 @@ test("enrollment ceremony: the binding challenge covers both CLI keys, in order"
 
 function assertNotEqual(a, b, what) {
   if (a === b) throw new Error(`${what}: values must differ (${a})`);
+}
+
+// -- decision window (late redemption, SPEC §4 / passlane#73) ---------------
+
+{
+  const { decisionWindow, MAX_CLOCK_SKEW_SECS } = await import("./approve.js");
+  const header = { ts: 1000, exp: 1300 };
+
+  test("decision window: in time shows the expiry countdown", () => {
+    const w = decisionWindow(header, 1100);
+    eq(w.decidable, true, "decidable");
+    eq(w.secondsLeft, 200 + MAX_CLOCK_SKEW_SECS, "skew-extended seconds left");
+    if (!w.label.includes("expires in 200s")) throw new Error(`label: ${w.label}`);
+  });
+
+  test("decision window: past expiry but inside skew still decides", () => {
+    // The relay round trip took past the request's expiry: the owner's
+    // decision is stamped now and the CLI honors it within skew.
+    const w = decisionWindow(header, 1300 + 40);
+    eq(w.decidable, true, "decidable inside skew");
+    eq(w.secondsLeft, MAX_CLOCK_SKEW_SECS - 40, "grace seconds left");
+    if (!w.label.includes("clock skew")) throw new Error(`label: ${w.label}`);
+  });
+
+  test("decision window: boundaries match the CLI's inclusive interval", () => {
+    // The same skew-extended window the Rust Policy::validate_reply
+    // enforces, inclusively on both ends: a decision stamped exactly at
+    // either edge is accepted by the CLI, so the page must allow it too.
+    eq(decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS).decidable, true, "upper edge");
+    eq(decisionWindow(header, 1000 - MAX_CLOCK_SKEW_SECS).decidable, true, "lower edge");
+    // One second past either edge the CLI refuses (DecisionOutsideWindow)
+    // — pressing Approve there would only produce a refused paste.
+    eq(
+      decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1).decidable,
+      false,
+      "past the upper edge",
+    );
+    eq(
+      decisionWindow(header, 1000 - MAX_CLOCK_SKEW_SECS - 1).decidable,
+      false,
+      "before the lower edge",
+    );
+    const closed = decisionWindow(header, 1300 + MAX_CLOCK_SKEW_SECS + 1);
+    eq(closed.secondsLeft, 0, "no seconds left");
+    if (!closed.label.includes("EXPIRED")) throw new Error(`label: ${closed.label}`);
+  });
+}
+
+{
+  const { redemptionDeadline } = await import("./approve.js");
+
+  test("redemption deadline: creation plus two of the request's TTLs", () => {
+    // The mirror of the Rust Policy::redemption_deadline (SPEC §4,
+    // passlane#73): an in-time decision stays redeemable until then, and
+    // the produced response ages out visually at exactly that moment.
+    eq(redemptionDeadline({ ts: 1000, exp: 1300 }), 1600, "300 s request → +600 s");
+    eq(redemptionDeadline({ ts: 1000, exp: 1900 }), 2800, "900 s ceremony → +1800 s");
+  });
 }
 
 /** CBOR text string header + bytes (lengths under 24 only). */

@@ -86,6 +86,7 @@ fn page_fixture_opens_in_rust() {
 /// page, and the pending request its link transport emitted.
 struct Scratch {
     dir: std::path::PathBuf,
+    /// Keeps the scratch directory alive and cleans it up on drop.
     #[allow(dead_code)]
     keeper: tempfile::TempDir,
     cli: IdentityKeys,
@@ -143,7 +144,22 @@ impl Scratch {
     /// Emit a request exactly the way the ask flow does (seal + pending
     /// record), returning its rid.
     fn emit_request(&self, entry: &str, field: &str) -> String {
-        let now = passlane_time();
+        self.emit_request_as_of(entry, field, passlane_time(), None)
+    }
+
+    /// [`Self::emit_request`] with the record's timestamps chosen by the
+    /// caller — a request whose relay round trip already happened: emitted
+    /// at `created` (possibly in the past) with the given `exp` override
+    /// (default: the default policy's TTL). The request envelope itself is
+    /// sealed *now* (its bytes are not what freshness is judged on here;
+    /// the pending record's window is), so the mocked page can answer it.
+    fn emit_request_as_of(
+        &self,
+        entry: &str,
+        field: &str,
+        created: u64,
+        exp: Option<u64>,
+    ) -> String {
         let envelope = passlane_approval::envelope::seal(
             &mut OsRng,
             &self.cli,
@@ -159,24 +175,30 @@ impl Scratch {
                 scope: Scope::Once,
                 challenge: None,
             },
-            now,
+            created,
             &Policy::default(),
         )
         .unwrap();
         let rid = envelope.header().rid.clone();
-        let pending = serde_json::json!([{
+        let mut records: Vec<serde_json::Value> =
+            std::fs::read(self.dir.join("approval_pending.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+        records.push(serde_json::json!({
             "rid": rid,
             "vault": "default",
             "entry_id": format!("uuid-{entry}"),
             "entry": entry,
             "field": field,
-            "created": now,
-            "exp": envelope.header().exp,
+            "created": created,
+            "exp": exp.unwrap_or(envelope.header().exp),
+            "link": format!("https://{RP_ID}/approve.html#{rid}"),
             "state": { "kind": "pending" },
-        }]);
+        }));
         std::fs::write(
             self.dir.join("approval_pending.json"),
-            serde_json::to_vec(&pending).unwrap(),
+            serde_json::to_vec(&records).unwrap(),
         )
         .unwrap();
         rid
@@ -184,6 +206,13 @@ impl Scratch {
 
     /// The mocked page's signed Allow response for `rid`.
     fn page_response(&self, rid: &str, decision: Decision) -> String {
+        self.page_response_at(rid, decision, passlane_time())
+    }
+
+    /// [`Self::page_response`] with the decision time chosen by the
+    /// caller: the response header's authenticated `ts` is what the CLI's
+    /// late-redemption rules (SPEC §4, passlane#73) are judged against.
+    fn page_response_at(&self, rid: &str, decision: Decision, decision_at: u64) -> String {
         let cli_pin = PeerPin::new(
             "cli",
             PublicKey(self.cli.encryption_public()),
@@ -200,7 +229,7 @@ impl Scratch {
                 response: None,
             },
             rid,
-            passlane_time(),
+            decision_at,
             &Policy::default(),
         )
         .unwrap();
@@ -403,6 +432,156 @@ fn binary_pending_survives_across_invocations() {
     // refuse, without needing in-process memory.
     let second = scratch.run(&["approve", "--response", &response_file(&scratch.dir, &blob)]);
     assert!(!second.status.success());
+}
+
+/// The passlane#61 finding-1 / passlane#73 scenario, through the compiled
+/// binary: the owner approved at 09:30:52, the request expired 09:33:26,
+/// the relay delivered the paste at ~09:34 — the approval is honored
+/// (decided in time, redeemed inside the total-lifetime bound), exactly
+/// once, and past the bound it is refused.
+#[test]
+fn binary_approve_honors_a_late_redeemed_in_time_approval() {
+    let now = passlane_time();
+    let ttl = Policy::default().ttl_secs;
+    let skew = Policy::default().max_clock_skew_secs;
+    let scratch = Scratch::new();
+
+    // Emitted 400 s ago, expired 100 s ago (default TTL): the redemption
+    // deadline is 2×TTL after creation — 200 s in the future.
+    let rid = scratch.emit_request_as_of("GitHub", "password", now - 400, Some(now - 100));
+    // The decision was made 200 s ago — inside the request's window —
+    // on a phone clock 40 s behind the Mac (stamped before approval
+    // latency would suggest, still within skew).
+    let blob = scratch.page_response_at(&rid, Decision::Allow, now - 200);
+
+    let approve = scratch.run(&["approve", "--response", &response_file(&scratch.dir, &blob)]);
+    assert!(
+        approve.status.success(),
+        "a decision made in time, redeemed late, must be honored: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+    let out = String::from_utf8_lossy(&approve.stdout);
+    assert!(out.contains("Approved"), "{out}");
+    assert!(out.contains("GitHub"), "{out}");
+
+    // The grant it released is live despite the late arrival (the re-run
+    // that consumes it must find it).
+    let pending = scratch.run(&["approvals", "pending"]);
+    let out = String::from_utf8_lossy(&pending.stdout);
+    assert!(out.contains("granted (single use, unconsumed)"), "{out}");
+
+    // Exactly once: the same blob pasted again is refused.
+    let replay = scratch.run(&["approve", "--response", &response_file(&scratch.dir, &blob)]);
+    assert!(!replay.status.success(), "a replay must fail");
+    assert!(
+        String::from_utf8_lossy(&replay.stderr).contains("already approved"),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+
+    // A decision the skew window cannot explain — stamped past expiry by
+    // more than the tolerated skew — is refused with the window named.
+    let late_rid = scratch.emit_request_as_of("prod-db", "password", now - 400, Some(now - 100));
+    let late_blob = scratch.page_response_at(&late_rid, Decision::Allow, now - 100 + skew + 1);
+    let refused = scratch.run(&[
+        "approve",
+        "--response",
+        &response_file(&scratch.dir, &late_blob),
+    ]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("outside the request window"), "{stderr}");
+
+    // Past the total-lifetime bound, nothing redeems: emitted 2×TTL+100 s
+    // ago, expired 2×TTL-200 s ago — the deadline closed 100 s ago.
+    let dead_rid = scratch.emit_request_as_of(
+        "GitHub",
+        "password",
+        now - 2 * ttl - 100,
+        Some(now - 2 * ttl + 200),
+    );
+    let dead_blob = scratch.page_response_at(&dead_rid, Decision::Allow, now - 2 * ttl + 100);
+    let dead = scratch.run(&[
+        "approve",
+        "--response",
+        &response_file(&scratch.dir, &dead_blob),
+    ]);
+    assert!(!dead.status.success(), "past the bound nothing redeems");
+    let stderr = String::from_utf8_lossy(&dead.stderr);
+    // Either the record was already pruned as dead, or the bound check
+    // refused it — both are refusals naming expiry and the way forward.
+    assert!(
+        stderr.contains("no pending approval request")
+            || stderr.contains("window for redeeming its answers closed"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("re-running the command") || stderr.contains("expired"),
+        "{stderr}"
+    );
+}
+
+/// `approvals link` relays a link to start a *fresh* decision, so it must
+/// refuse once the decision window has closed on every plausible approver
+/// clock (expiry + 2 × skew for a lagging phone) — even though the record
+/// survives for late redemption (passlane#73).
+#[test]
+fn binary_approvals_link_refuses_past_the_decision_window() {
+    let now = passlane_time();
+    let skew = Policy::default().max_clock_skew_secs;
+    let scratch = Scratch::new();
+
+    // A fresh request: the link is handed out.
+    let rid = scratch.emit_request("GitHub", "password");
+    let out = scratch.run(&["approvals", "link", &rid[..8]]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("/approve.html#"),
+        "the relayable link"
+    );
+
+    // Window closed on every clock (expired 250 s ago, past the
+    // 2 × skew lagging-phone grace), but still redeemable (deadline
+    // now + 50): the record lives, the link does not.
+    let old_rid = scratch.emit_request_as_of("staging", "password", now - 550, Some(now - 250));
+    let refused = scratch.run(&["approvals", "link", &old_rid[..8]]);
+    assert!(
+        !refused.status.success(),
+        "a closed window refuses the link"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("decision window closed")
+            && stderr.contains("still redeemable")
+            && stderr.contains("re-running the command"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{}", now - 250 + 2 * skew)),
+        "{stderr}"
+    );
+
+    // A request expired 100 s ago is still linkable: the decision is
+    // stamped on the approver's clock, which may lag this machine's by a
+    // full skew window, so a link remains useful until exp + 2 × skew.
+    let lagging = scratch.emit_request_as_of("ci", "password", now - 400, Some(now - 100));
+    let out = scratch.run(&["approvals", "link", &lagging[..8]]);
+    assert!(
+        out.status.success(),
+        "a lagging approver clock keeps the link useful: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The pending records themselves are still there — the refusal is
+    // about the link, not the records' existence.
+    let pending = scratch.run(&["approvals", "pending"]);
+    let stdout = String::from_utf8_lossy(&pending.stdout);
+    assert!(stdout.contains("staging"), "the redeemable record survives");
+    assert!(stdout.contains("ci"), "the redeemable record survives");
 }
 
 // Keep the InMemoryNonceStore import honest: it is the crate's own replay
