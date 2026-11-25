@@ -87,7 +87,13 @@ across a toolchain or SDK update.
 The output location is fixed at `target/ios/` (the consumer contract);
 the build inputs follow `CARGO_TARGET_DIR` / `.cargo/config.toml`
 wherever cargo actually writes them — the script asks cargo for its
-target directory rather than assuming `target/`.
+target directory rather than assuming `target/`. An ambient
+`build.target` (a `.cargo/config.toml` up the tree — a consumer repo
+could carry one for its other Rust work) is likewise overridden: every
+cargo invocation in the script pins `--target` explicitly, the host
+build and the bindgen runs to the host triple. And if anyone points
+cargo's target directory inside `target/ios/` — which this pipeline
+clears on every run — the script refuses rather than eat the cache.
 
 ## How it is verified
 

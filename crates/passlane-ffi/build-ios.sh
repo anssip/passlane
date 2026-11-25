@@ -57,12 +57,36 @@ fi
 target_dir=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
     | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 [ -n "$target_dir" ] || target_dir=target
+case "$target_dir" in /*) ;; *) target_dir=$PWD/$target_dir ;; esac
+
+# The pipeline owns OUT_DIR and clears it on every run. Refuse rather than
+# eat a cargo target directory somebody pointed inside it
+# (CARGO_TARGET_DIR=target/ios/cargo would lose its cache each run).
+case "$target_dir/" in
+    "$PWD/$OUT_DIR"/*)
+        echo "error: cargo's target directory ($target_dir) is inside" >&2
+        echo "       $PWD/$OUT_DIR, which this pipeline clears on every run" >&2
+        exit 1
+        ;;
+esac
+
+# The host build and the bindgen run must execute on the host: an ambient
+# build.target (a .cargo/config.toml up the tree — a consumer repo could
+# carry one for its other Rust work) would redirect them to another triple
+# and the cdylib would never land where this script looks. Pinning the
+# triple makes discovery deterministic. The slice builds below pass
+# --target explicitly already.
+host_triple=$(rustc -vV | sed -n 's/^host: //p')
+[ -n "$host_triple" ] || {
+    echo "error: could not read the host triple from rustc -vV" >&2
+    exit 1
+}
 
 # 1. Host build: the Swift bindgen reads the component metadata straight
 #    out of the compiled cdylib (--library mode), so the bindings cannot
 #    drift from the scaffolding.
-cargo build --release --locked -p passlane-ffi
-host_lib=$target_dir/release/libpasslane_ffi.dylib
+cargo build --release --locked -p passlane-ffi --target "$host_triple"
+host_lib=$target_dir/$host_triple/release/libpasslane_ffi.dylib
 
 # 2. The binding artifacts, generated into a staging dir and placed where
 #    the consumer expects them. rm only touches this pipeline's own output.
@@ -73,7 +97,7 @@ mkdir -p "$stage" "$headers"
 
 # Swift sources. --module-name is a modulemap concern only; the Swift file
 # and its import line are namespace-derived, so it is not passed here.
-cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" --swift-sources
+cargo run -q --locked -p uniffi-bindgen-swift --target "$host_triple" -- "$host_lib" "$stage" --swift-sources
 mv "$stage/passlane_ffi.swift" "$OUT_DIR/$MODULE_NAME.swift"
 
 # The C header, and the modulemap declaring it as the Clang module the
@@ -82,9 +106,9 @@ mv "$stage/passlane_ffi.swift" "$OUT_DIR/$MODULE_NAME.swift"
 # step 4 packs into every framework slice. The modulemap must be called
 # module.modulemap: that is the only name clang's implicit module lookup
 # discovers on an include path.
-cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" --headers
+cargo run -q --locked -p uniffi-bindgen-swift --target "$host_triple" -- "$host_lib" "$stage" --headers
 cp "$stage/$FFI_MODULE_NAME.h" "$headers/"
-cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" \
+cargo run -q --locked -p uniffi-bindgen-swift --target "$host_triple" -- "$host_lib" "$stage" \
     --modulemap \
     --module-name "$FFI_MODULE_NAME" \
     --modulemap-filename "$FFI_MODULE_NAME.modulemap"
