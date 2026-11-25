@@ -13,7 +13,7 @@ categories = ["cryptography"]
 [dependencies]
 anyhow = "1.0.56"
 chrono = { version = "0.4.19", features = ["serde"] }
-keepass-ng = { version = "0.11.11", features = ["save_kdbx4", "totp", "challenge_response"] }
+keepass-ng = { version = "0.12", features = ["save_kdbx4", "totp", "challenge_response"] }
 log = "0.4.16"
 rand = "0.8.5"
 serde = { version = "1.0.198", features = ["derive"] }
