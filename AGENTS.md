@@ -8,7 +8,7 @@ Passlane is a password manager and authenticator CLI written in Rust that uses K
 
 ## Related Repositories and Roadmap
 
-The iOS app and the phone-as-key / approval-protocol work are planned in the [passlane-ios repo](https://github.com/anssip/passlane-ios) — see its [PLAN.md](https://github.com/anssip/passlane-ios/blob/main/PLAN.md) (the roadmap of record for Phase 0, the v1 wedge, and later phases). Implementation is tracked in this repo's issues #42–54: the cargo workspace split (`passlane-core`, `passlane-ffi`), the keepass-ng challenge-response feature split (interim `[patch.crates-io]` pin on the `challenge-response-usb` branch of the keepass-ng fork), virtual and phone-held hardware keys, the approval protocol crate, link transport, and the session agent. Upcoming structural changes (crate layout, feature gates) follow that plan — read it before large refactors.
+The iOS app and the phone-as-key / approval-protocol work are planned in the [passlane-ios repo](https://github.com/anssip/passlane-ios) — see its [PLAN.md](https://github.com/anssip/passlane-ios/blob/main/PLAN.md) (the roadmap of record for Phase 0, the v1 wedge, and later phases). Implementation is tracked in this repo's issues #42–54: the cargo workspace split (`passlane-core`, `passlane-ffi`), the keepass-ng challenge-response feature split and `ChallengeResponseKey::External` variant (both released upstream in keepass-ng 0.12, via ssrlive/keepass-ng#2 and #3), virtual and phone-held hardware keys, the approval protocol crate, link transport, and the session agent. Upcoming structural changes (crate layout, feature gates) follow that plan — read it before large refactors.
 
 ## Development Commands
 

@@ -2,14 +2,6 @@
 resolver = "2"
 members = ["crates/*"]
 
-# Interim pin until the challenge_response/challenge_response_usb feature
-# split (passlane#47, upstream PR ssrlive/keepass-ng#2) and the
-# ChallengeResponseKey::External variant (passlane#53) are released on
-# crates.io. The branch is that PR's branch plus the External commit, so
-# one pin carries both.
-[patch.crates-io]
-keepass-ng = { git = "https://github.com/anssip/keepass-ng.git", branch = "challenge-response-external" }
-
 [package]
 name = "passlane"
 version = "4.0.0"
@@ -47,7 +39,7 @@ anyhow = "1.0.56"
 chrono = { version = "0.4.19", features = ["serde"] }
 env_logger = "0.10.0"
 hex = "0.4.3"
-keepass-ng = { version = "0.11.11", features = ["save_kdbx4", "totp", "challenge_response", "challenge_response_usb"] }
+keepass-ng = { version = "0.12", features = ["save_kdbx4", "totp", "challenge_response", "challenge_response_usb"] }
 # Shared vault/generator/hwkey logic (issue #42). `usb` turns on real
 # hardware-key support; the path+version form lets `cargo publish` rewrite
 # it to the registry dependency once passlane-core is published.

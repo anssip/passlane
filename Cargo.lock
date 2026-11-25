@@ -352,12 +352,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block-modes"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e2211b0817f061502a8dd9f11a37e879e79763e3c698d2418cf824d8cb2f21e"
-
-[[package]]
 name = "block-padding"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1805,13 +1799,13 @@ dependencies = [
 
 [[package]]
 name = "keepass-ng"
-version = "0.11.12"
-source = "git+https://github.com/anssip/keepass-ng.git?branch=challenge-response-external#7594660016397701eadcf342da245bbf2b032f3d"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a64052feae6e198d0705b38795bab9e2310d00b0112be569301c388e559045"
 dependencies = [
  "aes 0.9.4",
  "base32",
  "base64 0.23.1",
- "block-modes",
  "byteorder",
  "cbc",
  "chacha20",
