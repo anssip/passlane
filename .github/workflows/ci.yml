@@ -60,9 +60,10 @@ jobs:
         run: |
           test -f target/ios/PasslaneCore.xcframework/Info.plist
           test -f target/ios/PasslaneCore.swift
-          # one static-lib slice and one Clang module per target
-          find target/ios/PasslaneCore.xcframework -name '*.a' | wc -l | grep -qx 2
-          find target/ios/PasslaneCore.xcframework -name module.modulemap | wc -l | grep -qx 2
+          # one static-lib slice and one Clang module per target. BSD wc
+          # pads its output, so strip whitespace before comparing.
+          test "$(find target/ios/PasslaneCore.xcframework -name '*.a' | wc -l | tr -d '[:space:]')" = "2"
+          test "$(find target/ios/PasslaneCore.xcframework -name module.modulemap | wc -l | tr -d '[:space:]')" = "2"
           find target/ios/PasslaneCore.xcframework -name '*.a' -exec lipo -info {} \;
       - uses: actions/upload-artifact@v4
         with:
