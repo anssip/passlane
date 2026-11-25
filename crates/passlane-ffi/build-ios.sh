@@ -98,12 +98,14 @@ done
 # 4. Assemble the xcframework: one -library per slice, all carrying the
 #    same headers dir. xcodebuild picks the slice matching the consumer's
 #    build destination at link time.
-# Word splitting of $framework_args is the point (POSIX sh has no arrays).
-framework_args=""
+# The arguments accumulate in the positional parameters: $target_dir is
+# absolute (cargo metadata) and may contain spaces, and "$@" is the one
+# POSIX-sh expansion that preserves word boundaries.
+set --
 for t in $TARGETS; do
-    framework_args="$framework_args -library $target_dir/$t/release/libpasslane_ffi.a -headers $headers"
+    set -- "$@" -library "$target_dir/$t/release/libpasslane_ffi.a" -headers "$headers"
 done
-xcodebuild -create-xcframework $framework_args \
+xcodebuild -create-xcframework "$@" \
     -output "$OUT_DIR/$MODULE_NAME.xcframework" >/dev/null
 
 rm -rf "$stage" "$headers"
