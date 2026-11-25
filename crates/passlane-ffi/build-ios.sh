@@ -35,6 +35,11 @@ MODULE_NAME=PasslaneCore
 # The Clang module name the generated Swift imports: crate name + FFI,
 # derived by uniffi-bindgen-swift. Not chosen, just matched.
 FFI_MODULE_NAME=passlane_ffiFFI
+# The output location is a consumer contract (docs/features/ios-framework.md
+# references target/ios/ from the app repo), so it stays fixed. The build
+# INPUTS below follow cargo wherever it actually writes: CARGO_TARGET_DIR or
+# build.target-dir in .cargo/config.toml — the repo .gitignores a local
+# config.toml, so asking cargo is the only reliable answer.
 OUT_DIR=target/ios
 TARGETS="aarch64-apple-ios aarch64-apple-ios-sim"
 
@@ -46,11 +51,18 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
     exit 1
 fi
 
+# Where cargo writes build output for this workspace (absolute, or relative
+# to the workspace root). Fallback covers cargo metadata failing for any
+# reason: the default is the plain target/ next to the workspace manifest.
+target_dir=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+[ -n "$target_dir" ] || target_dir=target
+
 # 1. Host build: the Swift bindgen reads the component metadata straight
 #    out of the compiled cdylib (--library mode), so the bindings cannot
 #    drift from the scaffolding.
 cargo build --release --locked -p passlane-ffi
-host_lib=target/release/libpasslane_ffi.dylib
+host_lib=$target_dir/release/libpasslane_ffi.dylib
 
 # 2. The binding artifacts, generated into a staging dir and placed where
 #    the consumer expects them. rm only touches this pipeline's own output.
@@ -89,7 +101,7 @@ done
 # Word splitting of $framework_args is the point (POSIX sh has no arrays).
 framework_args=""
 for t in $TARGETS; do
-    framework_args="$framework_args -library target/$t/release/libpasslane_ffi.a -headers $headers"
+    framework_args="$framework_args -library $target_dir/$t/release/libpasslane_ffi.a -headers $headers"
 done
 xcodebuild -create-xcframework $framework_args \
     -output "$OUT_DIR/$MODULE_NAME.xcframework" >/dev/null

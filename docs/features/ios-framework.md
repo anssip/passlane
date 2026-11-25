@@ -84,6 +84,11 @@ versions — not the binaries: CI's `stable` toolchain and `macos-latest`
 runner image float, so the same revision can produce different bytes
 across a toolchain or SDK update.
 
+The output location is fixed at `target/ios/` (the consumer contract);
+the build inputs follow `CARGO_TARGET_DIR` / `.cargo/config.toml`
+wherever cargo actually writes them — the script asks cargo for its
+target directory rather than assuming `target/`.
+
 ## How it is verified
 
 - CI (`ios-framework` job) runs the script from a clean checkout on every
