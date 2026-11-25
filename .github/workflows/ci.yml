@@ -42,6 +42,34 @@ jobs:
       - run: cargo build --locked -p passlane-ffi --target aarch64-apple-ios
       - run: cargo build --locked -p passlane-ffi --target aarch64-apple-ios-sim
 
+  ios-framework:
+    # The XCFramework the iOS app links (passlane#45): one command must
+    # produce it from a clean checkout. The job is the pipeline's
+    # regression test — it fails if the script, the binding generation or
+    # the framework assembly breaks — and its artifact is the seed of the
+    # GitHub Release + SPM binaryTarget distribution documented in
+    # docs/features/ios-framework.md.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - run: make ios-framework
+      - name: Verify the artifact
+        run: |
+          test -f target/ios/PasslaneCore.xcframework/Info.plist
+          test -f target/ios/PasslaneCore.swift
+          # one static-lib slice and one Clang module per target
+          find target/ios/PasslaneCore.xcframework -name '*.a' | wc -l | grep -qx 2
+          find target/ios/PasslaneCore.xcframework -name module.modulemap | wc -l | grep -qx 2
+          find target/ios/PasslaneCore.xcframework -name '*.a' -exec lipo -info {} \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PasslaneCore.xcframework
+          path: target/ios/
+          if-no-files-found: error
+
   audit:
     runs-on: ubuntu-latest
     permissions:
