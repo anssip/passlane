@@ -47,6 +47,13 @@ cargo test -p passlane-core --no-default-features
 ```
 CI runs all three; code in `passlane-core` that needs a YubiKey must sit behind `#[cfg(feature = "usb")]`, imports included.
 
+### iOS framework build (passlane-ffi)
+The artifact the iOS app links — `PasslaneCore.xcframework` + the generated `PasslaneCore.swift` — is one command (CI's `ios-framework` job runs it on every push and uploads the artifact):
+```bash
+make ios-framework
+```
+Consumer wiring and prerequisites: `docs/features/ios-framework.md`.
+
 ## Development Workflow
 
 - All new features from GitHub issues are implemented on a new branch and merged via a pull request on GitHub — never committed directly to master.
