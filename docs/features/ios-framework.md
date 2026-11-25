@@ -78,8 +78,11 @@ Release with that zip and point an SPM `binaryTarget` at the release URL
   UniFFI version line as the `passlane-ffi` scaffolding — the generated
   bindings and the Rust side cannot mismatch.
 
-Every cargo invocation in the script passes `--locked`, so a clean
-checkout reproduces bit-for-bit what CI built.
+Every cargo invocation in the script passes `--locked`, so the build
+resolves exactly the checked-in dependency set. That pins the crate
+versions — not the binaries: CI's `stable` toolchain and `macos-latest`
+runner image float, so the same revision can produce different bytes
+across a toolchain or SDK update.
 
 ## How it is verified
 

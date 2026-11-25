@@ -61,7 +61,7 @@ mkdir -p "$stage" "$headers"
 
 # Swift sources. --module-name is a modulemap concern only; the Swift file
 # and its import line are namespace-derived, so it is not passed here.
-cargo run -q -p uniffi-bindgen-swift -- "$host_lib" "$stage" --swift-sources
+cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" --swift-sources
 mv "$stage/passlane_ffi.swift" "$OUT_DIR/$MODULE_NAME.swift"
 
 # The C header, and the modulemap declaring it as the Clang module the
@@ -70,9 +70,9 @@ mv "$stage/passlane_ffi.swift" "$OUT_DIR/$MODULE_NAME.swift"
 # step 4 packs into every framework slice. The modulemap must be called
 # module.modulemap: that is the only name clang's implicit module lookup
 # discovers on an include path.
-cargo run -q -p uniffi-bindgen-swift -- "$host_lib" "$stage" --headers
+cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" --headers
 cp "$stage/$FFI_MODULE_NAME.h" "$headers/"
-cargo run -q -p uniffi-bindgen-swift -- "$host_lib" "$stage" \
+cargo run -q --locked -p uniffi-bindgen-swift -- "$host_lib" "$stage" \
     --modulemap \
     --module-name "$FFI_MODULE_NAME" \
     --modulemap-filename "$FFI_MODULE_NAME.modulemap"
