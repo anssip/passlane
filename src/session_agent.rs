@@ -13,8 +13,15 @@
 //! are reported, never treated as absence: quietly moving on to the
 //! keychain or a password prompt is exactly how an agent context ends up
 //! blocked on a dialog nobody can answer (passlane#65).
+//!
+//! Commands that need an agent can also start one themselves
+//! ([`connect_or_start`], passlane#77) — but only on a discovered
+//! default socket path, never behind an explicitly configured
+//! `PASSLANE_AGENT_SOCK`, and bringing up an empty daemon: auto-start
+//! never creates a session and never approves anything.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use passlane_agent::SOCKET_ENV;
 use passlane_agent::client::{AgentClient, EventStream, RevealAnswer, UnlockFactors};
@@ -31,6 +38,35 @@ use zeroize::Zeroizing;
 /// held. Mirrors the approval protocol's default session cap; a unit
 /// test pins the two together.
 pub const REVEAL_SESSION_SECS: u32 = 900;
+
+/// How long the deposit-offer (passlane#77) holds a phone-held key's
+/// pasted answer in the agent. The approval protocol's default session
+/// cap — the same duration an "Approve for this session" reveal gets —
+/// so every kind of held approval ages out together; a unit test pins
+/// the two together.
+pub(crate) const DEPOSIT_SESSION_SECS: u32 = 900;
+
+/// Set to `0` (or `false`/`no`/`off`) to stop the CLI from auto-starting
+/// the session agent (passlane#77) — for setups where launchd/systemd
+/// own the daemon and a second, privately-started one is unwanted. A
+/// live agent short-circuits auto-start regardless.
+pub const AUTOSTART_ENV: &str = "PASSLANE_AGENT_AUTOSTART";
+
+/// Names the `passlane-agent` binary [`connect_or_start`] spawns,
+/// overriding discovery (sibling of the CLI, then `PATH`). Tests point
+/// it at a stub; an explicit value that names no executable simply means
+/// "no binary found".
+pub(crate) const AGENT_BIN_ENV: &str = "PASSLANE_AGENT_BIN";
+
+/// How long [`connect_or_start`] waits, after spawning an agent, for its
+/// socket to *accept* a connection: the socket file's existence is not
+/// readiness, and a spawned process needs a moment to bind. Bounded so a
+/// broken binary cannot stall the command that wanted it.
+const AUTOSTART_ACCEPT_BUDGET: Duration = Duration::from_secs(2);
+
+/// How often [`connect_or_start`] retries the connection while waiting
+/// for the spawned agent to accept.
+const AUTOSTART_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Connect to the agent, or report precisely why not. `Err(NotRunning)`
 /// means genuinely absent (no path configured, no socket, nothing
@@ -87,6 +123,371 @@ pub(crate) fn not_running_error() -> Error {
         "The passlane session agent is not running. Start it with 'passlane-agent' \
          (see docs/features/session-agent.md for autostart setup), then try again.",
     )
+}
+
+/// Connect to the agent, starting one when none is running and that is
+/// allowed (passlane#77). Used wherever the CLI is otherwise about to
+/// fail with "the session agent is not running": `unlock --session`, the
+/// no-terminal deposit flow of `approve --response`, and an accepted
+/// deposit-offer.
+///
+/// The boundaries that make auto-start safe:
+///
+/// - **Only discovered default socket paths.** A socket named by
+///   `PASSLANE_AGENT_SOCK` that nothing serves stays the error it is
+///   today — never a silent fallback (passlane#65).
+/// - **Opt-out**: `PASSLANE_AGENT_AUTOSTART=0` restores today's behavior
+///   for setups where the session manager owns the daemon.
+/// - **An empty daemon only**: starting the agent creates no session and
+///   approves nothing — it holds secrets only after a human hands them
+///   over. Non-terminal contexts auto-start too, for the same reason:
+///   spawning blocks on nothing and holds nothing.
+/// - **`needed_session_secs` shapes the cap** the spawned agent gets
+///   (`--max-session-secs`, floored at the default cap, bounded by the
+///   hard cap): an auto-started default-cap agent that then refuses the
+///   `unlock --session 3600` that spawned it would be a terrible
+///   first-run experience.
+/// - **A missing binary degrades** to today's message, unchanged — no
+///   surprise downloads.
+///
+/// A live agent short-circuits everything: it is connected and returned.
+pub fn connect_or_start(needed_session_secs: u64) -> Result<AgentClient, Error> {
+    connect_or_start_with(needed_session_secs, &spawn_agent_detached)
+}
+
+/// What [`connect_or_start_with`] decided to launch.
+#[derive(Clone)]
+struct AutostartPlan {
+    /// The `passlane-agent` executable.
+    binary: PathBuf,
+    /// The discovered default socket it is told to serve.
+    socket: PathBuf,
+    /// The cap to start it with: accommodating the triggering request.
+    max_session_secs: u64,
+}
+
+impl std::fmt::Display for AutostartPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} --socket {} --max-session-secs {}",
+            self.binary.display(),
+            self.socket.display(),
+            self.max_session_secs
+        )
+    }
+}
+
+/// [`connect_or_start`] with the spawn step injected, so the decision
+/// logic — boundaries, discovery, the accept-poll — is testable against
+/// an in-process server instead of a real binary.
+fn connect_or_start_with(
+    needed_session_secs: u64,
+    spawn: &dyn Fn(&AutostartPlan) -> Result<(), String>,
+) -> Result<AgentClient, Error> {
+    match connect_result() {
+        Ok(client) => return Ok(client),
+        // The one failure auto-start may fix: genuinely absent — no path
+        // configured, nothing listening where discovery looked. A socket
+        // named by PASSLANE_AGENT_SOCK that nothing serves is
+        // `NotListening`, and every other failure (untrusted socket,
+        // dialect mismatch) is its own error: all of them are reported
+        // exactly as `connect_or_error` reports them.
+        Err(AgentError::NotRunning(_)) => {}
+        Err(e) => return Err(to_error(e)),
+    }
+    if !auto_start_permitted() {
+        return Err(not_running_error());
+    }
+    let Some(socket) = passlane_agent::default_socket_path() else {
+        // No private per-user runtime directory: an agent we spawned
+        // could not find the socket either.
+        return Err(not_running_error());
+    };
+    let Some(binary) = find_agent_binary() else {
+        // Graceful degradation, no surprise downloads (passlane#77).
+        return Err(not_running_error());
+    };
+    let plan = AutostartPlan {
+        binary,
+        socket: socket.clone(),
+        max_session_secs: autostart_cap(needed_session_secs),
+    };
+    if let Err(why) = spawn(&plan) {
+        return Err(Error::new(&format!(
+            "could not start the session agent ({plan}): {why}"
+        )));
+    }
+    // Wait until the socket *accepts*: existence is not readiness, and
+    // two racing commands may each have spawned an agent — the loser's
+    // exits on the bind conflict while the winner serves both. A socket
+    // that momentarily looks wrong is retried within the budget: in the
+    // window between the daemon's bind() and its chmod to 0600 the
+    // socket file legitimately carries group/other bits, so a trust
+    // check that lands there must wait a beat, not fail. A dialect
+    // mismatch is not transient — a stale binary answered — and stops
+    // here with the restart guidance.
+    let deadline = std::time::Instant::now() + AUTOSTART_ACCEPT_BUDGET;
+    loop {
+        // The failure of this attempt — retried until the budget runs
+        // out, then reported with the log to consult. The connection
+        // and the version exchange are each bounded by what is left of
+        // the budget, recomputed after each step: a spawned binary that
+        // accepts but never answers must not stretch the wait past what
+        // was promised.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let failure = match AgentClient::connect_within(&socket, remaining) {
+            Ok(mut client) => {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                match client.set_request_timeout(left.max(Duration::from_millis(1))) {
+                    Ok(()) => match client.check_version() {
+                        Ok(_) => {
+                            // The probe's leftover millisecond budget
+                            // must not follow the client out of here: a
+                            // healthy agent can pass readiness near the
+                            // deadline and then time out on the very
+                            // request that wanted it.
+                            if let Err(e) =
+                                client.set_request_timeout(passlane_agent::client::REQUEST_TIMEOUT)
+                            {
+                                return Err(to_error(e));
+                            }
+                            return Ok(client);
+                        }
+                        Err(e @ AgentError::VersionMismatch { .. }) => return Err(to_error(e)),
+                        Err(e) => e,
+                    },
+                    Err(e) => e,
+                }
+            }
+            Err(e) => e,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::new(&format!(
+                "started the session agent but it did not serve {} within {}s (last error: \
+                 {failure}); see {} for what it said, or start 'passlane-agent' yourself and \
+                 try again.",
+                socket.display(),
+                AUTOSTART_ACCEPT_BUDGET.as_secs(),
+                agent_log_path().display(),
+            )));
+        }
+        std::thread::sleep(AUTOSTART_POLL_INTERVAL);
+    }
+}
+
+/// Whether auto-start may happen at all: a Unix-socket platform, no
+/// explicitly configured socket (a named-but-dead agent stays an error),
+/// and no opt-out.
+fn auto_start_permitted() -> bool {
+    cfg!(unix) && passlane_agent::configured_socket_path().is_none() && !autostart_opted_out()
+}
+
+/// Whether an agent could be auto-started right now — asked by the
+/// deposit-offer to decide whether offering is honest: an answer can be
+/// held when an agent is running or one would be started on acceptance.
+pub fn autostart_ready() -> bool {
+    auto_start_permitted()
+        && passlane_agent::default_socket_path().is_some()
+        && find_agent_binary().is_some()
+}
+
+/// Whether `PASSLANE_AGENT_AUTOSTART` opts out of auto-start.
+fn autostart_opted_out() -> bool {
+    std::env::var_os(AUTOSTART_ENV).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+/// The cap a spawned agent is started with: enough for the request that
+/// triggered it, never below the default cap (a lower one would refuse
+/// ordinary 900s sessions), never above the hard cap (nothing may be
+/// held that long, so an over-cap request still fails honestly).
+#[cfg(unix)]
+fn autostart_cap(needed_session_secs: u64) -> u64 {
+    use passlane_agent::server::{HARD_MAX_SESSION_SECS, default_max_session_secs};
+    needed_session_secs
+        .max(default_max_session_secs())
+        .min(HARD_MAX_SESSION_SECS)
+}
+
+/// Non-Unix platforms never reach the spawn (see [`auto_start_permitted`]).
+#[cfg(not(unix))]
+fn autostart_cap(needed_session_secs: u64) -> u64 {
+    needed_session_secs
+}
+
+/// Where the `passlane-agent` binary is: `$PASSLANE_AGENT_BIN` when it
+/// names an executable, else a sibling of this executable
+/// (`~/bin/passlane` finds the `target/release/passlane-agent` it was
+/// installed beside), else `PATH`. The override is authoritative — a
+/// value that names no executable means "no binary found"; it does not
+/// silently fall through to a discovered one — and a slashless override
+/// is resolved through `PATH`, exactly what spawning it would execute,
+/// so the file that was checked is the file that runs.
+fn find_agent_binary() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os(AGENT_BIN_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if named
+            .as_os_str()
+            .to_string_lossy()
+            .contains(std::path::MAIN_SEPARATOR)
+        {
+            return is_executable_file(&named).then_some(named);
+        }
+        return find_on_path(named.as_os_str());
+    }
+    let name = std::ffi::OsStr::new("passlane-agent");
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(sibling) = exe.parent().map(|dir| dir.join(name))
+        && is_executable_file(&sibling)
+    {
+        return Some(sibling);
+    }
+    find_on_path(name)
+}
+
+/// The first executable `name` on `PATH`, if any — the same file
+/// `Command::new(name)` would run.
+fn find_on_path(name: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(name))
+            .find(|candidate| is_executable_file(candidate))
+    })
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Where a spawned agent's stdout/stderr go: `~/.passlane/agent.log`,
+/// append, so a daemon nobody watches can still be asked what it said.
+fn agent_log_path() -> PathBuf {
+    crate::store::dir_path().join("agent.log")
+}
+
+/// Spawn the agent detached from this command (Unix only): its own
+/// process group, so it survives the terminal that triggered it closing,
+/// stdio appended to the log file, stdin closed — an idle daemon that
+/// cannot block on anything — and **no other file descriptor inherited**:
+/// a daemon that outlives its spawner must not hold the spawning
+/// command's pipes open. A short reaper thread waits on the child so
+/// the loser of a start race does not linger as a zombie for the life
+/// of a long-lived parent (the REPL); the winner outlives the parent
+/// regardless, reparented to the session manager when it stops.
+#[cfg(unix)]
+fn spawn_agent_detached(plan: &AutostartPlan) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let log_path = agent_log_path();
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("could not open {}: {e}", log_path.display()))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| format!("could not reuse {}: {e}", log_path.display()))?;
+    // The sweep's bound is decided here, in the parent: descriptors have
+    // no guarantee of sitting low, so everything this process could
+    // hold (up to its nofile soft limit, floored well above a limit a
+    // wrapper may have lowered) is covered in the child. A practical
+    // ceiling covers an unlimited or unreadable limit.
+    let max_fd = open_fd_limit();
+    // SAFETY: the callback runs between fork and exec in the child. It
+    // only sets the close-on-exec flag on file descriptors —
+    // async-signal-safe — starting above the three stdio fds std has
+    // already dup2'd into place (null in, log out, log err). Marking
+    // rather than closing: std's pipe for reporting exec failures back
+    // to the parent stays alive, so a broken binary (a missing
+    // interpreter, say) surfaces as a launch error instead of a child
+    // that aborts with the pipe gone — and the daemon still inherits
+    // nothing, the kernel closes the rest at exec. No locks, no
+    // allocation, no environment reads.
+    let close_inherited_fds = move || {
+        for fd in 3..=max_fd {
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        Ok(())
+    };
+    // SAFETY: the callback only sets the close-on-exec flag on file
+    // descriptors (async-signal-safe); see the comment on it above.
+    // Between fork and exec it must not touch locks, allocate, or read
+    // the environment — it does none of that.
+    let child = unsafe {
+        Command::new(&plan.binary)
+            .arg("--socket")
+            .arg(&plan.socket)
+            .arg("--max-session-secs")
+            .arg(plan.max_session_secs.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err))
+            .process_group(0)
+            .pre_exec(close_inherited_fds)
+            .spawn()
+    }
+    .map_err(|e| format!("could not spawn {}: {e}", plan.binary.display()))?;
+    // Reap without adopting: the daemon stays detached by its process
+    // group and is never killed by us — only waited, so an exited one
+    // frees its process-table entry even under a REPL that keeps
+    // running.
+    std::thread::Builder::new()
+        .name("passlane-agent-reaper".into())
+        .spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        })
+        .map_err(|e| format!("could not watch the spawned agent: {e}"))?;
+    Ok(())
+}
+
+/// The spawn on platforms without Unix domain sockets: unreachable (see
+/// [`auto_start_permitted`]), present so the code compiles everywhere.
+#[cfg(not(unix))]
+fn spawn_agent_detached(_plan: &AutostartPlan) -> Result<(), String> {
+    Err("the session agent needs a Unix domain socket platform".into())
+}
+
+/// The highest file descriptor number worth covering in a spawned child.
+/// The process's nofile soft limit bounds what *it* can create, but not
+/// what it can *hold*: a wrapper can park a descriptor above a limit it
+/// lowers before executing the CLI, so the sweep is floored well above
+/// any realistic inherited number. A practical ceiling covers an
+/// unlimited or unreadable limit; `closefrom`/`close_range` would cover
+/// the true set but are not uniformly exposed by libc on the platforms
+/// this builds for. The cost — one `fcntl` per number — is paid once,
+/// inside the child, between fork and exec.
+#[cfg(unix)]
+fn open_fd_limit() -> i32 {
+    // Widen first: `rlim_t` is 32-bit on 32-bit targets, and the
+    // clamping arithmetic must not depend on its width.
+    // SAFETY: `getrlimit` writes into a plain `rlimit` struct we own.
+    unsafe {
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            let soft = limit.rlim_cur as u64;
+            if soft != libc::RLIM_INFINITY as u64 {
+                return soft.max(1 << 20).min(i32::MAX as u64) as i32;
+            }
+        }
+    }
+    1 << 20
 }
 
 /// Map an agent error into a CLI error that says what to do about it.
@@ -370,6 +771,44 @@ pub fn create_challenge_response_session(
     }
 }
 
+/// Hold a phone-held key's freshly pasted answer in the agent so it
+/// outlives the command that asked for it (the deposit-offer,
+/// passlane#77). Starts an agent when none is running and auto-start is
+/// allowed — the offer is only made when that could succeed — and holds
+/// the answer for [`DEPOSIT_SESSION_SECS`]. An agent whose cap is below
+/// that refuses the session (the agent's cap rules are obeyed, never
+/// bent) and the caller reports it as a warning: the vault is already
+/// open, the deposit was an offer, not a requirement. Returns the
+/// session's expiry (unix seconds).
+pub(crate) fn deposit_answer_session(
+    vault: &str,
+    challenge_hex: &str,
+    response_hex: &str,
+) -> Result<u64, Error> {
+    let mut client = connect_or_start(DEPOSIT_SESSION_SECS as u64)?;
+    let grant = GrantSpec::ChallengeResponse {
+        challenge: SecretString::new(challenge_hex),
+        response: SecretString::new(response_hex),
+    };
+    match client.create_session(
+        vault,
+        grant,
+        Scope::Timed {
+            seconds: DEPOSIT_SESSION_SECS,
+        },
+    ) {
+        Ok(created) => Ok(created.expires_at.unwrap_or(0)),
+        Err(AgentError::Server {
+            code: ErrorCode::TooLong,
+            message,
+        }) => Err(Error::new(&format!(
+            "{message}. The offer holds {DEPOSIT_SESSION_SECS}s approvals; restart \
+             passlane-agent with --max-session-secs 900 or higher to accept them."
+        ))),
+        Err(e) => Err(to_error(e)),
+    }
+}
+
 /// The session agent as a source of phone-held-key answers for the link
 /// transport.
 pub(crate) struct AgentAnswerStore;
@@ -381,6 +820,10 @@ impl crate::phone_key::transport::AnswerStore for AgentAnswerStore {
 
     fn is_running(&self) -> bool {
         agent_running()
+    }
+
+    fn deposit(&self, vault: &str, challenge_hex: &str, answer_hex: &str) -> Result<u64, String> {
+        deposit_answer_session(vault, challenge_hex, answer_hex).map_err(|e| e.message)
     }
 }
 
@@ -617,6 +1060,17 @@ mod tests {
     fn reveal_session_secs_mirror_the_protocol_default_cap() {
         assert_eq!(
             REVEAL_SESSION_SECS as u64,
+            Policy::default().max_session_secs
+        );
+    }
+
+    /// The deposit-offer's duration must track the approval protocol's
+    /// default session cap too: a held phone approval ages out with the
+    /// reveal sessions an "Approve for this session" choice creates.
+    #[test]
+    fn deposit_session_secs_mirror_the_protocol_default_cap() {
+        assert_eq!(
+            DEPOSIT_SESSION_SECS as u64,
             Policy::default().max_session_secs
         );
     }
@@ -1214,6 +1668,478 @@ mod tests {
             untrusted,
             RevokeOutcome::Failed,
             "an agent that may be serving from an untrusted socket is not reported absent"
+        );
+    }
+
+    // ---- auto-start (passlane#77) ----
+    //
+    // The decision logic runs against an injected spawn that starts an
+    // in-process server (the real daemon's semantics: bind, and a bind
+    // lost to a live agent means the other one serves); one test drives
+    // the real process spawn with a stub binary.
+
+    /// Point default socket discovery at a private scratch directory:
+    /// with `PASSLANE_AGENT_SOCK` unset, the socket path becomes
+    /// `$dir/passlane-agent.sock`. The binary override names any
+    /// executable, so the injected spawn tests pass discovery without
+    /// needing a real `passlane-agent` binary. The opt-out variable is
+    /// cleared too — a developer exporting `PASSLANE_AGENT_AUTOSTART=0`
+    /// in their shell must not change what these tests assert. Hold
+    /// `ENV_MUTEX` for as long as it lives.
+    struct DefaultSocketDir {
+        dir: tempfile::TempDir,
+        _sock: EnvVar,
+        _xdg: EnvVar,
+        _bin: EnvVar,
+        _autostart: EnvVar,
+    }
+
+    impl DefaultSocketDir {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let _sock = EnvVar::remove(SOCKET_ENV);
+            let _xdg = EnvVar::set("XDG_RUNTIME_DIR", dir.path());
+            let _bin = EnvVar::set(AGENT_BIN_ENV, "/bin/sh");
+            let _autostart = EnvVar::remove(AUTOSTART_ENV);
+            Self {
+                dir,
+                _sock,
+                _xdg,
+                _bin,
+                _autostart,
+            }
+        }
+
+        fn socket(&self) -> PathBuf {
+            self.dir.path().join("passlane-agent.sock")
+        }
+    }
+
+    /// An in-process stand-in for the spawned daemon: binds the socket it
+    /// is told to serve, or yields with `AlreadyRunning` to a starter
+    /// that already won — exactly the real binary's two outcomes. The
+    /// server's own bind makes concurrent starts converge (it re-checks
+    /// that the path still leads to its listener and re-evaluates a bind
+    /// lost to a file that appeared meanwhile), so no retry logic is
+    /// needed here. Returns whether *this* call is the server that ended
+    /// up serving.
+    #[cfg(unix)]
+    fn serve_like_the_daemon(plan: &AutostartPlan) -> Result<bool, String> {
+        let config = AgentConfig::new(&plan.socket)
+            .with_sweep_interval(std::time::Duration::from_millis(20));
+        match AgentServer::bind(config) {
+            // Like a real daemon, it serves until the process ends: these
+            // tests never stop it (its socket dir goes away with the
+            // test, and the thread dies with the process).
+            Ok(server) => {
+                std::thread::spawn(move || server.serve().unwrap());
+                Ok(true)
+            }
+            Err(AgentError::AlreadyRunning(_)) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_cap_accommodates_the_request_within_the_hard_cap() {
+        assert_eq!(autostart_cap(60), 900, "never below the default cap");
+        assert_eq!(autostart_cap(900), 900);
+        assert_eq!(
+            autostart_cap(3600),
+            3600,
+            "an unlock --session 3600 must fit"
+        );
+        assert_eq!(
+            autostart_cap(28800),
+            28800,
+            "the hard cap is exactly reachable"
+        );
+        assert_eq!(
+            autostart_cap(999_999),
+            28800,
+            "nothing may be held past the hard cap"
+        );
+    }
+
+    /// The sweep's bound must reach past a *lowered* soft limit: a
+    /// wrapper can park a descriptor high and then lower its limit
+    /// before executing the CLI, and the daemon must still not inherit
+    /// it (passlane#77 review).
+    #[cfg(unix)]
+    #[test]
+    fn the_fd_sweep_reaches_well_past_a_lowered_soft_limit() {
+        assert!(
+            open_fd_limit() >= 2000,
+            "the sweep reaches inherited descriptors above a lowered soft limit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_agent_short_circuits_auto_start() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let defaults = DefaultSocketDir::new();
+        serve_like_the_daemon(&AutostartPlan {
+            binary: PathBuf::from("/nonexistent/passlane-agent"),
+            socket: defaults.socket(),
+            max_session_secs: 900,
+        })
+        .unwrap();
+        let client = connect_or_start_with(900, &|_| {
+            panic!("a live agent must be connected, never re-started")
+        })
+        .unwrap();
+        assert_eq!(client.socket_path(), defaults.socket());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_start_brings_up_an_agent_that_serves_the_default_socket() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let defaults = DefaultSocketDir::new();
+        let plans = Mutex::new(Vec::new());
+        let mut client = connect_or_start_with(3600, &|plan| {
+            plans.lock().unwrap().push(plan.clone());
+            serve_like_the_daemon(plan).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(client.socket_path(), defaults.socket());
+        let plans = plans.into_inner().unwrap();
+        assert_eq!(plans.len(), 1, "exactly one spawn");
+        assert_eq!(plans[0].socket, defaults.socket());
+        assert_eq!(plans[0].max_session_secs, 3600);
+        // The client that started it can really use it: a session lands.
+        client
+            .create_session(
+                "work",
+                GrantSpec::Unlock {
+                    master_password: SecretString::new("pw"),
+                    challenge_response: None,
+                },
+                Scope::Timed { seconds: 300 },
+            )
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_must_accept_not_merely_exist() {
+        // A stale socket file exists but refuses connections; the server
+        // only starts listening after a delay. Existence checks would
+        // return a dead "success" — the poll must keep going.
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _defaults = DefaultSocketDir::new();
+        let started = std::time::Instant::now();
+        connect_or_start_with(900, &|plan| {
+            // A leftover socket from a crashed agent: exists, refuses.
+            let stale = std::os::unix::net::UnixListener::bind(&plan.socket).unwrap();
+            drop(stale);
+            assert!(plan.socket.exists(), "the stale socket file is there");
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            serve_like_the_daemon(plan).map(|_| ())
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(400),
+            "the poll waited for the socket to accept, not to exist"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_racing_commands_end_up_with_one_live_agent() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let defaults = DefaultSocketDir::new();
+        let bind_wins = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let racers: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let socket = defaults.socket();
+                let wins = Arc::clone(&bind_wins);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    connect_or_start_with(900, &move |plan| {
+                        assert_eq!(plan.socket, socket);
+                        // What a spawned daemon does: bind, and yield to
+                        // a racer that is already serving — whichever way
+                        // the kernel-level bind race settles.
+                        serve_like_the_daemon(plan).map(|won| {
+                            if won {
+                                wins.fetch_add(1, Ordering::SeqCst);
+                            }
+                        })
+                    })
+                })
+            })
+            .collect();
+        let mut clients: Vec<_> = racers
+            .into_iter()
+            .map(|racer| racer.join().unwrap().unwrap())
+            .collect();
+        assert!(
+            bind_wins.load(Ordering::SeqCst) >= 1,
+            "someone ended up serving the socket"
+        );
+        // The operational invariant: every racing command got a working
+        // client on the one socket the path leads to, and the sessions
+        // it creates are reachable through that path afterwards. (A
+        // starter that proved ownership a heartbeat before being
+        // replaced may linger as an idle, unreachable daemon — the
+        // ownership proof is a snapshot, not a lock — but nothing is
+        // ever deposited with it: clients only ever reach the owner of
+        // the path, and its sessions die with it, by design.)
+        for client in &mut clients {
+            assert_eq!(client.socket_path(), defaults.socket());
+            client.list_sessions().unwrap();
+            client
+                .create_session(
+                    "work",
+                    GrantSpec::Unlock {
+                        master_password: SecretString::new("pw"),
+                        challenge_response: None,
+                    },
+                    Scope::Timed { seconds: 60 },
+                )
+                .unwrap();
+        }
+        let mut after = AgentClient::connect(&defaults.socket()).unwrap();
+        assert_eq!(
+            after.list_sessions().unwrap().len(),
+            2,
+            "both racing commands' sessions are reachable through the path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_explicitly_configured_socket_never_auto_starts() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // A dead socket named explicitly: an error naming it, and no
+        // spawn — the configured agent is not optional (passlane#65).
+        let _env = EnvVar::set(SOCKET_ENV, dir.path().join("named.sock"));
+        let spawned = AtomicBool::new(false);
+        let err = connect_or_start_with(900, &|_| {
+            spawned.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!spawned.load(Ordering::SeqCst), "nothing was spawned");
+        assert!(
+            err.message.contains("unset PASSLANE_AGENT_SOCK"),
+            "the error is the configured-socket one: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("named.sock"),
+            "it names the dead socket: {}",
+            err.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opting_out_restores_todays_error() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _defaults = DefaultSocketDir::new();
+        let _opt_out = EnvVar::set(AUTOSTART_ENV, "0");
+        let spawned = AtomicBool::new(false);
+        let err = connect_or_start_with(900, &|_| {
+            spawned.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!spawned.load(Ordering::SeqCst), "nothing was spawned");
+        assert_eq!(
+            err.message,
+            not_running_error().message,
+            "PASSLANE_AGENT_AUTOSTART=0 gives today's message unchanged"
+        );
+        // The spelling of the opt-out is lenient, the effect is not.
+        for spelling in ["false", "NO", " off "] {
+            let _alt = EnvVar::set(AUTOSTART_ENV, spelling);
+            assert!(autostart_opted_out(), "{spelling:?} opts out");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_binary_degrades_to_todays_error() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _defaults = DefaultSocketDir::new();
+        // The override is authoritative: naming nothing means no binary.
+        let _bin = EnvVar::set(AGENT_BIN_ENV, "/nonexistent/passlane-agent-stub");
+        let spawned = AtomicBool::new(false);
+        let err = connect_or_start_with(900, &|_| {
+            spawned.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!spawned.load(Ordering::SeqCst), "nothing was spawned");
+        assert_eq!(
+            err.message,
+            not_running_error().message,
+            "a missing binary gives today's message unchanged"
+        );
+    }
+
+    /// With no override, the binary is looked up beside nothing (the
+    /// test binary's directory never holds a `passlane-agent`) and then
+    /// on `PATH`: an executable `passlane-agent` there is what spawns.
+    #[cfg(unix)]
+    #[test]
+    fn the_binary_is_found_on_path_when_not_overridden() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let path_dir = tempfile::tempdir().unwrap();
+        let on_path = path_dir.path().join("passlane-agent");
+        std::fs::write(&on_path, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&on_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _defaults = DefaultSocketDir::new();
+        let _no_bin = EnvVar::remove(AGENT_BIN_ENV);
+        let _path = EnvVar::set("PATH", path_dir.path());
+        let found = Mutex::new(None);
+        connect_or_start_with(900, &|plan| {
+            *found.lock().unwrap() = Some(plan.binary.clone());
+            Err("the injected spawn never serves; the plan is all this tests".into())
+        })
+        .unwrap_err();
+        assert_eq!(found.into_inner().unwrap(), Some(on_path));
+    }
+
+    /// The real process spawn, against a stub binary: detached, stdio
+    /// appended to the agent log, and a daemon that never serves is
+    /// reported with the log to consult — not spun on forever. HOME is
+    /// pointed at a scratch directory so the test never touches the real
+    /// `~/.passlane/agent.log`.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_spawn_of_a_stub_agent_logs_and_reports_a_daemon_that_never_serves() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVar::set("HOME", home.path());
+        let defaults = DefaultSocketDir::new();
+        // The stub prints to stdout and exits: it proves the stdio
+        // redirection and leaves the socket never accepting.
+        let stub = defaults.dir.path().join("stub-agent");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\necho \"stub passlane-agent\"\nls /dev/fd | sed 's/^/FD:/'\nexit 0\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _bin = EnvVar::set(AGENT_BIN_ENV, &stub);
+
+        // A wrapper's stray fds: raw pipe duplicates (no FD_CLOEXEC) at a
+        // low and a high number, both allocated with F_DUPFD so no
+        // other descriptor is ever clobbered (tests run concurrently,
+        // and fd numbers belong to the whole process). The daemon must
+        // hold neither — a pipeline like `expect … | grep` never sees
+        // EOF otherwise, and a high-numbered stray is no excuse.
+        let mut pipe_fds = [0i32; 2];
+        unsafe { assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0) };
+        let stray_low = unsafe { libc::fcntl(pipe_fds[1], libc::F_DUPFD, 21) };
+        assert!(stray_low >= 21, "F_DUPFD never clobbers a descriptor");
+        let stray_high = unsafe { libc::fcntl(pipe_fds[1], libc::F_DUPFD, 2000) };
+        let watched: Vec<i32> = [stray_low, stray_high]
+            .into_iter()
+            .filter(|fd| *fd >= 0)
+            .collect();
+        assert!(!watched.is_empty(), "at least the low fd is planted");
+
+        let started = std::time::Instant::now();
+        let err = connect_or_start(900).unwrap_err();
+        unsafe {
+            for fd in &watched {
+                libc::close(*fd);
+            }
+            libc::close(pipe_fds[0]);
+            libc::close(pipe_fds[1]);
+        }
+        assert!(
+            started.elapsed() >= AUTOSTART_ACCEPT_BUDGET,
+            "it polled the full budget, not longer"
+        );
+        assert!(
+            started.elapsed() < AUTOSTART_ACCEPT_BUDGET + std::time::Duration::from_secs(10),
+            "the poll is bounded"
+        );
+        assert!(
+            err.message.contains("did not serve"),
+            "names what failed: {}",
+            err.message
+        );
+        let log = std::fs::read_to_string(agent_log_path()).unwrap();
+        assert!(
+            log.contains("stub passlane-agent"),
+            "the stub's output was appended to the log: {log}"
+        );
+        for fd in &watched {
+            assert!(
+                !log.contains(&format!("\nFD:{fd}")),
+                "the stray fd {fd} was closed in the daemon, not inherited: {log}"
+            );
+        }
+    }
+
+    /// A binary that cannot exec — a script whose interpreter is
+    /// missing — surfaces as a *launch* error, promptly: the pre-exec
+    /// sweep marks descriptors close-on-exec instead of closing them,
+    /// so the exec-failure pipe std relies on survives, and `spawn`
+    /// reports the failure instead of leaving an aborted child and a
+    /// socket that never answers.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_binary_fails_the_launch_promptly_not_as_a_timeout() {
+        let _guard = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVar::set("HOME", home.path());
+        let defaults = DefaultSocketDir::new();
+        let broken = defaults.dir.path().join("broken-agent");
+        std::fs::write(&broken, "#!/nonexistent/interpreter\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _bin = EnvVar::set(AGENT_BIN_ENV, &broken);
+
+        let started = std::time::Instant::now();
+        let err = connect_or_start(900).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "a launch failure is reported promptly, not after the poll budget"
+        );
+        assert!(
+            err.message.contains("could not start the session agent"),
+            "the launch error itself is reported: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("did not serve"),
+            "not mistaken for a socket timeout: {}",
+            err.message
         );
     }
 }

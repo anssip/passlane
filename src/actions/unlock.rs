@@ -69,10 +69,13 @@ fn hold_phone_answer(
 impl Action for UnlockAction {
     fn run(&self) -> Result<String, Error> {
         let config = vault_registry::current()?;
-        if self.session_secs.is_some() {
-            // Fail before prompting for the password if there is no
-            // agent to hold the session.
-            crate::session_agent::connect_or_error()?;
+        if let Some(secs) = self.session_secs {
+            // Fail before prompting for the password if there is no agent
+            // to hold the session — and start one when none is running
+            // and that is allowed (passlane#77), with a cap that
+            // accommodates this request so the agent never refuses the
+            // `unlock --session` that spawned it.
+            crate::session_agent::connect_or_start(secs)?;
         }
         let unlocked = unlock_reporting_factors()?;
         match self.session_secs {

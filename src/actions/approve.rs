@@ -52,9 +52,20 @@ impl ApproveAction {
 /// agent. Failing here leaves the response unrecorded and presentable
 /// again.
 fn keep_in_session_agent(handoff: &ResponseHandoff<'_>) -> Result<(), String> {
+    // The agent that takes the answer must be able to hold it as long as
+    // the approver granted it: an agent started here (passlane#77) gets
+    // a cap accommodating that scope.
+    let needed = match handoff.scope {
+        Scope::Once => 0,
+        Scope::Timed { seconds } => seconds as u64,
+    };
     hand_over(
         handoff,
-        crate::session_agent::agent_running(),
+        &move || {
+            crate::session_agent::connect_or_start(needed)
+                .map(|_| ())
+                .map_err(|e| e.message)
+        },
         &|vault, challenge, answer, scope| {
             crate::session_agent::create_challenge_response_session(vault, challenge, answer, scope)
                 .map(|_| ())
@@ -65,15 +76,19 @@ fn keep_in_session_agent(handoff: &ResponseHandoff<'_>) -> Result<(), String> {
 /// An agent that can take an answer: (vault, challenge, answer-hex, scope).
 type Hold = dyn Fn(&str, &str, &str, Scope) -> Result<(), Error>;
 
-/// [`keep_in_session_agent`] with the agent injected: `running` says
-/// whether one would take the answer, `hold` hands it over.
-fn hand_over(handoff: &ResponseHandoff<'_>, running: bool, hold: &Hold) -> Result<(), String> {
-    if !running {
+/// Makes an agent reachable (starting one when allowed); `Err` explains
+/// why none could serve, and nothing has been handed over.
+type Connect = dyn Fn() -> Result<(), String>;
+
+/// [`keep_in_session_agent`] with the agent injected: `connect` ensures
+/// an agent is reachable (or says why not), `hold` hands the answer over.
+fn hand_over(handoff: &ResponseHandoff<'_>, connect: &Connect, hold: &Hold) -> Result<(), String> {
+    if let Err(why) = connect() {
         return Err(format!(
             "this response (request {}…) carries the answer that {} but there is nowhere to \
-             keep it: the session agent is not running. Start 'passlane-agent' (see \
-             docs/features/session-agent.md) and present the response again, or re-run the \
-             command in an interactive terminal and paste the response at its prompt",
+             keep it: {why} Start 'passlane-agent' (see docs/features/session-agent.md) and \
+             present the response again, or re-run the command in an interactive terminal \
+             and paste the response at its prompt",
             rid_short(handoff.rid),
             match handoff.kind {
                 RequestKind::Save => format!("saves vault '{}'", handoff.vault),
@@ -215,25 +230,60 @@ mod tests {
     }
 
     /// Without an agent the answer has nowhere to go: refused with a way
-    /// forward, and nothing is handed over.
+    /// forward, the reason carried through, and nothing handed over.
     #[test]
     fn without_an_agent_the_handoff_refuses_with_a_way_forward() {
+        let not_running = "the session agent is not running (no listener on \
+                           /run/user/501/passlane-agent.sock)";
         for kind in [RequestKind::Unlock, RequestKind::Save] {
-            let err = hand_over(&handoff(kind), false, &|_, _, _, _| {
-                panic!("nothing may be handed over without an agent")
-            })
+            let err = hand_over(
+                &handoff(kind),
+                &move || Err(not_running.to_string()),
+                &|_, _, _, _| panic!("nothing may be handed over without an agent"),
+            )
             .unwrap_err();
             assert!(err.contains("nowhere to keep it"), "{err}");
+            assert!(err.contains(not_running), "{err}");
             assert!(err.contains("'passlane-agent'"), "{err}");
             assert!(err.contains("present the response again"), "{err}");
             assert!(err.contains("interactive terminal"), "{err}");
         }
-        let err =
-            hand_over(&handoff(RequestKind::Unlock), false, &|_, _, _, _| panic!()).unwrap_err();
+        let err = hand_over(
+            &handoff(RequestKind::Unlock),
+            &move || Err(not_running.to_string()),
+            &|_, _, _, _| panic!(),
+        )
+        .unwrap_err();
         assert!(err.contains("opens vault 'work'"), "{err}");
-        let err =
-            hand_over(&handoff(RequestKind::Save), false, &|_, _, _, _| panic!()).unwrap_err();
+        let err = hand_over(
+            &handoff(RequestKind::Save),
+            &move || Err(not_running.to_string()),
+            &|_, _, _, _| panic!(),
+        )
+        .unwrap_err();
         assert!(err.contains("saves vault 'work'"), "{err}");
+    }
+
+    /// An agent that cannot be reached for a configured-socket reason
+    /// (or any other) surfaces its own explanation, not a generic
+    /// "not running" — the depositor must see what is actually wrong.
+    #[test]
+    fn an_unusable_agent_surfaces_its_own_reason() {
+        let err = hand_over(
+            &handoff(RequestKind::Unlock),
+            &move || {
+                Err("session agent error: no passlane-agent is listening on \
+                     /tmp/dead.sock, the socket named by PASSLANE_AGENT_SOCK. Start it with \
+                     'passlane-agent' (see docs/features/session-agent.md for autostart \
+                     setup), or unset PASSLANE_AGENT_SOCK to use the keychain or the \
+                     password prompt instead."
+                    .to_string())
+            },
+            &|_, _, _, _| panic!("nothing may be handed over"),
+        )
+        .unwrap_err();
+        assert!(err.contains("nowhere to keep it"), "{err}");
+        assert!(err.contains("unset PASSLANE_AGENT_SOCK"), "{err}");
     }
 
     /// With an agent the answer goes there as lower-case hex, keyed by
@@ -241,13 +291,17 @@ mod tests {
     #[test]
     fn with_an_agent_the_answer_is_held_in_memory() {
         for kind in [RequestKind::Unlock, RequestKind::Save] {
-            hand_over(&handoff(kind), true, &|vault, challenge, answer, scope| {
-                assert_eq!(vault, "work");
-                assert_eq!(challenge, "ab".repeat(32));
-                assert_eq!(answer, "07".repeat(20));
-                assert_eq!(scope, Scope::Once);
-                Ok(())
-            })
+            hand_over(
+                &handoff(kind),
+                &|| Ok(()),
+                &|vault, challenge, answer, scope| {
+                    assert_eq!(vault, "work");
+                    assert_eq!(challenge, "ab".repeat(32));
+                    assert_eq!(answer, "07".repeat(20));
+                    assert_eq!(scope, Scope::Once);
+                    Ok(())
+                },
+            )
             .unwrap();
         }
     }
@@ -258,7 +312,7 @@ mod tests {
         // is re-run once the owner has approved from elsewhere.
         hand_over(
             &handoff(RequestKind::EnrollKey),
-            true,
+            &|| Ok(()),
             &|vault, challenge, answer, scope| {
                 assert_eq!(vault, "work");
                 assert_eq!(challenge, "ab".repeat(32));
@@ -272,7 +326,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_refuses_is_reported() {
-        let err = hand_over(&handoff(RequestKind::Unlock), true, &|_, _, _, _| {
+        let err = hand_over(&handoff(RequestKind::Unlock), &|| Ok(()), &|_, _, _, _| {
             Err(Error::new("session agent error: socket closed"))
         })
         .unwrap_err();

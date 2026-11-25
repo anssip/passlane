@@ -43,6 +43,13 @@ pub(crate) trait AnswerStore: Send + Sync {
 
     /// Whether anything is running that could hold an answer at all.
     fn is_running(&self) -> bool;
+
+    /// Hold an answer for later commands (the deposit-offer,
+    /// passlane#77): starts an agent when none is running and that is
+    /// allowed. Returns the held session's expiry (unix seconds); `Err`
+    /// explains why nothing was held and never affects the command that
+    /// already has its answer.
+    fn deposit(&self, vault: &str, challenge_hex: &str, answer_hex: &str) -> Result<u64, String>;
 }
 
 /// What the human at the terminal is shown for one request.
@@ -70,6 +77,9 @@ pub(crate) trait Terminal: Send + Sync {
     fn show(&self, shown: &Shown<'_>);
     /// The response pasted at the prompt. `None` cancels.
     fn read_response(&self, prompt: &str) -> Option<String>;
+    /// One yes/no question (the deposit-offer). A terminal that cannot
+    /// ask answers no.
+    fn confirm(&self, question: &str) -> bool;
 }
 
 /// The real terminal: the link on stdout or stderr, the QR and the
@@ -124,6 +134,16 @@ impl Terminal for RealTerminal {
             Ok(text) if !text.trim().is_empty() => Some(text),
             _ => None,
         }
+    }
+
+    fn confirm(&self, question: &str) -> bool {
+        // Default no: extending an approval's reach past the command that
+        // asked for it is an affirmative act (passlane#77). A prompt that
+        // fails — no terminal after all — declines rather than blocks.
+        inquire::Confirm::new(question)
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false)
     }
 }
 
@@ -196,6 +216,10 @@ pub(crate) struct LinkTransport {
     interactive: bool,
     store: Arc<dyn AnswerStore>,
     terminal: Arc<dyn Terminal>,
+    /// Whether an agent could be auto-started (passlane#77) — asked
+    /// before offering to hold a pasted answer: an offer that could not
+    /// be accepted even by saying yes is noise.
+    could_autostart: bool,
     /// How long to wait for an answer deposited from elsewhere. `None`
     /// waits until the request expires.
     max_wait: Option<Duration>,
@@ -220,6 +244,7 @@ impl LinkTransport {
             interactive: std::io::stdin().is_terminal(),
             store,
             terminal: Arc::new(RealTerminal),
+            could_autostart: crate::session_agent::autostart_ready(),
             max_wait: None,
             poll_interval: POLL_INTERVAL,
             log: crate::agent::ApprovalLog::default_path(),
@@ -275,7 +300,15 @@ impl ResponseSource for LinkTransport {
         });
 
         let outcome = if self.interactive {
-            self.answered_at_the_terminal(request, &emitted)
+            match self.answered_at_the_terminal(request, &emitted) {
+                Ok(answer) => {
+                    // The paste verified: offer to let it outlive this
+                    // process (passlane#77) before handing it back.
+                    self.offer_to_hold(request, &answer);
+                    Ok(answer)
+                }
+                Err(e) => Err(e),
+            }
         } else {
             match request.operation {
                 // A save cannot exit and resume: the seed it needs only
@@ -295,6 +328,67 @@ impl ResponseSource for LinkTransport {
 }
 
 impl LinkTransport {
+    /// The deposit-offer (passlane#77): after an interactive approval is
+    /// pasted and verified, offer to hold the answer in the session agent
+    /// so it outlives this process — the "one approval per command"
+    /// degradation of a missing agent becomes "one approval per sitting"
+    /// without anyone running a daemon by hand.
+    ///
+    /// Boundaries:
+    ///
+    /// - **Interactive approvals only** — we are in the interactive arm
+    ///   of `respond`, and the terminal's own confirm declines (never
+    ///   blocks) when there is nobody to ask.
+    /// - **Unlock approvals only**: the answer that opened the vault
+    ///   serves the next command too (the seed stands until a save). A
+    ///   save's answer belongs to the save that asked for it, and an
+    ///   enrollment's proves the holder, not a vault file.
+    /// - **Only when holding could work**: an agent is running, or one
+    ///   would be auto-started on acceptance. Nothing is asked when
+    ///   neither holds.
+    /// - **Declining — or a refused deposit — changes nothing**: the
+    ///   command proceeds with the answer it already has; the agent's
+    ///   cap rules are obeyed, never bent.
+    fn offer_to_hold(&self, request: &PhoneRequest, answer: &Answer) {
+        if request.operation != Operation::Unlock {
+            return;
+        }
+        if !self.store.is_running() && !self.could_autostart {
+            return;
+        }
+        let question = format!(
+            "Hold this approval in the session agent for {} minutes, so commands until then \
+             do not ask the phone again?",
+            crate::session_agent::DEPOSIT_SESSION_SECS / 60,
+        );
+        if !self.terminal.confirm(&question) {
+            return;
+        }
+        // Zeroized: this is the phone's unlock factor in the clear — the
+        // agent copies it into its own zeroizing buffers, and this copy
+        // must not linger in freed heap memory after the deposit.
+        let answer_hex = Zeroizing::new(passlane_approval::encoding::hex_encode(&answer.response));
+        match self
+            .store
+            .deposit(&request.vault_name, &request.challenge_hex(), &answer_hex)
+        {
+            Ok(until) => {
+                let when = chrono::DateTime::from_timestamp(i64::try_from(until).unwrap_or(0), 0)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| format!("+{}s", crate::session_agent::DEPOSIT_SESSION_SECS));
+                eprintln!(
+                    "Held until {when} (memory only): until then, commands on vault '{}' do not \
+                     ask the phone again. 'passlane lock' or 'passlane sessions revoke' drops it \
+                     early.",
+                    request.vault_name
+                );
+            }
+            Err(why) => {
+                eprintln!("Warning: the approval was not held: {why}");
+            }
+        }
+    }
+
     /// The response is pasted here and used at once. One paste, one
     /// verdict (passlane#72): a rejected paste ends the command with the
     /// reason and the re-run guidance instead of re-prompting — a second
@@ -569,6 +663,7 @@ pub(crate) mod tests {
     pub(crate) struct MemoryStore {
         answers: Mutex<HashMap<(String, String), Vec<u8>>>,
         takes: AtomicUsize,
+        deposits: AtomicUsize,
     }
 
     impl MemoryStore {
@@ -581,6 +676,19 @@ pub(crate) mod tests {
 
         pub(crate) fn takes(&self) -> usize {
             self.takes.load(Ordering::SeqCst)
+        }
+
+        /// How many times the deposit-offer's acceptance reached the store.
+        pub(crate) fn deposits(&self) -> usize {
+            self.deposits.load(Ordering::SeqCst)
+        }
+
+        /// Whether an answer is held for exactly this vault and challenge.
+        pub(crate) fn holds(&self, vault: &str, challenge_hex: &str) -> bool {
+            self.answers
+                .lock()
+                .unwrap()
+                .contains_key(&(vault.to_string(), challenge_hex.to_string()))
         }
     }
 
@@ -597,6 +705,22 @@ pub(crate) mod tests {
         fn is_running(&self) -> bool {
             true
         }
+
+        fn deposit(
+            &self,
+            vault: &str,
+            challenge_hex: &str,
+            answer_hex: &str,
+        ) -> Result<u64, String> {
+            self.deposits.fetch_add(1, Ordering::SeqCst);
+            let answer = passlane_approval::encoding::hex_decode(answer_hex)
+                .map_err(|e| format!("malformed answer: {e}"))?;
+            self.answers
+                .lock()
+                .unwrap()
+                .insert((vault.to_string(), challenge_hex.to_string()), answer);
+            Ok(crate::approvals::now_secs() + 900)
+        }
     }
 
     /// A session agent that is not running.
@@ -609,6 +733,15 @@ pub(crate) mod tests {
 
         fn is_running(&self) -> bool {
             false
+        }
+
+        fn deposit(
+            &self,
+            _vault: &str,
+            _challenge_hex: &str,
+            _answer_hex: &str,
+        ) -> Result<u64, String> {
+            Err("the session agent is not running".into())
         }
     }
 
@@ -624,9 +757,14 @@ pub(crate) mod tests {
     /// A scripted terminal. `on_show` runs when the request appears — it
     /// stands in for whoever approves while the command waits — and
     /// `on_read` produces each paste, given what was shown last.
+    /// `confirm_answers` supplies the person's yes/no answers to the
+    /// deposit-offer (empty = always decline), and `confirmations` counts
+    /// how often the offer was made at all.
     struct ScriptedTerminal {
         shown: Mutex<Vec<ShownRecord>>,
         prompts: AtomicUsize,
+        confirmations: AtomicUsize,
+        confirm_answers: Mutex<std::collections::VecDeque<bool>>,
         on_show: Mutex<Option<OnShow>>,
         on_read: OnRead,
     }
@@ -641,9 +779,16 @@ pub(crate) mod tests {
             Self {
                 shown: Mutex::new(Vec::new()),
                 prompts: AtomicUsize::new(0),
+                confirmations: AtomicUsize::new(0),
+                confirm_answers: Mutex::new(std::collections::VecDeque::new()),
                 on_show: Mutex::new(on_show),
                 on_read,
             }
+        }
+
+        fn with_confirm_answers(self, answers: Vec<bool>) -> Self {
+            *self.confirm_answers.lock().unwrap() = answers.into();
+            self
         }
 
         fn shown(&self) -> Vec<ShownRecord> {
@@ -654,6 +799,11 @@ pub(crate) mod tests {
         /// (passlane#72) is asserted against this.
         fn prompts(&self) -> usize {
             self.prompts.load(Ordering::SeqCst)
+        }
+
+        /// How many times the deposit-offer was made (passlane#77).
+        fn confirmations(&self) -> usize {
+            self.confirmations.load(Ordering::SeqCst)
         }
     }
 
@@ -679,6 +829,15 @@ pub(crate) mod tests {
                     .last()
                     .expect("a paste is read only after a request is shown"),
             )
+        }
+
+        fn confirm(&self, _question: &str) -> bool {
+            self.confirmations.fetch_add(1, Ordering::SeqCst);
+            self.confirm_answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(false)
         }
     }
 
@@ -744,7 +903,8 @@ pub(crate) mod tests {
     impl Rig {
         /// `interactive`: a person can be prompted. `agent_running`: a
         /// session agent can hold answers. `terminal` builds what the
-        /// person (or the approving owner) does.
+        /// person (or the approving owner) does. The rig never claims an
+        /// agent could be auto-started — tests must not spawn daemons.
         fn new(interactive: bool, agent_running: bool, terminal: TerminalFactory) -> Self {
             let state = tempfile::tempdir().unwrap();
             let dir = state.path().join("approvals");
@@ -771,6 +931,7 @@ pub(crate) mod tests {
                 interactive,
                 store,
                 terminal,
+                could_autostart: false,
                 // Generous: no test should ever be able to wait this long,
                 // so a wait that ends does so because of what it found.
                 max_wait: Some(Duration::from_secs(30)),
@@ -1221,6 +1382,7 @@ pub(crate) mod tests {
             interactive: false,
             store: Arc::new(counting),
             terminal: Arc::new(ScriptedTerminal::new(None, Box::new(|_| None))),
+            could_autostart: false,
             max_wait: Some(Duration::from_millis(60)),
             poll_interval: Duration::from_millis(5),
             log: crate::agent::ApprovalLog::at(state.path().join("approvals.log")),
@@ -1259,6 +1421,15 @@ pub(crate) mod tests {
 
         fn is_running(&self) -> bool {
             true
+        }
+
+        fn deposit(
+            &self,
+            vault: &str,
+            challenge_hex: &str,
+            answer_hex: &str,
+        ) -> Result<u64, String> {
+            AnswerStore::deposit(&*self.inner, vault, challenge_hex, answer_hex)
         }
     }
 
@@ -1335,6 +1506,157 @@ pub(crate) mod tests {
         rig.ask(Operation::Unlock).unwrap_err();
         let events = rig.log_lines();
         assert_eq!(events[1]["decision"], "denied");
+    }
+
+    /// A terminal that pastes a valid unlock answer and then answers the
+    /// deposit-offer (passlane#77) with `hold`.
+    fn holding(hold: bool) -> TerminalFactory {
+        Box::new(move |env: Env| {
+            let terminal =
+                pasting(move |keys, shown| Some(page_answer(keys, shown, Some(ANSWER))))(env);
+            *terminal.confirm_answers.lock().unwrap() = vec![hold].into();
+            terminal
+        })
+    }
+
+    /// The deposit-offer, accepted: the pasted answer is held and the
+    /// next command opens without asking the phone again (passlane#77).
+    #[test]
+    fn an_accepted_offer_holds_the_answer_for_later_commands() {
+        let rig = Rig::new(true, true, holding(true));
+        let answer = rig.ask(Operation::Unlock).unwrap();
+        assert_eq!(answer.response.as_slice(), ANSWER);
+        assert_eq!(answer.origin, AnswerOrigin::LinkTransport);
+        assert!(
+            rig.agent().holds("work", &"5a".repeat(32)),
+            "the pasted answer was deposited"
+        );
+        assert_eq!(rig.agent().deposits(), 1);
+
+        // The held answer serves the next command: no new request, no
+        // paste prompt.
+        let second = rig.ask(Operation::Unlock).unwrap();
+        assert_eq!(second.response.as_slice(), ANSWER);
+        assert_eq!(second.origin, AnswerOrigin::SessionAgent);
+        assert_eq!(rig.terminal().shown().len(), 1, "no second QR");
+        assert_eq!(rig.terminal().prompts(), 1, "no second paste prompt");
+    }
+
+    /// The offer, declined: exactly today's behavior — the answer serves
+    /// this command and dies with it, so the next command dances again.
+    #[test]
+    fn a_declined_offer_keeps_the_answer_process_local() {
+        let rig = Rig::new(true, true, holding(false));
+        let answer = rig.ask(Operation::Unlock).unwrap();
+        assert_eq!(answer.origin, AnswerOrigin::LinkTransport);
+        assert_eq!(rig.terminal().confirmations(), 1, "the offer was made");
+        assert!(!rig.agent().holds("work", &"5a".repeat(32)));
+        assert_eq!(rig.agent().deposits(), 0);
+
+        // The next command needs its own approval again: a fresh
+        // request, a fresh paste, and an answer that likewise dies with
+        // the command that asked for it.
+        let second = rig.ask(Operation::Unlock).unwrap();
+        assert_eq!(second.origin, AnswerOrigin::LinkTransport);
+        assert_eq!(rig.terminal().shown().len(), 2, "a fresh request");
+        assert_eq!(rig.terminal().prompts(), 2, "a fresh paste prompt");
+        assert_eq!(rig.agent().deposits(), 0, "still nothing held");
+    }
+
+    /// A save's answer is never offered: it belongs to the save that
+    /// asked for it, not to the commands that follow.
+    #[test]
+    fn save_answers_are_not_offered_for_deposit() {
+        let rig = Rig::new(true, true, holding(true));
+        rig.ask(Operation::Save).unwrap();
+        assert_eq!(rig.terminal().confirmations(), 0, "no offer for a save");
+        assert_eq!(rig.agent().deposits(), 0);
+    }
+
+    /// No agent running and none that could be started: the offer is
+    /// never made — an unanswerable question is noise, and non-terminal
+    /// contexts (the non-interactive arm) never see it at all.
+    #[test]
+    fn no_offer_when_nothing_could_hold_the_answer() {
+        let rig = Rig::new(true, false, holding(true));
+        rig.ask(Operation::Unlock).unwrap();
+        assert_eq!(
+            rig.terminal().confirmations(),
+            0,
+            "nothing could hold it: nothing is asked"
+        );
+    }
+
+    /// An offer accepted but refused by the agent (its cap is below the
+    /// offer's duration): a warning, never a failure — the command
+    /// already has its answer.
+    #[test]
+    fn a_refused_deposit_is_a_warning_not_a_failure() {
+        let refusing = RefusingDeposit {
+            inner: Arc::new(MemoryStore::default()),
+        };
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path().join("approvals");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pin, page, passkey) = mock_page();
+        pin_approver(&dir, pin.clone(), None).unwrap();
+        let keys = Arc::new(Mutex::new((load_identity(&dir).unwrap(), page, passkey)));
+        let keys_for_paste = keys.clone();
+        let terminal = ScriptedTerminal::new(
+            None,
+            Box::new(move |shown| {
+                Some(page_answer(
+                    &keys_for_paste.lock().unwrap(),
+                    shown,
+                    Some(ANSWER),
+                ))
+            }),
+        )
+        .with_confirm_answers(vec![true]);
+        let transport = LinkTransport {
+            dir: dir.clone(),
+            holder: pin,
+            requester: "tester".into(),
+            interactive: true,
+            store: Arc::new(refusing),
+            terminal: Arc::new(terminal),
+            could_autostart: false,
+            max_wait: Some(Duration::from_secs(30)),
+            poll_interval: Duration::from_millis(5),
+            log: crate::agent::ApprovalLog::at(state.path().join("approvals.log")),
+        };
+        let answer = transport
+            .respond(&PhoneRequest {
+                vault_id: "work".into(),
+                vault_name: "work".into(),
+                operation: Operation::Unlock,
+                challenge: [0x5a; 32],
+            })
+            .unwrap();
+        assert_eq!(answer.response.as_slice(), ANSWER);
+        assert_eq!(answer.origin, AnswerOrigin::LinkTransport);
+    }
+
+    /// A store that cannot hold what it is offered.
+    struct RefusingDeposit {
+        inner: Arc<MemoryStore>,
+    }
+
+    impl AnswerStore for RefusingDeposit {
+        fn take(&self, vault: &str, challenge_hex: &str) -> Option<Zeroizing<Vec<u8>>> {
+            self.inner.take(vault, challenge_hex)
+        }
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn deposit(
+            &self,
+            _vault: &str,
+            _challenge_hex: &str,
+            _answer_hex: &str,
+        ) -> Result<u64, String> {
+            Err("session of 900s exceeds this agent's cap of 300s".into())
+        }
     }
 
     #[test]

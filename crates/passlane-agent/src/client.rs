@@ -133,9 +133,17 @@ impl AgentClient {
     /// the agent: a daemon wedged with a full listen queue would
     /// otherwise hold the command inside `connect` forever.
     pub fn connect(path: &Path) -> Result<AgentClient, AgentError> {
+        Self::connect_within(path, CONNECT_TIMEOUT)
+    }
+
+    /// [`AgentClient::connect`] with an explicit budget for establishing
+    /// the connection — for callers whose whole wait is bounded, like the
+    /// auto-start readiness poll (passlane#77), so a socket that accepts
+    /// but never answers cannot outlast the budget they promised.
+    pub fn connect_within(path: &Path, timeout: Duration) -> Result<AgentClient, AgentError> {
         socket_is_trusted(path)?;
         let owned_path = path.to_path_buf();
-        match answer_within(CONNECT_TIMEOUT, move || UnixStream::connect(&owned_path)) {
+        match answer_within(timeout, move || UnixStream::connect(&owned_path)) {
             Some(Ok(stream)) => {
                 // The connection is established; make sure the path we
                 // connected to is still the one we validated.
@@ -158,7 +166,7 @@ impl AgentClient {
                 Err(AgentError::NotRunning(path.display().to_string()))
             }
             Some(Err(e)) => Err(e.into()),
-            None => Err(AgentError::TimedOut(CONNECT_TIMEOUT)),
+            None => Err(AgentError::TimedOut(timeout)),
         }
     }
 
@@ -553,6 +561,12 @@ impl AgentClient {
              not available on this platform (tried {})",
             path.display()
         )))
+    }
+
+    /// Unsupported on this platform (see [`AgentClient::connect`]); the
+    /// timeout is moot when there is never anything to connect to.
+    pub fn connect_within(path: &Path, _timeout: Duration) -> Result<AgentClient, AgentError> {
+        Self::connect(path)
     }
 }
 

@@ -202,8 +202,10 @@ forever (passlane#65). Without `PASSLANE_AGENT_SOCK` an absent agent is
 just absent, and the chain continues with the keychain.
 
 - **`passlane unlock --session [SECS]`** opens the vault and hands the
-  factors to the agent *instead of* the keychain. Requires the agent;
-  fails early with a hint when it is not running or cannot be used.
+  factors to the agent *instead of* the keychain. Needs the agent — and
+  starts one itself when none is running and that is allowed (see
+  [Auto-start](#auto-start)); fails early with a hint when it is not
+  running and could not be started, or cannot be used.
 - **`passlane lock`** removes the keychain password *and* revokes the
   vault's agent sessions (`--all` drops every session). Locking must not
   leave a vault effectively unlocked through a live session.
@@ -227,6 +229,100 @@ just absent, and the chain continues with the keychain.
 - **`passlane sessions list | revoke <id|all> | lock`** manage the
   agent's sessions. `revoke` accepts the short id prefix shown by
   `list`; `--vault work sessions revoke all` scopes the revocation.
+
+## The deposit-offer
+
+The scenario auto-start exists for (passlane#77): with no agent running,
+`passlane show` on a phone-held-key vault needs the full approval dance
+*every* time — the pasted answer dies with the command that used it.
+The answer can instead outlive that one process.
+
+After an interactive approval is pasted and verified for a **vault
+open** (an `Unlock` approval — a save's answer belongs to the save that
+asked for it, an enrollment's proves the holder, and neither is
+offered), the CLI asks once:
+
+```
+Hold this approval in the session agent for 15 minutes, so commands
+until then do not ask the phone again? (y/N)
+```
+
+- **The default is No**: extending an approval's reach past the command
+  that asked for it is an affirmative act, and declining leaves exactly
+  today's behavior.
+- The offer is made **only when holding could work**: an agent is
+  running, or one would be auto-started on acceptance (see
+  [Auto-start](#auto-start)). It never appears in non-terminal contexts
+  (the non-interactive arm never reaches it) and never for answers that
+  came from the agent itself.
+- An accepted offer holds the answer for 900 s (the approval protocol's
+  default cap, like an "Approve for this session" reveal) as a timed
+  `challenge_response` session, keyed by the vault's current seed —
+  every command until expiry opens without asking the phone again; the
+  first save after it still asks, because the seed rotates.
+- The agent's cap rules are obeyed, never bent: an agent started with a
+  lower `--max-session-secs` refuses the deposit, and the command says
+  so as a warning — the vault is already open, the offer was never a
+  requirement. `passlane lock` and `passlane sessions revoke` drop the
+  held answer like any other session.
+
+## Auto-start
+
+An idle agent holds no secrets — memory-only, empty until a human
+approves — so a command that needs one can start it itself
+(passlane#77). `session_agent::connect_or_start` runs wherever the CLI
+is otherwise about to fail with "the session agent is not running":
+
+- **`unlock --session`** — the headline case;
+- **`approve --response`** when the answer is destined for the agent
+  (the no-terminal deposit flow);
+- an **accepted deposit-offer** (above) — the started agent is what the
+  answer is held in.
+
+How it starts the daemon:
+
+- the `passlane-agent` binary is located **next to the running `passlane`
+  executable** first (a `~/bin/passlane` symlink into a `target/release`
+  checkout finds the `passlane-agent` beside the real binary), then on
+  `PATH`; `$PASSLANE_AGENT_BIN` overrides the lookup when it names an
+  executable;
+- it is spawned **detached** — its own process group, so it survives the
+  closing terminal — with stdio appended to `~/.passlane/agent.log` and
+  **no other file descriptor inherited**: a daemon that outlives its
+  spawner must not hold the spawning command's pipes open;
+- it gets `--max-session-secs` **accommodating the triggering request**
+  (an `unlock --session 3600` that spawns an agent must not be refused
+  by it; the value is floored at the default cap and bounded by the hard
+  cap of 28800 s);
+- the CLI then waits — bounded at about two seconds — for the socket to
+  **accept** a connection, because a socket file's existence is not
+  readiness. Two racing commands each spawn an agent and both connect to
+  the one that wins the bind; the loser exits on its own (the server
+  replaces only stale sockets and refuses a live one).
+
+The boundaries that make auto-start safe:
+
+- **Only discovered default socket paths.** A socket named by
+  `PASSLANE_AGENT_SOCK` that nothing serves stays the error it has
+  always been — never a silent fallback (passlane#65). Auto-start never
+  happens behind an explicitly configured socket.
+- **An empty daemon only.** Starting an agent creates no session and
+  approves nothing; it holds key material only after a human hands it
+  over. Non-terminal contexts (agents, cron) auto-start too: spawning
+  blocks on nothing, and the "nothing may block on stdin" rule is
+  untouched.
+- **Opt-out**: `PASSLANE_AGENT_AUTOSTART=0` restores today's behavior —
+  for setups where launchd/systemd own the daemon and a second,
+  privately-started one is unwanted. A live socket short-circuits
+  everything regardless.
+- **A missing binary degrades** to today's "start it with
+  'passlane-agent'" message, unchanged — no surprise downloads.
+
+launchd/systemd setups are unaffected: a running unit's socket answers
+before any spawn is considered, and a pinned-socket unit exports
+`PASSLANE_AGENT_SOCK`, which disables auto-start on that path entirely.
+The launchd plist below remains the recommended path for pinned sockets
+and a central `--max-session-secs` policy.
 
 ## Autostart (optional)
 
@@ -321,8 +417,11 @@ can never open a re-saved vault. `passlane unlock --session` holds the
 opening answer beside the master password, so one approval serves until
 expiry; `passlane lock` drops it with everything else. Single-use
 answers are consumed by the one command that uses them, and a response
-presented while no agent runs is refused before anything is recorded,
-so it still works once one is. `Body::SessionRevoke` from the phone maps
+presented while no agent runs — and none could be started — is refused
+before anything is recorded, so it still works once one is. The
+[deposit-offer](#the-deposit-offer) is the interactive counterpart: a
+pasted answer can be held for the commands that follow.
+`Body::SessionRevoke` from the phone maps
 to `revoke_session`, as before. A physical key's one touch still cannot
 serve a whole session — its secret never leaves the device — which is
 why `unlock --session` says so plainly for those.

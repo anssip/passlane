@@ -127,6 +127,10 @@ pub struct AgentServer {
     shared: Arc<Shared>,
     config: AgentConfig,
     listener: UnixListener,
+    /// The inode of the socket this server published, captured at bind:
+    /// shutdown unlinks the path only while it still leads to *our*
+    /// socket — a replacement's must survive our exit (passlane#77).
+    socket_identity: Option<u64>,
 }
 
 impl std::fmt::Debug for AgentServer {
@@ -142,34 +146,126 @@ impl AgentServer {
     /// another agent answers on it; replaces a stale socket left behind
     /// by a crashed agent; refuses to delete a non-socket file that
     /// happens to sit on the path.
+    ///
+    /// **Concurrent starters converge on one live agent** (auto-start,
+    /// passlane#77). The whole look-then-publish sequence runs under an
+    /// exclusive advisory lock on the socket's *directory* — no lock
+    /// file is created; `flock(2)` works on any descriptor, a
+    /// directory's included — so two starters cannot interleave a
+    /// liveness probe with another's publication. The listener is
+    /// created *beside* the target, fully bound, listening and
+    /// permissioned under a short private name, then `rename`d onto it:
+    /// the target never holds a socket that is not accepting, the
+    /// rename is atomic, and a starter renamed-over (possible only
+    /// against non-locking strangers, or after a crash mid-rename)
+    /// detects it by the inode the rename preserves. Shutdown unlinks
+    /// the socket only when it is still the one this server published.
     pub fn bind(config: AgentConfig) -> Result<AgentServer, AgentError> {
         let path = config.socket_path.clone();
-        if path.exists() {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&parent)?;
+        // Serialize against every starter that locks this directory.
+        let _serialization = lock_directory(&parent)?;
+        match beside(&path) {
+            // The target's pathname is short enough for a sibling: the
+            // rename flow above.
+            Some(temp) => Self::bind_by_rename(config, path, temp),
+            // No sibling fits the kernel's pathname limit for sockets
+            // (sun_path): publish directly at the target, still under
+            // the lock, keeping the probe/remove/publish semantics of
+            // the pre-serialization bind.
+            None => Self::bind_in_place(config, path),
+        }
+    }
+
+    /// The rename flow: listen beside the target, then publish
+    /// atomically.
+    fn bind_by_rename(
+        config: AgentConfig,
+        path: PathBuf,
+        temp: PathBuf,
+    ) -> Result<AgentServer, AgentError> {
+        let listener = UnixListener::bind(&temp)?;
+        let assembled = (|| -> Result<Option<u64>, AgentError> {
+            // Owner-only permissions while it still lives under our
+            // private name: the target never shows looser bits, even to
+            // a client that connects the instant it appears.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&temp)?.permissions();
+                perms.set_mode(0o600);
+                std::fs::set_permissions(&temp, perms)?;
+            }
+            // Identity for after the rename: the inode rename preserves.
+            let identity = file_inode(&temp);
+            refuse_to_replace_non_sockets(&path)?;
             if UnixStream::connect(&path).is_ok() {
                 return Err(AgentError::AlreadyRunning(path));
             }
             // Not connectable: a leftover socket from a crashed agent.
-            // Only sockets are removed — never some other file the user
-            // may care about (e.g. a --socket typo).
-            let meta = std::fs::symlink_metadata(&path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileTypeExt;
-                if meta.file_type().is_socket() {
-                    std::fs::remove_file(&path)?;
-                } else {
-                    return Err(AgentError::Protocol(format!(
-                        "'{}' exists and is not a socket; refusing to remove it",
-                        path.display()
-                    )));
-                }
+            // The rename replaces it atomically — no remove-then-bind
+            // window for a racing starter to slip into — and only a
+            // socket: whatever appeared at the path since the check
+            // above must not be destroyed by the rename.
+            refuse_to_replace_non_sockets(&path)?;
+            std::fs::rename(&temp, &path)?;
+            if file_inode(&path) != identity {
+                // Another starter renamed onto the path between our
+                // rename and this look: it serves, and we must not.
+                return Err(AgentError::AlreadyRunning(path));
+            }
+            log::info!(
+                "listening on {} (cap {}s)",
+                path.display(),
+                config.max_session_secs
+            );
+            Ok(identity)
+        })();
+        match assembled {
+            Ok(identity) => Ok(AgentServer::new(config, listener, identity)),
+            Err(e) => {
+                // The temporary socket is ours alone: remove it on every
+                // failure. The target path was never touched unless we
+                // renamed onto it — and only atomically.
+                let _ = std::fs::remove_file(&temp);
+                Err(e)
             }
         }
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
+    }
+
+    /// The long-path fallback: publish directly at the target, under the
+    /// same directory lock.
+    fn bind_in_place(config: AgentConfig, path: PathBuf) -> Result<AgentServer, AgentError> {
+        refuse_to_replace_non_sockets(&path)?;
+        if UnixStream::connect(&path).is_ok() {
+            return Err(AgentError::AlreadyRunning(path));
+        }
+        // A leftover socket from a crashed agent. Re-verified as a
+        // socket right before the removal — whatever appeared at the
+        // path since the refusal above is not ours to delete.
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileTypeExt;
+                    if !meta.file_type().is_socket() {
+                        return Err(AgentError::Protocol(format!(
+                            "'{}' appeared and is not a socket; refusing to remove it",
+                            path.display()
+                        )));
+                    }
+                }
+                std::fs::remove_file(&path)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
         let listener = UnixListener::bind(&path)?;
-        // Owner-only socket: local, same-user access only.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -177,12 +273,20 @@ impl AgentServer {
             perms.set_mode(0o600);
             std::fs::set_permissions(&path, perms)?;
         }
+        let identity = file_inode(&path);
+        if file_inode(&path) != identity {
+            return Err(AgentError::AlreadyRunning(path));
+        }
         log::info!(
             "listening on {} (cap {}s)",
             path.display(),
             config.max_session_secs
         );
-        Ok(AgentServer {
+        Ok(AgentServer::new(config, listener, identity))
+    }
+
+    fn new(config: AgentConfig, listener: UnixListener, socket_identity: Option<u64>) -> Self {
+        AgentServer {
             shared: Arc::new(Shared {
                 inner: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(Vec::new()),
@@ -192,7 +296,8 @@ impl AgentServer {
             }),
             config,
             listener,
-        })
+            socket_identity,
+        }
     }
 
     /// The socket path being served.
@@ -266,9 +371,93 @@ impl AgentServer {
             }
         }
         self.shared.connections.lock().map(|mut c| c.clear()).ok();
-        let _ = std::fs::remove_file(&self.config.socket_path);
+        // Unlink only what we published: a starter that lost the path to
+        // a replacement must not delete the winner's socket on its way
+        // out (passlane#77).
+        let still_ours = self
+            .socket_identity
+            .is_none_or(|identity| file_inode(&self.config.socket_path) == Some(identity));
+        if still_ours {
+            let _ = std::fs::remove_file(&self.config.socket_path);
+        }
         log::info!("stopped; all sessions were dropped");
     }
+}
+
+/// Where the soon-to-be socket listens while it is being created:
+/// beside the target, under a short name that hashes the target's own
+/// path (so different sockets in one directory never collide) plus this
+/// process's id and a per-process counter. Short, because the kernel's
+/// pathname limit for sockets (`sun_path`, 104 bytes on macOS and Linux)
+/// must also fit the *sibling*: a target whose parent directory already
+/// straddles the limit gets `None` and the direct-publish fallback.
+fn beside(path: &std::path::Path) -> Option<PathBuf> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    static NAMING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let name = format!(
+        ".pa{:08x}.{}.{}",
+        hasher.finish(),
+        std::process::id(),
+        NAMING.fetch_add(1, Ordering::Relaxed)
+    );
+    let candidate = path.with_file_name(name);
+    // Leave headroom against the sun_path limit (NUL included).
+    (candidate.as_os_str().len() < 96).then_some(candidate)
+}
+
+/// The inode of the file at `path`, if it can be read — the identity a
+/// `rename` preserves, and therefore the proof of who owns the target
+/// after concurrent starters race onto it.
+fn file_inode(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|meta| meta.ino())
+}
+
+/// Whatever sits at the target path, only a socket may be replaced: a
+/// `--socket` typo must not destroy the user's file.
+fn refuse_to_replace_non_sockets(path: &std::path::Path) -> Result<(), AgentError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if !meta.file_type().is_socket() {
+                    return Err(AgentError::Protocol(format!(
+                        "'{}' exists and is not a socket; refusing to remove it",
+                        path.display()
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// An exclusive advisory lock on the socket's directory, held across the
+/// look-then-publish sequence so concurrent auto-starts serialize
+/// (passlane#77). `flock(2)` locks any descriptor — a directory's
+/// included — so no lock file is ever created; dropping the handle
+/// releases the lock.
+struct DirectoryLock {
+    /// Held open for the lock's lifetime; dropping it releases.
+    _directory: std::fs::File,
+}
+
+fn lock_directory(dir: &Path) -> Result<DirectoryLock, AgentError> {
+    use std::os::unix::io::AsRawFd;
+    let directory = std::fs::File::open(dir)?;
+    // SAFETY: `flock` on a descriptor this handle owns; the lock is
+    // advisory and released on drop.
+    if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(DirectoryLock {
+        _directory: directory,
+    })
 }
 
 fn now_secs() -> u64 {
@@ -1246,5 +1435,127 @@ mod tests {
         server.handle().stop();
         server.serve().unwrap();
         assert!(!path.exists(), "socket must be unlinked on stop");
+    }
+
+    /// The inode identity a rename preserves — the check a renamed-over
+    /// starter runs after its own swap: only the starter whose socket
+    /// the path still leads to keeps serving (passlane#77).
+    #[test]
+    fn the_path_leads_to_the_last_renamer_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        // Two starters listen beside the target and swap onto it.
+        let first_temp = beside(&path).expect("a short sibling fits");
+        let _first = std::os::unix::net::UnixListener::bind(&first_temp).unwrap();
+        let first_identity = file_inode(&first_temp);
+        std::fs::rename(&first_temp, &path).unwrap();
+        assert_eq!(file_inode(&path), first_identity, "the rename preserved it");
+        let second_temp = beside(&path).expect("a short sibling fits");
+        let _second = std::os::unix::net::UnixListener::bind(&second_temp).unwrap();
+        let second_identity = file_inode(&second_temp);
+        std::fs::rename(&second_temp, &path).unwrap();
+        // The last rename wins the inode at the path…
+        assert_eq!(file_inode(&path), second_identity);
+        // …so the first starter's check sees a foreign socket and must
+        // yield.
+        assert_ne!(
+            file_inode(&path),
+            first_identity,
+            "the renamed-over starter no longer owns the path"
+        );
+    }
+
+    /// The sibling name stays inside the kernel's socket-pathname limit
+    /// where the target itself does, and gives up (None) before it would
+    /// exceed it.
+    #[test]
+    fn the_sibling_name_respects_the_pathname_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(beside(&dir.path().join("agent.sock")).is_some());
+        // A parent near the 104-byte sun_path limit: any sibling of a
+        // fitting target may not fit, and `beside` must say so rather
+        // than hand out a path the kernel would refuse.
+        let long = "a".repeat(90);
+        let straddling = dir.path().join(&long).join("s.sock");
+        std::fs::create_dir_all(straddling.parent().unwrap()).unwrap();
+        let sibling = beside(&straddling);
+        if let Some(sibling) = &sibling {
+            assert!(
+                sibling.as_os_str().len() < 104,
+                "a sibling must fit sun_path: {:?}",
+                sibling
+            );
+        }
+    }
+
+    /// Concurrent `bind`s on one path leave exactly one server; the
+    /// loser reports `AlreadyRunning` and takes no socket with it. All
+    /// starters are joined (and only then stopped) so a descheduled
+    /// loser cannot observe the winner's cleanup and rebind.
+    #[test]
+    fn concurrent_binds_converge_on_one_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(dir.path().join("agent.sock"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let starters: Vec<_> = (0..2)
+            .map(|_| {
+                let path = std::sync::Arc::clone(&path);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    AgentServer::bind(AgentConfig::new(&*path))
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = starters
+            .into_iter()
+            .map(|starter| starter.join().unwrap())
+            .collect();
+        let mut live = 0;
+        for outcome in outcomes {
+            match outcome {
+                Ok(server) => {
+                    live += 1;
+                    server.handle().stop();
+                    server.serve().unwrap();
+                }
+                Err(AgentError::AlreadyRunning(_)) => {}
+                Err(other) => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(live, 1, "exactly one starter ended up serving");
+
+        // And no temporary sibling is left behind by the loser.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".pa"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp sockets cleaned: {leftovers:?}");
+    }
+
+    /// A serialized loser yields before serving, and shutdown never
+    /// unlinks a socket the server does not own: a replacement placed at
+    /// the path behind a live server's back survives the server's stop
+    /// (passlane#77).
+    #[test]
+    fn shutdown_unlinks_only_the_owned_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let server = AgentServer::bind(AgentConfig::new(&path)).unwrap();
+        // A stranger's socket takes the path (possible only after a
+        // crash-mid-rename or against non-locking strangers; the lock
+        // keeps locking starters out of this state).
+        std::fs::remove_file(&path).unwrap();
+        let stranger = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        server.handle().stop();
+        server.serve().unwrap();
+        assert!(
+            path.exists(),
+            "the replacement survives the renamed-over server's stop"
+        );
+        drop(stranger);
+        std::fs::remove_file(&path).unwrap();
     }
 }
