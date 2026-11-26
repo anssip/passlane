@@ -689,6 +689,49 @@ fn answer_challenge_rejects_wrong_lengths_and_matches_the_protocol() {
     );
 }
 
+#[test]
+fn an_oversized_wire_input_is_rejected_before_normalization() {
+    let paired = paired(NOW);
+    let link = unlock_request(&paired, NOW);
+
+    // A payload padded past the input ceiling is refused before the
+    // whitespace normalization allocates: the decoder's memory cap
+    // cannot be bypassed by whitespace padding (the cleaned form would
+    // be under the cap).
+    let padded = " ".repeat(16 * 1024) + &link;
+    let rejected = err_message(
+        approval_open_request(
+            paired.phone.clone(),
+            vec![paired.cli_pin.clone()],
+            padded,
+            NOW + 10,
+            approval_default_policy(),
+            paired.phone_store(),
+        )
+        .map(|_| ()),
+    );
+    assert!(matches!(rejected, ApprovalError::Malformed { .. }), "{rejected:?}");
+
+    // Reasonably wrapped input still opens: the tolerance the paste path
+    // exists for.
+    let wrapped: String = link
+        .as_bytes()
+        .chunks(48)
+        .map(|c| String::from_utf8_lossy(c).into_owned() + "\n")
+        .collect();
+    let cleaned: String = wrapped.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(cleaned, link);
+    approval_open_request(
+        paired.phone.clone(),
+        vec![paired.cli_pin.clone()],
+        wrapped,
+        NOW + 10,
+        approval_default_policy(),
+        paired.phone_store(),
+    )
+    .unwrap();
+}
+
 // -- the enrollment helpers --------------------------------------------------
 
 #[test]

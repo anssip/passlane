@@ -689,10 +689,28 @@ fn secret_bytes(bytes: &[u8]) -> Arc<SecretBytes> {
 
 // -- helpers -----------------------------------------------------------------
 
+/// Ceiling on the raw envelope text accepted before normalization: 2×
+/// the protocol decoder's encoded-envelope cap, leaving room for the
+/// whitespace a pasted blob carries. Bounding here keeps a hostile link
+/// from forcing an unbounded copy + scan before
+/// `Envelope::from_base64url` can enforce its own limit — the guard the
+/// decoder's memory-exhaustion defense relies on.
+const MAX_WIRE_INPUT_LEN: usize = 16 * 1024;
+
 /// Parse a wire envelope from the unpadded base64url form links and QR
 /// codes carry. Whitespace is tolerated, as the CLI's paste path
-/// tolerates it; every other deviation is rejected.
+/// tolerates it; every other deviation is rejected. The input is
+/// length-bounded before the normalization allocates (see
+/// [`MAX_WIRE_INPUT_LEN`]).
 fn parse_envelope(encoded: &str) -> Result<envelope::Envelope, ApprovalError> {
+    if encoded.len() > MAX_WIRE_INPUT_LEN {
+        return Err(ApprovalError::Malformed {
+            message: format!(
+                "the envelope text is {} bytes; the protocol never exceeds {MAX_WIRE_INPUT_LEN}",
+                encoded.len()
+            ),
+        });
+    }
     let cleaned: String = encoded.chars().filter(|c| !c.is_whitespace()).collect();
     Ok(envelope::Envelope::from_base64url(&cleaned)?)
 }
@@ -1023,8 +1041,11 @@ pub fn approval_answer_challenge(
     challenge: Vec<u8>,
 ) -> Result<Arc<SecretBytes>, ApprovalError> {
     let secret = Zeroizing::new(secret);
-    let answer = message::answer_challenge(&secret, &challenge)?;
-    Ok(secret_bytes(&answer))
+    // The answer array is itself the vault-opening factor; hold it in a
+    // wiping wrapper for as long as it exists outside the exported
+    // object's zeroized buffer.
+    let answer = Zeroizing::new(message::answer_challenge(&secret, &challenge)?);
+    Ok(secret_bytes(&*answer))
 }
 
 /// Generate a fresh phone-held key secret: 20 random bytes, the HMAC-SHA1
@@ -1035,7 +1056,10 @@ pub fn approval_answer_challenge(
 /// persists in its Keychain.
 #[uniffi::export]
 pub fn approval_generate_phone_key_secret() -> Arc<SecretBytes> {
-    secret_bytes(&message::generate_phone_key_secret(&mut OsRng))
+    // Zeroized until it lives inside the exported object's buffer (the
+    // key exists as raw bytes exactly once more: on the sheet).
+    let secret = Zeroizing::new(message::generate_phone_key_secret(&mut OsRng));
+    secret_bytes(&*secret)
 }
 
 /// Sign and seal the approver's decision (the app side), answering the
@@ -1043,9 +1067,12 @@ pub fn approval_generate_phone_key_secret() -> Arc<SecretBytes> {
 /// `request_id`): HPKE-sealed to `peer`, signed by `identity`, echoing
 /// the request id. `response` is the 20-byte answer of
 /// [`approval_answer_challenge`] when the decision allows an
-/// `Unlock`/`Save`/`EnrollKey` request; the scope may be narrower than
-/// requested (the approver chooses on the phone). Returns the base64url
-/// envelope the CLI redeems.
+/// `Unlock`/`Save`/`EnrollKey` request; a denial must carry none — an
+/// answer would still unlock the vault for the requester being refused,
+/// so sealing rejects that combination outright (the approval page
+/// drops the answer on denial; the CLI ignores one). The scope may be
+/// narrower than requested (the approver chooses on the phone). Returns
+/// the base64url envelope the CLI redeems.
 #[uniffi::export]
 pub fn approval_seal_decision(
     identity: Arc<ApprovalIdentity>,
@@ -1057,6 +1084,13 @@ pub fn approval_seal_decision(
     now: u64,
     policy: ApprovalPolicy,
 ) -> Result<String, ApprovalError> {
+    if matches!(decision, ApprovalDecision::Deny { .. }) && response.is_some() {
+        return Err(ApprovalError::Malformed {
+            message: "a denial carries no challenge answer: the answer would still unlock the \
+                      vault for the requester being refused"
+                .to_string(),
+        });
+    }
     let peer = peer.to_protocol()?;
     let body = Body::ApprovalResponse {
         decision: decision.into(),
@@ -1204,5 +1238,50 @@ mod tests {
             approval_default_policy(),
         );
         assert!(matches!(sealed, Err(ApprovalError::Malformed { .. })));
+    }
+
+    /// A denial accompanied by an answer is refused outright: the answer
+    /// would still unlock the vault for the requester being refused (the
+    /// page drops it on denial; the CLI ignores one — this boundary
+    /// refuses to produce the combination at all).
+    #[test]
+    fn a_denial_with_an_answer_is_refused_at_seal() {
+        let identity = Arc::new(ApprovalIdentity::generate().unwrap());
+        let peer = approval_new_pin(
+            "self".into(),
+            identity.encryption_public(),
+            identity.verifying_public(),
+            0,
+        )
+        .unwrap();
+        let answer = secret_bytes(&[0x42u8; 20]);
+        let sealed = approval_seal_decision(
+            identity.clone(),
+            peer.clone(),
+            ApprovalDecision::Deny { reason: None },
+            ApprovalScope::Once,
+            Some(answer),
+            "a".repeat(32),
+            1_000,
+            approval_default_policy(),
+        );
+        assert!(matches!(
+            sealed,
+            Err(ApprovalError::Malformed { ref message }) if message.contains("denial")
+        ));
+        // A denial without an answer still seals.
+        let sealed = approval_seal_decision(
+            identity,
+            peer,
+            ApprovalDecision::Deny {
+                reason: Some("not now".into()),
+            },
+            ApprovalScope::Once,
+            None,
+            "a".repeat(32),
+            1_000,
+            approval_default_policy(),
+        );
+        assert!(sealed.is_ok());
     }
 }
