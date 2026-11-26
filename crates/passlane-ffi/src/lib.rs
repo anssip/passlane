@@ -44,11 +44,15 @@
 //!
 //! # Scope guard
 //!
-//! Approval-protocol types (the phone-key service) join this surface in a
-//! later revision once the protocol crate stabilizes. Until then the
-//! surface contains no UI concepts, no callbacks and no keepass-ng types.
+//! The approval-protocol surface (the phone-key service, passlane#82)
+//! lives in [`approval`]: envelopes, pairing, pinned peers, replay
+//! protection and the challenge answer, as a thin byte-oriented image
+//! of `passlane-approval`. Still no callbacks and no keepass-ng types
+//! on that side of the surface.
 
 uniffi::setup_scaffolding!();
+
+pub mod approval;
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, UnwindSafe, catch_unwind};
@@ -224,6 +228,14 @@ impl SecretBytes {
     /// *not* zeroized with it, so the caller should wipe it when done.
     pub fn as_bytes(&self) -> Vec<u8> {
         self.bytes.to_vec()
+    }
+}
+
+// Not part of the exported surface (uniffi cannot lower `&[u8]`); the
+// approval module reads answer bytes through it without copying.
+impl SecretBytes {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.bytes
     }
 }
 

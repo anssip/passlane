@@ -1440,7 +1440,7 @@ mod tests {
         let stale = |config: &VaultConfig| {
             let seed = crate::phone_key::kdf_seed::read_kdf_seed(&config.path)
                 .map_err(|e| AgentError::Protocol(e.message))?;
-            let wrong = crate::phone_key::tests::hmac_sha1(b"not the slot secret", &seed);
+            let wrong = crate::phone_key::tests::hmac_sha1(&[0x77u8; 20], &seed);
             Ok(Some(crate::phone_key::fixed_key(
                 config,
                 crate::phone_key::FixedAnswer::new(seed, zeroize::Zeroizing::new(wrong.to_vec())),

@@ -154,6 +154,49 @@ pub const CHALLENGE_RESPONSE_LEN: usize = 20;
 /// `perform_challenge`. It is not the same length as the response.
 pub const CHALLENGE_LEN: usize = 32;
 
+/// The approver-side answer to a challenge: HMAC-SHA1 over the challenge
+/// with the held secret — exactly the construction keepass-ng's
+/// `LocalChallenge` (a YubiKey HMAC-SHA1 slot), CryptoKit's
+/// `HMAC<Insecure.SHA1>` and the approval page's WebCrypto implement
+/// (SPEC §7). This is the computation the phone-held key exists to do:
+/// the CLI never runs it (it never learns the secret), so it lives on
+/// the approver side of this crate for the UniFFI surface to expose.
+///
+/// `secret` is the phone-held key's 20 bytes and `challenge` the request
+/// body's 32-byte challenge; anything else is a caller bug, reported as
+/// [`Error::Malformed`] rather than answered with a wrong-length digest.
+pub fn answer_challenge(secret: &[u8], challenge: &[u8]) -> Result<[u8; CHALLENGE_RESPONSE_LEN]> {
+    if secret.len() != CHALLENGE_RESPONSE_LEN {
+        return Err(Error::Malformed(format!(
+            "the held secret must be {CHALLENGE_RESPONSE_LEN} bytes (a KeePass HMAC-SHA1 slot \
+             secret), got {}",
+            secret.len()
+        )));
+    }
+    if challenge.len() != CHALLENGE_LEN {
+        return Err(Error::Malformed(format!(
+            "the challenge must be {CHALLENGE_LEN} bytes (a KDBX4 KDF seed), got {}",
+            challenge.len()
+        )));
+    }
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha1::Sha1> as Mac>::new_from_slice(secret).expect("any key length");
+    mac.update(challenge);
+    Ok(mac.finalize().into_bytes().into())
+}
+
+/// Generate a fresh phone-held key secret: 20 random bytes — the HMAC-SHA1
+/// slot secret whose hex form the recovery sheet carries (SPEC §7). The
+/// responder to `enroll_key` creates it, shows the sheet, and answers the
+/// enrollment challenge with it; the CLI never generates one.
+pub fn generate_phone_key_secret(
+    rng: &mut (impl rand::CryptoRng + rand::RngCore),
+) -> [u8; CHALLENGE_RESPONSE_LEN] {
+    let mut secret = [0u8; CHALLENGE_RESPONSE_LEN];
+    rng.fill_bytes(&mut secret);
+    secret
+}
+
 fn check_hex_len(name: &str, value: Option<&str>, len: usize) -> Result<()> {
     if let Some(v) = value
         && (v.len() != len * 2
@@ -617,5 +660,62 @@ mod tests {
         secret.zeroize();
         assert_ne!(secret.0, before);
         assert!(secret.0.chars().all(|c| c == '\0'));
+    }
+
+    #[test]
+    fn answer_challenge_matches_the_keepass_construction() {
+        // The exact construction keepass-ng's `LocalChallenge` and
+        // CryptoKit's `HMAC<Insecure.SHA1>` implement: HMAC-SHA1(secret,
+        // challenge). Recomputed here directly — the same independent
+        // check unlock_flow.rs makes — so swapped arguments or a wrong
+        // hash inside answer_challenge cannot pass unnoticed.
+        use hmac::{Hmac, Mac};
+        let secret = [0xa1u8; 20];
+        let challenge = [0x5fu8; CHALLENGE_LEN];
+        let expected: [u8; 20] = {
+            let mut mac = <Hmac<sha1::Sha1> as Mac>::new_from_slice(&secret).unwrap();
+            mac.update(&challenge);
+            mac.finalize().into_bytes().into()
+        };
+        assert_eq!(answer_challenge(&secret, &challenge).unwrap(), expected);
+        assert_eq!(answer_challenge(&secret, &challenge).unwrap(), expected);
+        assert_ne!(
+            answer_challenge(&secret, &[0x5eu8; CHALLENGE_LEN]).unwrap(),
+            expected,
+            "bound to the challenge"
+        );
+        assert_ne!(
+            answer_challenge(&[0xa2u8; 20], &challenge).unwrap(),
+            expected,
+            "bound to the secret"
+        );
+        // RFC 2202 test case 1 pins the HMAC-SHA1 construction itself to
+        // a published vector (20-byte key of 0x0b over "Hi There").
+        let mut mac = <Hmac<sha1::Sha1> as Mac>::new_from_slice(&[0x0b; 20]).unwrap();
+        mac.update(b"Hi There");
+        let rfc: [u8; 20] = mac.finalize().into_bytes().into();
+        assert_eq!(
+            crate::encoding::hex_encode(&rfc),
+            "b617318655057264e28bc0b6fb378c8ef146be00"
+        );
+    }
+
+    #[test]
+    fn answer_challenge_rejects_wrong_lengths() {
+        assert!(answer_challenge(&[0x0b; 19], b"Hi There").is_err());
+        assert!(answer_challenge(&[0x0b; 21], b"Hi There").is_err());
+        assert!(answer_challenge(&[0x0b; 20], &[0u8; 31]).is_err());
+        assert!(answer_challenge(&[0x0b; 20], &[0u8; 33]).is_err());
+    }
+
+    #[test]
+    fn generated_phone_key_secrets_have_the_slot_shape() {
+        use rand::rngs::OsRng;
+        let a = generate_phone_key_secret(&mut OsRng);
+        let b = generate_phone_key_secret(&mut OsRng);
+        assert_eq!(a.len(), CHALLENGE_RESPONSE_LEN);
+        assert_ne!(a, b, "fresh secrets must not repeat");
+        // And the generated secret answers challenges like a slot does.
+        assert!(answer_challenge(&a, &[0u8; CHALLENGE_LEN]).is_ok());
     }
 }
