@@ -15,14 +15,28 @@ categories = ["api-bindings"]
 # `usb` feature: the phone has no USB, so only virtual challenge-response
 # keys exist here (same configuration as the iOS core build).
 passlane-core = { path = "../passlane-core", version = "4.0.0" }
+# The approval-protocol surface (passlane#82): envelopes, pairing, pins,
+# replay protection, and the phone-side challenge answer — a thin image
+# of the protocol crate, byte-oriented and stateless where possible.
+passlane-approval = { path = "../passlane-approval", version = "0.1.0" }
 uniffi = "0.32"
 uuid = "1.8.0"
 # Zeroizing for the secrets that cross the boundary (master password,
 # challenge secret, every fetched field) — same version as passlane-core.
 zeroize = "1.8"
+# OsRng for identity-key generation and envelope sealing randomness —
+# same 0.8 line as passlane-approval's.
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3.24.0"
+# The approval-surface tests play the CLI side of each round-trip with the
+# protocol crate directly (proving the FFI opens exactly what the CLI
+# seals) and build a mocked WebAuthn assertion the same way
+# passlane-approval's own tests do — same versions, so the workspace
+# unifies.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+sha2 = "0.10"
 
 [lib]
 name = "passlane_ffi"

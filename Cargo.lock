@@ -2527,7 +2527,11 @@ dependencies = [
 name = "passlane-ffi"
 version = "4.0.0"
 dependencies = [
+ "p256",
+ "passlane-approval",
  "passlane-core",
+ "rand 0.8.8",
+ "sha2 0.10.9",
  "tempfile",
  "uniffi",
  "uuid",

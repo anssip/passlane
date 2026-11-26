@@ -489,11 +489,13 @@ pub(crate) mod tests {
     }
 
     /// HMAC-SHA1, as keepass-ng's `LocalChallenge` computes a response.
+    /// The shared construction lives in the protocol crate now
+    /// (`answer_challenge`, exposed to the iOS app through the FFI);
+    /// this helper keeps its test-only call sites and their fixed valid
+    /// shapes.
     pub(crate) fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; ANSWER_LEN] {
-        use hmac::{Hmac, Mac};
-        let mut mac = Hmac::<sha1::Sha1>::new_from_slice(key).expect("HMAC takes any key length");
-        mac.update(message);
-        mac.finalize().into_bytes().into()
+        passlane_approval::message::answer_challenge(key, message)
+            .expect("phone-key tests use 20-byte secrets and 32-byte challenges")
     }
 
     /// The registry entry for the vault *file* at `path`, with no second

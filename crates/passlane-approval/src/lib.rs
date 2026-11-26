@@ -122,6 +122,7 @@ pub mod prelude {
     pub use crate::keys::{IdentityKeys, PeerPin, PublicKey, WebauthnPin};
     pub use crate::message::{
         Body, Decision, DeviceInfo, Header, MessageType, Operation, Scope, SecretHex, VERSION,
+        answer_challenge, generate_phone_key_secret,
     };
     pub use crate::pairing::{
         PairingSecret, open_pairing_request, open_pairing_response, seal_pairing_request,
