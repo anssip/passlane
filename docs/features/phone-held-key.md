@@ -1,12 +1,14 @@
-# The phone-held key (`passlane hwkey add --phone`)
+# The phone-held key
 
 The vault's challenge-response secret lives on another device — the
 iPhone, paired over the pairing QR (or the [approval
 page](../../page/README.md), pinned with `approvals enroll`) — and this
-computer only ever sees 20-byte answers. It is the same HMAC-SHA1
-challenge-response KeePass uses for YubiKeys, so the vault stays
-readable by a physical key programmed with the same secret, and the
-recovery sheet works everywhere KeePass works.
+computer only ever sees 20-byte answers. It is the **default second
+factor at vault setup**: `passlane init` and `passlane vault add` offer
+it first (passlane#85), enrolling inline during setup. It is the same
+HMAC-SHA1 challenge-response KeePass uses for YubiKeys, so the vault
+stays readable by a physical key programmed with the same secret, and
+the recovery sheet works everywhere KeePass works.
 
 ```
 $ passlane hwkey add --phone
@@ -141,6 +143,45 @@ our older in-memory copy — and the enrollment simply did not happen.
   (`passlane approvals pair`; the approval page's path is `passlane
   approvals enroll`) and enroll the key again
   (`passlane hwkey add --phone`).
+
+## At vault setup (passlane#85)
+
+`passlane init` and `passlane vault add` offer the phone-held key as the
+**default** second factor when creating a vault — phone first, the
+hardware key as the alternative, none still available:
+
+```
+? Protect the vault with a second factor?
+> Phone (approve on your phone)      ← the lead choice
+  Hardware key (e.g. a YubiKey)
+  No second factor
+```
+
+Choosing the phone pairs it inline (the SPEC §5 ceremony, when no
+approver is pinned yet) and runs the enrollment ceremony — the recovery
+sheet and its scan-back, then the two approvals — **before the vault is
+registered**: the file is written password-only, the re-key rides the
+ceremony's save approval (this machine never sees the secret), and the
+registry entry is recorded together with the factor only once the vault
+opens with the holder's answer. A ceremony that is refused or expires
+registers nothing and removes the file it had just created; a registry
+write that fails rolls the re-key back — the same failure semantics a
+hardware key gets at creation. The setup ends by saying what the factor
+means: every open and save of the vault asks the phone, and the
+recovery sheet is the only way in without it.
+
+Registering an **existing** phone-protected vault (created on another
+machine) asks which second factor it requires, and `Phone-held key`
+records the factor: the pinned holder is asked for the approval the
+vault's own challenge needs, and only a vault that opens with the
+password and that approval is registered — so unlocks route through
+the approval flow instead of failing with a misleading wrong-password
+error. The holder-side vault id is derived from the holder and the
+vault's path, so the phone recognizes the vault when the file sits
+where it was enrolled; the same phone, a different path, is an honest
+refusal. With nothing pinned here, the error says where the pin lives
+(`approval_peers.json` on the machine that enrolled the holder) —
+pairing fresh would be a new identity that holds no key for this vault.
 
 ## Limits, honestly
 

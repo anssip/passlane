@@ -353,7 +353,7 @@ impl HwKeyAction {
 /// request goes out (passlane#72): the second approval's link arriving
 /// unannounced after the first paste is when users lose track of which
 /// response is current, so the sequence is named up front.
-fn enrollment_approval_notice() -> &'static str {
+pub(crate) fn enrollment_approval_notice() -> &'static str {
     "This enrollment needs 2 approvals from that device: create the key, then save the vault \
      with it. Each approval answers its own fresh request — paste only the response the \
      terminal is waiting for; a response from an earlier request is refused."
@@ -392,6 +392,45 @@ fn record_factor_to(
     }
 }
 
+/// The holder of an already phone-protected vault's key, when such a
+/// vault is registered on this machine (passlane#85): the pinned
+/// approver the vault was enrolled under. Unlike [`choose_holder`]
+/// nothing is paired here — the pairing ceremony creates a fresh
+/// device identity that holds no key for this vault — so with nothing
+/// pinned, the error says where the pin lives instead of offering one.
+pub(crate) fn choose_registered_holder(
+    peers: Vec<passlane_approval::keys::PeerPin>,
+) -> Result<passlane_approval::keys::PeerPin, Error> {
+    match peers.as_slice() {
+        [] => Err(Error::new(
+            "No approver is pinned on this machine, so the phone that holds this vault's key \
+             cannot be asked to verify it. The pin lives where the vault was enrolled: copy that \
+             machine's approval_peers.json into this machine's ~/.passlane, or re-run this \
+             command there. Pairing here would not help — a fresh pairing is a new device \
+             identity that holds no key for this vault.",
+        )),
+        [one] => {
+            println!(
+                "The pinned approver '{}' will be asked for the vault's key (it must be the \
+                 device the vault was enrolled with).",
+                one.label
+            );
+            Ok(one.clone())
+        }
+        many => {
+            let labels: Vec<&str> = many.iter().map(|peer| peer.label.as_str()).collect();
+            let choice =
+                inquire::Select::new("Which device holds the key for this vault?", labels.clone())
+                    .prompt()
+                    .map_err(|_| Error::new("registration aborted: no device was chosen"))?;
+            many.iter()
+                .find(|peer| peer.label == choice)
+                .cloned()
+                .ok_or_else(|| Error::new("internal: the chosen approver disappeared"))
+        }
+    }
+}
+
 /// The pinned approver that will hold the vault's key: the one named by
 /// `--approver`, else the only one pinned, else the person's choice — and
 /// when nothing is pinned at all, the **app pairing** ceremony runs first
@@ -404,7 +443,7 @@ fn record_factor_to(
 /// `--approver`), everything else — the holder's answers and, through
 /// the session agent, even the password — can arrive without a terminal,
 /// so enrollment works over SSH or from an agent platform too.
-fn choose_holder(
+pub(crate) fn choose_holder(
     approver: Option<&str>,
     page: Option<&str>,
 ) -> Result<passlane_approval::keys::PeerPin, Error> {
@@ -456,7 +495,7 @@ fn choose_holder(
         }
         [one] => {
             println!(
-                "The pinned approver '{}' will hold the key (override with --approver).",
+                "The pinned approver '{}' will hold the key for this vault.",
                 one.label
             );
             Ok(one.clone())
@@ -483,7 +522,7 @@ fn choose_holder(
 /// (the vault goes back to opening on its old factors alone): a vault that
 /// needs the phone while passlane does not know to ask would be locked
 /// out of its own CLI.
-fn enroll_and_record(
+pub(crate) fn enroll_and_record(
     config: &VaultConfig,
     password: &str,
     vault: &mut KeepassVault,
@@ -973,6 +1012,48 @@ mod tests {
                 .unwrap()
                 .phone_key
                 .is_none()
+        );
+    }
+
+    /// A pinned approver with real keys, for the holder-resolution tests.
+    fn pin(label: &str) -> passlane_approval::keys::PeerPin {
+        use passlane_approval::keys::{IdentityKeys, PeerPin, PublicKey};
+        let mut rng = rand::rngs::OsRng;
+        let keys = IdentityKeys::generate(&mut rng).expect("key generation works");
+        let enc = PublicKey::from_bytes(&keys.encryption_public()).expect("a valid enc key");
+        let sig = PublicKey::from_bytes(&keys.verifying_key().to_sec1_bytes()).expect("valid");
+        PeerPin::new(label, enc, sig, 0)
+    }
+
+    #[test]
+    fn a_registered_vault_uses_the_only_pinned_holder() {
+        let holder = choose_registered_holder(vec![pin("anssi-iphone")]).unwrap();
+        assert_eq!(holder.label, "anssi-iphone");
+        // Its kid is usable: the registry entry is built from it.
+        assert!(holder.enc_kid().is_ok());
+    }
+
+    #[test]
+    fn a_registered_vault_with_no_pinned_holder_explains_where_the_pin_is() {
+        // No pairing is offered: a fresh pairing would be a new device
+        // identity that holds no key for this vault.
+        let err = choose_registered_holder(vec![]).unwrap_err();
+        assert!(
+            err.message
+                .contains("No approver is pinned on this machine"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("approval_peers.json"),
+            "the file to copy is named: {}",
+            err.message
+        );
+        assert!(
+            err.message
+                .contains("a new device identity that holds no key"),
+            "pairing is explained to be useless here: {}",
+            err.message
         );
     }
 }

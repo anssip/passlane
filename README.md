@@ -201,7 +201,7 @@ recover the vault if the key is lost:
 ykman otp chalresp --generate 2
 ```
 
-Enroll the key (or answer yes to the hardware key question during `passlane init` when creating a new vault):
+Enroll the key (or choose the hardware key when `passlane init` asks for a second factor while creating a new vault):
 
 ```bash
 passlane hwkey add
@@ -248,6 +248,11 @@ anywhere:
 ```bash
 passlane hwkey add --phone
 ```
+
+The phone is also the **default second factor when creating a vault**: `passlane init` and
+`passlane vault add` offer it first — choosing it pairs the phone inline and runs the enrollment
+ceremony during setup. Registering an existing phone-protected vault (e.g. from another machine)
+records the factor, so unlocks ask the phone instead of failing with a wrong-password error.
 
 The device shows a recovery sheet during enrollment and the key is not enrolled until its secret has been read back
 from a copy of that sheet — losing the device without the sheet loses the vault. The sheet secret also recovers a lost
