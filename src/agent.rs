@@ -818,9 +818,9 @@ where
                             "Entry '{}' needs owner approval (agent=ask). Approval request {} was \
                              recorded in the approval log ({}). The owner can approve it \
                              interactively with {} — choosing 'Approve for this session' there \
-                             covers repeated agent use until the session expires — or enroll \
-                             the approval page with 'passlane approvals enroll' to approve \
-                             remotely",
+                             covers repeated agent use until the session expires — or pair the \
+                             app ('passlane approvals pair') / enroll the approval page \
+                             ('passlane approvals enroll') to approve remotely",
                             entry,
                             id,
                             log.path().display(),

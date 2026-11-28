@@ -238,10 +238,12 @@ KeepassXC's database security settings. On Linux, USB access to the key requires
 
 ### Phone-held key unlock
 
-Instead of a USB key, the challenge-response secret can live on your phone — or, until the iOS app ships, on the device
-running the [approval page](https://github.com/anssip/passlane/tree/master/page) you paired with `passlane approvals
-enroll`. The secret is generated there and never exists on this computer; every open and save of the vault asks that
-device for an approval (a QR code to scan, or a link to relay), answered from anywhere:
+Instead of a USB key, the challenge-response secret can live on your phone — paired with the
+passlane app through `passlane approvals pair` — or on the device running the [approval
+page](https://github.com/anssip/passlane/tree/master/page) you pin with `passlane approvals
+enroll`. The secret is generated there and never exists on this computer; every open and save of
+the vault asks that device for an approval (a QR code to scan, or a link to relay), answered from
+anywhere:
 
 ```bash
 passlane hwkey add --phone

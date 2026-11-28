@@ -252,13 +252,14 @@ pub fn cli() -> Command {
                              password (and keyfile) plus that key; every save needs a touch.\n\nWith --phone, another device creates and holds the challenge-response secret — it never \
                              exists on this computer — and every open and save asks that device for an approval over the \
                              link transport (a QR code to scan, or a link to relay). The device shows a recovery sheet; \
-                             the key is not enrolled until you scan that sheet back on the device. Pair the device first \
-                             with 'passlane approvals enroll', or let this command pair it. See \
+                             the key is not enrolled until you scan that sheet back on the device. With no approver \
+                             pinned yet, this command pairs the iOS app first (or pair it yourself beforehand with \
+                             'passlane approvals pair'; the approval page needs 'passlane approvals enroll'). See \
                              docs/features/phone-held-key.md."
                         )
                         .arg(
                             arg!(
-                                --phone "Enrol a key held by another device instead of a hardware key: the pinned approver, paired first when none is."
+                                --phone "Enrol a key held by another device instead of a hardware key: the pinned approver, or when none is pinned the iOS app paired first."
                             ).action(ArgAction::SetTrue).conflicts_with_all(["slot", "serial"])
                         )
                         .arg(arg!(
@@ -268,7 +269,7 @@ pub fn cli() -> Command {
                             --serial <SERIAL> "Serial number of the key to enroll, when several are connected."
                         ).value_parser(clap::value_parser!(u32)))
                         .arg(arg!(
-                            --page <URL> "Approval page base URL, used when --phone has to pair the device first. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.passlane.app."
+                            --page <URL> "Approval page base URL — the domain the pairing link for the app rides on, used when --phone has to pair the device first. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.northernpeaks.dev."
                         ).conflicts_with_all(["slot", "serial"]).requires("phone"))
                         .arg(arg!(
                             --approver <LABEL> "Label of the pinned approver that should hold the key. Defaults to the only pinned approver; with several, you are asked."
@@ -317,15 +318,30 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("approvals")
-                .about("Manage approvers for the link transport: enroll the approval page (ECDH + passkey) or the device holding a vault's phone key, list pins, inspect pending requests.")
+                .about("Manage approvers for the link transport: pair the iOS app or enroll the approval page, list pins, inspect pending requests.")
                 .subcommand_required(true)
                 .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("pair")
+                        .about("Pair the iOS app as an approver (SPEC §5: QR-borne pairing secret, mutual confirmation codes).")
+                        .long_about(
+                            "Prints a pairing link and terminal QR for the passlane app. The app scans it, \
+                             both sides show two confirmation codes, and its sealed pairing response is \
+                             pasted back here; the pin is stored only after the mutual code is \
+                             confirmed. The pairing secret and the request envelope ride the URL \
+                             fragment, so the domain never sees either. Without the app, the approval \
+                             page is the other path: 'passlane approvals enroll'."
+                        )
+                        .arg(arg!(
+                            --page <URL> "Approval page base URL — the domain the pairing link rides on. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.northernpeaks.dev."
+                        ))
+                )
                 .subcommand(
                     Command::new("enroll")
                         .about("Pin the static approval page as an approver (SPEC §6: ECDH key + passkey binding ceremony).")
                         .long_about("Prints an enrollment link for the approval page. The page enrolls a WebCrypto ECDH encryption key and a WebAuthn passkey, and its passkey signs SHA-256(enrollment_nonce ‖ ECDH public key); the pasted blob is verified and both keys pinned before any approval travels.")
                         .arg(arg!(
-                            --page <URL> "Approval page base URL. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.passlane.app."
+                            --page <URL> "Approval page base URL. Defaults to $PASSLANE_APPROVAL_PAGE, then https://approve.northernpeaks.dev."
                         ))
                 )
                 .subcommand(

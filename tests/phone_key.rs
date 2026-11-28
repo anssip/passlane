@@ -1045,14 +1045,19 @@ fn a_second_enrollment_is_refused_and_paring_is_needed_without_a_pin() {
         "the phone is asked nothing new"
     );
 
-    // A world with nothing pinned needs a terminal to pair, and says so.
+    // A world with nothing pinned needs a terminal to pair, and says so —
+    // with both pairing paths: the app, and the page.
     let bare = World::new();
     std::fs::remove_file(bare.approvals.join("approval_peers.json")).unwrap();
     let out = bare.run(&["hwkey", "add", "--phone"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("'passlane approvals enroll' at a terminal"),
+        stderr.contains("'passlane approvals pair' at a terminal"),
         "{stderr}"
+    );
+    assert!(
+        stderr.contains("'passlane approvals enroll'"),
+        "the page path stays named for users without the app: {stderr}"
     );
 }

@@ -116,11 +116,12 @@ owner-only.
 The approval link transport (passlane#51) carries `ask` requests to a
 human approver over the cheapest possible channel: the CLI prints the
 request as a terminal QR plus a copyable link, the approver opens it on
-the [static approval page] (Phase 0; the iOS app later), decides with a
-passkey, and pastes the signed reply back. One-time setup:
+the [static approval page] (Phase 0) or in the iOS app, decides, and
+pastes the signed reply back. One-time setup — either approver:
 
 ```
-passlane approvals enroll     # pin the approval page (ECDH + passkey ceremony)
+passlane approvals pair       # pair the iOS app (QR + mutual confirmation codes)
+passlane approvals enroll     # or pin the approval page (ECDH + passkey ceremony)
 ```
 
 State lives under `~/.passlane` (override with `PASSLANE_APPROVALS_DIR`):
@@ -226,9 +227,10 @@ is *not* a cryptographic boundary:
   distinguish such a pty from a real terminal, so the CLI does not pretend
   to. The `ask` prompt is a speed bump against quiet exfiltration, not
   proof of human presence. Real proof of a human arrives with the approval
-  link: the approver must produce a passkey signature over the exact
+  link: the approver must sign the exact
   request bytes, which a relaying agent cannot forge — enroll an approver
-  (`passlane approvals enroll`) and keep `ask` on the entries that matter.
+  (`passlane approvals pair` for the app, `passlane approvals enroll` for
+  the page) and keep `ask` on the entries that matter.
 - An agent driving the owner's interactive terminal is trusted to be the
   owner; the `ask` prompt is the only speed bump there.
 - The completion cache and non-verbose listings expose entry *names* by

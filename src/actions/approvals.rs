@@ -1,9 +1,14 @@
 //! `passlane approvals …` (passlane#51): manage the approvers that can
 //! answer requests over the link transport.
 //!
+//! - `pair` — the SPEC §5 app ceremony (passlane#84): a QR-borne pairing
+//!   secret, both confirmation codes, and the app's sealed response
+//!   pasted back before the phone is pinned.
 //! - `enroll` — the SPEC §6 Phase 0 ceremony: print the enrollment link,
 //!   the page enrolls its ECDH key + passkey, and the pasted blob is
 //!   verified (passkey binding assertion) before the keys are pinned.
+//!   This stays the explicit page path — the one a user without the
+//!   app needs.
 //! - `list` / `remove` — pin bookkeeping.
 //! - `pending` — the pending-request store, for the owner to see what is
 //!   awaiting an answer.
@@ -16,7 +21,7 @@ use passlane_core::vault::entities::Error;
 
 use crate::actions::Action;
 use crate::approvals::pending::{PendingRequest, RequestKind, RequestState};
-use crate::approvals::{self, pending::PendingStore};
+use crate::approvals::{self, pairing::TerminalPairingUi, pending::PendingStore};
 
 pub struct ApprovalsAction {
     subcommand: Subcommand,
@@ -24,6 +29,7 @@ pub struct ApprovalsAction {
 
 enum Subcommand {
     Enroll { page: Option<String> },
+    Pair { page: Option<String> },
     List,
     Pending,
     Link { rid: String },
@@ -34,6 +40,9 @@ impl ApprovalsAction {
     pub fn new(matches: &ArgMatches) -> Self {
         let subcommand = match matches.subcommand() {
             Some(("enroll", sub)) => Subcommand::Enroll {
+                page: sub.get_one::<String>("page").cloned(),
+            },
+            Some(("pair", sub)) => Subcommand::Pair {
                 page: sub.get_one::<String>("page").cloned(),
             },
             Some(("list", _)) => Subcommand::List,
@@ -49,6 +58,27 @@ impl ApprovalsAction {
         Self { subcommand }
     }
 
+    fn run_pair(page_explicit: Option<String>) -> Result<String, Error> {
+        // The QR scan is the out-of-band channel (SPEC §5): pairing
+        // must not travel over a relay, and the app's response is
+        // pasted right here, so a terminal is part of the ceremony.
+        if !crate::actions::at_a_terminal() {
+            return Err(Error::new(
+                "Pairing needs an interactive terminal: the app's response is pasted back here, \
+                 and a relayed pairing is forbidden (SPEC §5). Run 'passlane approvals pair' at \
+                 a terminal.",
+            ));
+        }
+        let pin = pair_approver(page_explicit.as_deref())?;
+        let enc_kid = pin.enc_kid().map_err(|e| Error::new(&e.to_string()))?;
+        Ok(format!(
+            "Pinned approver '{}' ({}). Approval requests will now be sealed to it; run \
+             'passlane approvals list' to see the pin.",
+            pin.label,
+            &enc_kid[..enc_kid.len().min(8)],
+        ))
+    }
+
     fn run_enroll(page_explicit: Option<String>) -> Result<String, Error> {
         let (pin, _page, enc_kid) = enroll_approver(page_explicit.as_deref())?;
         Ok(format!(
@@ -62,7 +92,8 @@ impl ApprovalsAction {
             approvals::load_peers_pinned(&approvals::state_dir()).map_err(|e| Error::new(&e))?;
         if peers.is_empty() {
             return Ok(
-                "No approvers pinned. Run 'passlane approvals enroll' to pin the approval page."
+                "No approvers pinned. Pair the iOS app ('passlane approvals pair') or pin the \
+                 approval page ('passlane approvals enroll')."
                     .to_string(),
             );
         }
@@ -214,9 +245,9 @@ fn state_label(state: &RequestState) -> &'static str {
 /// only once the human confirms both devices show the same code.
 ///
 /// Returns the pin, the page base it was enrolled under, and the pin's
-/// encryption key id. Interactive: it prompts. Other commands that need a
-/// pinned approver — `hwkey add --phone`, when nothing is pinned yet — run
-/// this instead of making the user run `approvals enroll` first.
+/// encryption key id. Interactive: it prompts. The explicit page path —
+/// the one a user without the app takes, before `hwkey add --phone` can
+/// find a pinned approver.
 pub(crate) fn enroll_approver(
     page_explicit: Option<&str>,
 ) -> Result<(PeerPin, String, String), Error> {
@@ -311,6 +342,19 @@ pub(crate) fn enroll_approver(
     Ok((pin, page, enc_kid))
 }
 
+/// Pair with the iOS app (SPEC §5, passlane#84) and return the phone's
+/// pin: the pairing link and QR, both confirmation codes, and the app's
+/// sealed response pasted back before anything is pinned.
+///
+/// This is the ceremony `passlane approvals pair` runs, and the one
+/// `hwkey add --phone` runs when no approver is pinned. Interactive: it
+/// prompts, so the caller must have gated on a terminal — the QR scan is
+/// the out-of-band channel, and a relayed pairing is forbidden (SPEC §5).
+pub(crate) fn pair_approver(page_explicit: Option<&str>) -> Result<PeerPin, Error> {
+    approvals::pairing::pair_app(&approvals::state_dir(), page_explicit, &TerminalPairingUi)
+        .map_err(|e| Error::new(&e))
+}
+
 /// One line about a phone-held key's holder: its label if it is still
 /// pinned, and when it was enrolled. A pinned-approvers file that cannot
 /// be read is reported as such, not mistaken for "not pinned".
@@ -326,9 +370,9 @@ pub(crate) fn describe_holder(
             .unwrap_or_else(|| {
                 format!(
                     "holder {} is NOT pinned (recover with 'passlane hwkey remove --secret', \
-                     then pair with 'passlane approvals enroll' and enroll again with \
-                     'passlane hwkey add --phone' — re-pairing alone creates a new identity \
-                     that holds no key for this vault)",
+                     then pair with 'passlane approvals pair' — or 'passlane approvals enroll' \
+                     for the approval page — and enroll again with 'passlane hwkey add --phone' \
+                     — re-pairing alone creates a new identity that holds no key for this vault)",
                     phone_key.holder_kid
                 )
             }),
@@ -358,6 +402,7 @@ impl Action for ApprovalsAction {
     fn run(&self) -> Result<String, Error> {
         match &self.subcommand {
             Subcommand::Enroll { page } => Self::run_enroll(page.clone()),
+            Subcommand::Pair { page } => Self::run_pair(page.clone()),
             Subcommand::List => Self::run_list(),
             Subcommand::Pending => Self::run_pending(),
             Subcommand::Link { rid } => Self::run_link(rid),

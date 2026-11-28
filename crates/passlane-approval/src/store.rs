@@ -230,8 +230,8 @@ mod tests {
             sig_pub: "04".to_string() + &"22".repeat(64),
             paired_at: 42,
             webauthn: Some(crate::keys::WebauthnPin {
-                rp_id: "approve.passlane.app".into(),
-                origin: "https://approve.passlane.app".into(),
+                rp_id: "approve.northernpeaks.dev".into(),
+                origin: "https://approve.northernpeaks.dev".into(),
             }),
         }];
         save_peers(dir.path(), &peers).unwrap();

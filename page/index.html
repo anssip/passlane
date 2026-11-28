@@ -29,6 +29,11 @@
         (<code>passlane hwkey add --phone</code> on the computer) are answered
         with the HMAC this device holds for that vault; enrollment shows a
         recovery sheet first.</li>
+      <li><code>/pair.html#…</code> — no page is served here: that link pairs
+        the iOS app (<code>passlane approvals pair</code> on the computer), and
+        iOS routes it to the app through this domain's
+        <code>apple-app-site-association</code>. The pairing secret and the
+        request envelope ride the fragment all the same.</li>
     </ul>
     <p>
       No secrets reach this site's server: everything sensitive travels in the
