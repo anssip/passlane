@@ -137,12 +137,16 @@ impl State {
         }
     }
 
-    /// The state holds the app's identity and vault keys: a fresh
-    /// owner-only temporary file, atomically renamed over the
-    /// destination. Truncating the existing inode instead would write
-    /// the secrets into a file that still carries its old (possibly
-    /// permissive) permissions, and a reader that already opened it
-    /// would keep reading through the later chmod.
+    /// The state holds the app's identity and vault keys: a **freshly
+    /// and exclusively created** owner-only temporary file, atomically
+    /// renamed over the destination. Truncating the existing inode
+    /// instead would write the secrets into a file that still carries
+    /// its old (possibly permissive) permissions, and a reader that
+    /// already opened it would keep reading through the later chmod; a
+    /// pre-existing `<state>.tmp` (permissive file or symlink) is
+    /// likewise never reused — `mode(0o600)` only protects files this
+    /// invocation created — and is never cleaned up by this invocation,
+    /// since a file it did not create may belong to someone else.
     fn save(&self, path: &Path) {
         let doc = serde_json::json!({
             "enc_secret": passlane_approval::encoding::hex_encode(&self.enc_secret),
@@ -172,22 +176,28 @@ impl State {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{file_name}.tmp"));
+        // create_new: exclusive — an existing <state>.tmp is refused,
+        // not truncated, so its permissions (or symlink target) can
+        // never become the container of this invocation's secrets.
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let write = options
-            .open(&tmp)
+        let opened = options.open(&tmp);
+        // Only a temp file this invocation created may be cleaned up on
+        // failure; a pre-existing one is left exactly as it was.
+        let created = opened.is_ok();
+        let write = opened
             .and_then(|mut file| {
                 use std::io::Write;
                 file.write_all(&serde_json::to_vec_pretty(&doc).unwrap())
                     .and_then(|()| file.sync_all())
             })
             .and_then(|()| std::fs::rename(&tmp, path));
-        if write.is_err() {
+        if write.is_err() && created {
             let _ = std::fs::remove_file(&tmp);
         }
         write.expect("state writes");
