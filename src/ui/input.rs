@@ -804,12 +804,85 @@ pub fn ask_vault_name() -> String {
     )
 }
 
-pub fn ask_existing_vault_uses_hwkey() -> bool {
-    Confirm::new("Does this vault require a hardware key (e.g. a YubiKey) to open?")
-        .with_default(false)
-        .with_help_message("Answer yes if the vault was protected with a challenge-response key elsewhere (e.g. on another machine). The key must be connected now to verify the unlock.")
-        .prompt()
-        .unwrap()
+/// The second factor chosen for a vault at setup (passlane#85): the
+/// phone-held key — the lead choice when creating a vault, since a
+/// phone is the factor nearly everyone has — a hardware key, or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondFactor {
+    Phone,
+    HardwareKey,
+    None,
+}
+
+/// The second-factor choices offered when creating a vault, phone
+/// first (a `Select` defaults to its first option, so the phone is the
+/// default answer), the hardware key as the alternative, and no second
+/// factor still available.
+const SECOND_FACTOR_CHOICES: [&str; 3] = [
+    "Phone (approve on your phone)",
+    "Hardware key (e.g. a YubiKey)",
+    "No second factor",
+];
+
+/// The choices for the second-factor question an existing vault is
+/// registered with: a fact about the vault, not a preference — which
+/// factor it already requires, from wherever it was protected. `None`
+/// leads (the common vault), as the old hardware-key yes/no question
+/// defaulted to no.
+const EXISTING_VAULT_FACTOR_CHOICES: [&str; 3] = [
+    "No second factor",
+    "Phone-held key",
+    "Hardware key (e.g. a YubiKey)",
+];
+
+/// Ask which second factor a new vault gets. The phone is offered
+/// first — the default — and enrolling it runs inline: the phone is
+/// paired when nothing is pinned, then creates the key during setup.
+pub fn ask_second_factor() -> SecondFactor {
+    let choice = Select::new(
+        "Protect the vault with a second factor?",
+        SECOND_FACTOR_CHOICES.to_vec(),
+    )
+    .with_help_message(
+        "Phone: a key is created on your phone during setup — you pair it for this — and every \
+         open and save of the vault then asks it for an approval. Hardware key: a key with a \
+         programmed HMAC-SHA1 challenge-response slot (e.g. 'ykman otp chalresp --generate 2'), \
+         connected and touched on every open and save.",
+    )
+    .prompt()
+    .unwrap();
+    second_factor_from(choice).expect("a listed choice names a factor")
+}
+
+/// Ask which second factor a vault being *registered* — not created —
+/// already requires: the phone twin of the old hardware-key question.
+/// Answering `Phone` records the factor, so unlocks ask the phone for
+/// approvals instead of failing with a misleading wrong-password error.
+pub fn ask_existing_vault_second_factor() -> SecondFactor {
+    let choice = Select::new(
+        "Does this vault require a second factor to open?",
+        EXISTING_VAULT_FACTOR_CHOICES.to_vec(),
+    )
+    .with_help_message(
+        "Answer with the factor the vault was protected with elsewhere (e.g. on another \
+         machine). The phone is asked for an approval now to verify the unlock — and on every \
+         open and save afterwards; the hardware key must be connected now to verify it.",
+    )
+    .prompt()
+    .unwrap();
+    second_factor_from(choice).expect("a listed choice names a factor")
+}
+
+/// Which factor a chosen option names. The two questions share the
+/// option texts (bar the phone's); their orders differ — creation leads
+/// with the phone, registration defaults to none.
+fn second_factor_from(choice: &str) -> Option<SecondFactor> {
+    match choice {
+        "Phone (approve on your phone)" | "Phone-held key" => Some(SecondFactor::Phone),
+        "Hardware key (e.g. a YubiKey)" => Some(SecondFactor::HardwareKey),
+        "No second factor" => Some(SecondFactor::None),
+        _ => None,
+    }
 }
 
 pub fn ask_make_vault_active(name: &str) -> bool {
@@ -825,16 +898,6 @@ pub fn ask_remove_vault(name: &str) -> bool {
         name
     ))
     .with_default(false)
-    .prompt()
-    .unwrap()
-}
-
-pub fn ask_store_hwkey() -> bool {
-    Confirm::new(
-        "Protect the vault with a hardware key (e.g. a YubiKey)? It becomes an additional unlock factor: the key must be connected and touched every time the vault is opened or saved.",
-    )
-    .with_default(false)
-    .with_help_message("Requires a key with a programmed HMAC-SHA1 challenge-response slot. Program one with e.g. 'ykman otp chalresp --generate 2' and save the printed secret.")
     .prompt()
     .unwrap()
 }
@@ -915,6 +978,45 @@ mod tests {
         });
         assert_eq!(count.get(), 2);
         assert_eq!(result, "matching");
+    }
+
+    #[test]
+    fn creation_leads_with_the_phone_as_the_second_factor() {
+        // A Select's first option is its default, so the phone being
+        // first is the phone being the offered answer (passlane#85).
+        assert_eq!(
+            second_factor_from(SECOND_FACTOR_CHOICES[0]),
+            Some(SecondFactor::Phone)
+        );
+        assert_eq!(
+            second_factor_from(SECOND_FACTOR_CHOICES[1]),
+            Some(SecondFactor::HardwareKey)
+        );
+        assert_eq!(
+            second_factor_from(SECOND_FACTOR_CHOICES[2]),
+            Some(SecondFactor::None)
+        );
+    }
+
+    #[test]
+    fn registration_defaults_to_no_factor_and_offers_the_phone() {
+        // The old hardware-key question defaulted to no; the fact
+        // question for a registered vault keeps that, with the phone
+        // and the hardware key as the answers that record a factor.
+        assert_eq!(
+            second_factor_from(EXISTING_VAULT_FACTOR_CHOICES[0]),
+            Some(SecondFactor::None)
+        );
+        assert_eq!(
+            second_factor_from(EXISTING_VAULT_FACTOR_CHOICES[1]),
+            Some(SecondFactor::Phone)
+        );
+        assert_eq!(
+            second_factor_from(EXISTING_VAULT_FACTOR_CHOICES[2]),
+            Some(SecondFactor::HardwareKey)
+        );
+        // Everything offered maps, and only what is offered.
+        assert_eq!(second_factor_from("Something else"), None);
     }
 
     #[test]
