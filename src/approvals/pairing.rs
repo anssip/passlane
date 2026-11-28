@@ -29,12 +29,12 @@ use std::path::Path;
 use passlane_approval::envelope::Envelope;
 use passlane_approval::keys::PeerPin;
 use passlane_approval::message::DeviceInfo;
-use passlane_approval::pairing::{PairingSecret, open_pairing_response, seal_pairing_request};
+use passlane_approval::pairing::{PairingSecret, open_pairing_reply, seal_pairing_request};
 use passlane_approval::policy::Policy;
 use passlane_approval::replay::{FileNonceStore, NonceStore};
 use rand::rngs::OsRng;
 
-use super::{load_identity, nonce_store_path, now_secs, page_url, pin_approver, render_qr};
+use super::{load_identity, nonce_store_path, now_secs, page_url, pin_paired_app, render_qr};
 
 /// `<page>/pair.html#s=<secret hex>&e=<envelope>` — the pairing link
 /// (passlane#84). The app — not the page — consumes it: iOS routes the
@@ -119,7 +119,9 @@ impl PairingUi for TerminalPairingUi {
 /// the response is pasted right here); callers gate on a terminal
 /// before starting. The pin remembers the page base it was paired
 /// under, so later approval links target the same deployment — a
-/// custom `--page` today keeps targeting that deployment tomorrow.
+/// custom `--page` today keeps targeting that deployment tomorrow. A
+/// different device already pinned under the same name is refused
+/// rather than silently replaced (see [`super::pin_paired_app`]).
 pub fn pair_app(
     dir: &Path,
     page_explicit: Option<&str>,
@@ -202,22 +204,22 @@ pub fn pair_app(
         // Pruning under the store's own lock, before the rewrite, keeps
         // `.approval_nonces` bounded by the replay window.
         nonces.prune(now);
-        // The decision must sit inside THIS ceremony's window, and the
-        // paste must arrive within its total-lifetime bound (SPEC §4's
-        // discipline, applied to pairing) — checked before the nonce is
-        // spent, like the rid: the response's own freshness alone would
-        // accept a response sealed long after this pairing request died.
-        policy
-            .validate_reply(
-                request.header().ts,
-                request.header().exp,
-                envelope.header(),
-                now,
-            )
-            .map_err(|e| format!("the pairing response failed verification: {e}"))?;
-        let (_body, pin) =
-            open_pairing_response(&identity, &secret, &envelope, now, &policy, &mut nonces)
-                .map_err(|e| format!("the pairing response failed verification: {e}"))?;
+        // The request-aware opener applies SPEC §4's decision-time
+        // semantics: the decision must sit inside this ceremony's
+        // window and the paste inside its total-lifetime bound, checked
+        // before the nonce is spent, like the rid — while the response's
+        // own expiry does not bound redemption (the QR scan, code
+        // comparison and paste may outlast it while the ceremony lives).
+        let (_body, pin) = open_pairing_reply(
+            &identity,
+            &secret,
+            &request,
+            &envelope,
+            now,
+            &policy,
+            &mut nonces,
+        )
+        .map_err(|e| format!("the pairing response failed verification: {e}"))?;
         nonces
             .save()
             .map_err(|e| format!("could not persist the replay store: {e}"))?;
@@ -243,7 +245,7 @@ pub fn pair_app(
         );
     }
 
-    pin_approver(dir, pin.clone(), Some(&page))?;
+    pin_paired_app(dir, pin.clone(), &page)?;
     Ok(pin)
 }
 
@@ -642,6 +644,60 @@ pub(crate) mod tests {
         assert!(err.contains("the codes did not match"), "{err}");
         assert!(err.contains("nothing was pinned"), "{err}");
         assert!(load_peers(dir.path()).unwrap().is_empty());
+    }
+
+    /// Two devices may share a name (nobody chose it — it is the
+    /// device's own `device.name`): pairing the second must refuse
+    /// instead of silently replacing the first pin, whose key may be
+    /// what the registry references as a vault's holder.
+    #[test]
+    fn a_same_named_different_device_does_not_replace_the_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Rc::new(MockApp::new("anssi-iphone"));
+        let codes = Rc::new(RefCell::new(None));
+        pair_app(dir.path(), None, &pairing_terminal(&first, true, &codes))
+            .expect("the first device pairs");
+        assert_eq!(load_peers(dir.path()).unwrap().len(), 1);
+
+        // The same name, different keys: the ceremony verifies (it is
+        // a genuine response from that device), the human confirms the
+        // codes — and the pin is still refused.
+        let second = Rc::new(MockApp::new("anssi-iphone"));
+        let codes = Rc::new(RefCell::new(None));
+        let err = pair_app(dir.path(), None, &pairing_terminal(&second, true, &codes))
+            .expect_err("a same-named different device is refused");
+        assert!(err.contains("already pinned as 'anssi-iphone'"), "{err}");
+        assert!(
+            err.contains("'passlane approvals remove anssi-iphone'"),
+            "the way out is named: {err}"
+        );
+        // The first device's pin stands exactly as it was.
+        let peers = load_peers(dir.path()).unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].enc_pub,
+            hex_encode(&first.keys.encryption_public())
+        );
+    }
+
+    /// Re-pairing the SAME device (same keys, new ceremony) is the
+    /// idempotent replace: one pin, the newer pairing time.
+    #[test]
+    fn re_pairing_the_same_device_replaces_its_own_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = Rc::new(MockApp::new("anssi-iphone"));
+        let codes = Rc::new(RefCell::new(None));
+        pair_app(dir.path(), None, &pairing_terminal(&app, true, &codes))
+            .expect("the device pairs");
+        let first_paired_at = load_peers(dir.path()).unwrap()[0].paired_at;
+
+        let codes = Rc::new(RefCell::new(None));
+        pair_app(dir.path(), None, &pairing_terminal(&app, true, &codes))
+            .expect("re-pairing the same device is an idempotent replace");
+        let peers = load_peers(dir.path()).unwrap();
+        assert_eq!(peers.len(), 1, "no second pin for the same device");
+        assert_eq!(peers[0].enc_pub, hex_encode(&app.keys.encryption_public()));
+        assert!(peers[0].paired_at >= first_paired_at);
     }
 
     #[test]

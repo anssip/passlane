@@ -137,9 +137,12 @@ impl State {
         }
     }
 
-    /// The state holds the app's identity and vault keys: owner-only
-    /// permissions, applied at creation and tightened on an existing
-    /// file (which may predate this).
+    /// The state holds the app's identity and vault keys: a fresh
+    /// owner-only temporary file, atomically renamed over the
+    /// destination. Truncating the existing inode instead would write
+    /// the secrets into a file that still carries its old (possibly
+    /// permissive) permissions, and a reader that already opened it
+    /// would keep reading through the later chmod.
     fn save(&self, path: &Path) {
         let doc = serde_json::json!({
             "enc_secret": passlane_approval::encoding::hex_encode(&self.enc_secret),
@@ -161,6 +164,14 @@ impl State {
                 "secret": passlane_approval::encoding::hex_encode(secret),
             })),
         });
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("sim-app-state.json");
+        let tmp = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{file_name}.tmp"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -168,16 +179,18 @@ impl State {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(path).expect("state writes");
-        use std::io::Write;
-        file.write_all(&serde_json::to_vec_pretty(&doc).unwrap())
-            .and_then(|()| file.sync_all())
-            .expect("state writes");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        let write = options
+            .open(&tmp)
+            .and_then(|mut file| {
+                use std::io::Write;
+                file.write_all(&serde_json::to_vec_pretty(&doc).unwrap())
+                    .and_then(|()| file.sync_all())
+            })
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if write.is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
+        write.expect("state writes");
     }
 
     fn identity(&self) -> IdentityKeys {

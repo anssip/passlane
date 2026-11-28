@@ -975,6 +975,45 @@ pub fn pin_approver(
     store_peers(dir, &peers)
 }
 
+/// Pin a paired app (passlane#84): like [`pin_approver`] but with two
+/// app-specific guarantees, both under the peers lock.
+///
+/// - a **different** approver already pinned under the same label is a
+///   hard error, not a silent replacement. The label comes from the
+///   device's `device.name` — nobody chose it — so two phones sharing a
+///   name must not quietly drop the first pin, whose `holder_kid` may be
+///   what vaults' registry entries reference. Same label with the same
+///   key is re-pairing the same device and stays an idempotent replace.
+/// - the **page base** the pairing rode on must persist: an app pin
+///   carries no WebAuthn origin to fall back to, so a lost page base
+///   would silently retarget its approval links to the configured
+///   default — possibly a domain this app is not associated with. (The
+///   page path keeps [`pin_approver`]'s best-effort map write: a pinned
+///   origin is its fallback.)
+pub fn pin_paired_app(dir: &std::path::Path, pin: PeerPin, page_base: &str) -> Result<(), String> {
+    let _guard = PeersLock::take(dir)?;
+    let mut peers = load_peers_pinned(dir)?;
+    if let Some(existing) = peers.iter().find(|p| p.label == pin.label)
+        && existing.enc_pub != pin.enc_pub
+    {
+        return Err(format!(
+            "a different approver is already pinned as '{}' — pairing would silently replace a \
+             pin that may hold vault keys. Remove it first ('passlane approvals remove {}'), or \
+             rename one of the devices and pair again.",
+            pin.label, pin.label
+        ));
+    }
+    // The page base lands before the pin is published: if it cannot be
+    // written, nothing is pinned and the pairing is reported as failed,
+    // instead of a "successful" pin whose links would target the wrong
+    // domain.
+    let kid = pin.enc_kid().map_err(|e| e.to_string())?;
+    remember_page_base(dir, &kid, page_base)?;
+    peers.retain(|p| p.label != pin.label);
+    peers.push(pin);
+    store_peers(dir, &peers)
+}
+
 /// Remove a pinned approver by label (same locked transaction as
 /// [`pin_approver`]).
 pub fn unpin_approver(dir: &std::path::Path, label: &str) -> Result<bool, String> {

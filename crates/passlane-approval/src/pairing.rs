@@ -224,6 +224,10 @@ pub fn seal_pairing_response(
 /// those keys under the QR-borne pairing secret, which only the honest
 /// phone (or the CLI that printed the QR) can compute.
 ///
+/// The response is validated against its **own** lifetime. The pairing
+/// ceremony's opener — where the request is at hand and SPEC §4's
+/// decision-time freshness applies — is [`open_pairing_reply`].
+///
 /// The caller pins the returned [`PeerPin`] only after the human confirms
 /// the confirmation codes match.
 pub fn open_pairing_response(
@@ -234,6 +238,59 @@ pub fn open_pairing_response(
     policy: &Policy,
     nonce_store: &mut dyn NonceStore,
 ) -> Result<(Zeroizing<Body>, PeerPin)> {
+    check_pairing_response_header(local, envelope)?;
+    policy.validate(&envelope.header, now)?;
+    open_pairing_envelope(
+        local,
+        secret,
+        envelope,
+        now,
+        envelope.header.exp,
+        nonce_store,
+    )
+}
+
+/// Open a pairing response **for the request it answers** (passlane#84):
+/// the ceremony opener, applying SPEC §4's decision-time semantics to
+/// pairing. The response's decision (`ts`) must sit inside the request's
+/// validity window (with skew), the redemption inside the request's
+/// total-lifetime bound, and the response must echo the request's `rid`
+/// — but the response's **own** expiry no longer bounds redemption: the
+/// relay round trip (QR scan, code comparison, paste) may outlast the
+/// response's TTL while the ceremony is still live, exactly as an
+/// approval decision made in time may be redeemed late.
+///
+/// The replay nonce is retained through the request's redemption
+/// deadline, not the response's own expiry.
+pub fn open_pairing_reply(
+    local: &IdentityKeys,
+    secret: &PairingSecret,
+    request: &Envelope,
+    envelope: &Envelope,
+    now: u64,
+    policy: &Policy,
+    nonce_store: &mut dyn NonceStore,
+) -> Result<(Zeroizing<Body>, PeerPin)> {
+    if envelope.header.rid != request.header.rid {
+        return Err(Error::Pairing(
+            "the pairing response does not answer the request it was given".into(),
+        ));
+    }
+    check_pairing_response_header(local, envelope)?;
+    policy.validate_reply(
+        request.header().ts,
+        request.header().exp,
+        &envelope.header,
+        now,
+    )?;
+    let nonce_expiry = policy.redemption_deadline(request.header().ts, request.header().exp);
+    open_pairing_envelope(local, secret, envelope, now, nonce_expiry, nonce_store)
+}
+
+/// The header checks shared by both pairing-response openers: version,
+/// message type, shapes, and that the response is addressed to this
+/// CLI's encryption key.
+fn check_pairing_response_header(local: &IdentityKeys, envelope: &Envelope) -> Result<()> {
     if envelope.header.v != VERSION {
         return Err(Error::Version(envelope.header.v));
     }
@@ -241,11 +298,24 @@ pub fn open_pairing_response(
         return Err(Error::MessageTypeMismatch(MessageType::PairingResponse));
     }
     crate::envelope::validate_header_shapes(&envelope.header, false)?;
-    policy.validate(&envelope.header, now)?;
     if envelope.header.rkid != kid(b"enc", &local.encryption_public()) {
         return Err(Error::WrongRecipient(envelope.header.rkid.clone()));
     }
+    Ok(())
+}
 
+/// Everything after the freshness policy: decrypt, verify the binding
+/// proof and the declared-key signature, check the sender kid, record
+/// the replay nonce (retained until `nonce_expiry`), and build the pin
+/// (`paired_at` is the opener's clock, `now`).
+fn open_pairing_envelope(
+    local: &IdentityKeys,
+    secret: &PairingSecret,
+    envelope: &Envelope,
+    now: u64,
+    nonce_expiry: u64,
+    nonce_store: &mut dyn NonceStore,
+) -> Result<(Zeroizing<Body>, PeerPin)> {
     let plaintext = Zeroizing::new(crypto::hpke_open(
         &envelope.enc,
         &local.hpke_secret(),
@@ -303,11 +373,7 @@ pub fn open_pairing_response(
     if nonce_store.seen(&envelope.header.skid, &envelope.header.n) {
         return Err(Error::Replay);
     }
-    nonce_store.record(
-        &envelope.header.skid,
-        &envelope.header.n,
-        envelope.header.exp,
-    );
+    nonce_store.record(&envelope.header.skid, &envelope.header.n, nonce_expiry);
 
     let pin = PeerPin {
         label: device.name.clone(),
@@ -468,6 +534,132 @@ mod tests {
     #[test]
     fn pairing_full_flow() {
         full_flow();
+    }
+
+    /// The ceremony opener applies SPEC §4's decision-time semantics to
+    /// pairing: a decision made while the request was live, redeemed
+    /// past the response's own expiry but inside the ceremony's
+    /// total-lifetime bound, is accepted — the standalone opener (which
+    /// validates the response's own lifetime) refuses the same bytes.
+    #[test]
+    fn pairing_reply_accepts_late_redemption_within_the_ceremony() {
+        let mut rng = OsRng;
+        let cli = IdentityKeys::generate(&mut rng).unwrap();
+        let phone = IdentityKeys::generate(&mut rng).unwrap();
+        let secret = PairingSecret::generate(&mut rng);
+        let policy = Policy::default();
+        let ceremony = policy.for_ceremony();
+        let now = 10_000;
+
+        let request = seal_pairing_request(
+            &mut rng,
+            &secret,
+            &cli,
+            DeviceInfo {
+                kind: "cli".into(),
+                name: "mbp".into(),
+                version: "4".into(),
+            },
+            now,
+            &ceremony,
+        )
+        .unwrap();
+        let cli_pin = PeerPin {
+            label: "mbp".into(),
+            enc_pub: hex_encode(&cli.encryption_public()),
+            sig_pub: hex_encode(&cli.verifying_key().to_sec1_bytes()),
+            paired_at: now,
+            webauthn: None,
+        };
+        // Decided 100 s into the ceremony, sealed with the default
+        // 300 s TTL (exp = now + 400).
+        let decided = now + 100;
+        let response = seal_pairing_response(
+            &mut rng,
+            &secret,
+            &phone,
+            &cli_pin,
+            &request,
+            DeviceInfo {
+                kind: "phone".into(),
+                name: "p".into(),
+                version: "1".into(),
+            },
+            decided,
+            &policy,
+        )
+        .unwrap();
+        // Pasted 500 s in: past the response's own expiry, inside the
+        // ceremony (exp now + 900) and its redemption bound (2 × 900).
+        let pasted = now + 500;
+        let mut store = InMemoryNonceStore::default();
+        let (_body, pin) = open_pairing_reply(
+            &cli, &secret, &request, &response, pasted, &ceremony, &mut store,
+        )
+        .expect("a decision made in time redeems late inside the ceremony");
+        assert_eq!(pin.label, "p");
+        // The standalone opener keeps its own-expiry semantics.
+        let mut other = InMemoryNonceStore::default();
+        assert!(
+            open_pairing_response(&cli, &secret, &response, pasted, &policy, &mut other).is_err()
+        );
+    }
+
+    /// The ceremony opener demands the response answer the request it
+    /// was handed — a response to another ceremony's request is refused
+    /// before anything is verified or spent.
+    #[test]
+    fn pairing_reply_demands_the_request_it_answers() {
+        let mut rng = OsRng;
+        let cli = IdentityKeys::generate(&mut rng).unwrap();
+        let phone = IdentityKeys::generate(&mut rng).unwrap();
+        let secret = PairingSecret::generate(&mut rng);
+        let policy = Policy::default();
+        let now = 10_000;
+        let device = DeviceInfo {
+            kind: "cli".into(),
+            name: "mbp".into(),
+            version: "4".into(),
+        };
+        let request =
+            seal_pairing_request(&mut rng, &secret, &cli, device.clone(), now, &policy).unwrap();
+        let other_request =
+            seal_pairing_request(&mut rng, &secret, &cli, device, now, &policy).unwrap();
+        let cli_pin = PeerPin {
+            label: "mbp".into(),
+            enc_pub: hex_encode(&cli.encryption_public()),
+            sig_pub: hex_encode(&cli.verifying_key().to_sec1_bytes()),
+            paired_at: now,
+            webauthn: None,
+        };
+        let response = seal_pairing_response(
+            &mut rng,
+            &secret,
+            &phone,
+            &cli_pin,
+            &request,
+            DeviceInfo {
+                kind: "phone".into(),
+                name: "p".into(),
+                version: "1".into(),
+            },
+            now,
+            &policy,
+        )
+        .unwrap();
+        let mut store = InMemoryNonceStore::default();
+        assert!(matches!(
+            open_pairing_reply(
+                &cli,
+                &secret,
+                &other_request,
+                &response,
+                now,
+                &policy,
+                &mut store
+            ),
+            Err(Error::Pairing(_))
+        ));
     }
 
     #[test]
