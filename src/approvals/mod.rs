@@ -27,6 +27,7 @@
 //! - `approval_pending.json` — pending requests and grants
 
 pub mod cose;
+pub mod pairing;
 pub mod pending;
 
 use std::path::PathBuf;
@@ -43,10 +44,14 @@ use passlane_approval::webauthn::WebauthnAssertion;
 
 use pending::{PendingRequest, PendingStore, RequestKind, RequestState};
 
-/// Default home of the static approval page. The domain later serves the
-/// app's `apple-app-site-association` so universal links route to the app
-/// instead (SPEC §6); the envelope always stays in the fragment.
-pub const DEFAULT_PAGE: &str = "https://approve.passlane.app";
+/// Default home of the approval domain (passlane#84): the canonical
+/// `approve.northernpeaks.dev`, which serves the Phase 0 page *and* the
+/// app's `apple-app-site-association` so universal links route to the
+/// app instead (SPEC §6). The envelope always stays in the fragment.
+/// The first deployment lives on at `approve.anssipiirainen.com` — page
+/// enrollment against it keeps working through `--page` / the env
+/// override.
+pub const DEFAULT_PAGE: &str = "https://approve.northernpeaks.dev";
 
 /// Directory holding all approval state. Overridable for CLI-level tests
 /// and scripted verification with `PASSLANE_APPROVALS_DIR`; default
@@ -109,7 +114,7 @@ pub fn remember_page_base(
 }
 
 /// The replay store path (`<dir>/.approval_nonces`).
-fn nonce_store_path(dir: &std::path::Path) -> PathBuf {
+pub(crate) fn nonce_store_path(dir: &std::path::Path) -> PathBuf {
     dir.join(".approval_nonces")
 }
 
@@ -146,13 +151,18 @@ pub fn now_secs() -> u64 {
 /// The approval page base URL: the `--page` flag, `$PASSLANE_APPROVAL_PAGE`,
 /// or the default domain.
 pub fn page_url(explicit: Option<&str>) -> String {
+    let env = std::env::var("PASSLANE_APPROVAL_PAGE")
+        .ok()
+        .filter(|u| !u.is_empty());
+    page_url_from(explicit, env.as_deref())
+}
+
+/// [`page_url`] with the environment supplied by the caller (tests): the
+/// flag, then the environment, then the canonical default.
+fn page_url_from(explicit: Option<&str>, env: Option<&str>) -> String {
     explicit
         .map(str::to_string)
-        .or_else(|| {
-            std::env::var("PASSLANE_APPROVAL_PAGE")
-                .ok()
-                .filter(|u| !u.is_empty())
-        })
+        .or_else(|| env.map(str::to_string))
         .unwrap_or_else(|| DEFAULT_PAGE.to_string())
 }
 
@@ -368,7 +378,9 @@ pub fn emit_approval_request(
 ) -> Result<EmittedRequest, String> {
     let peers = load_peers_pinned(dir)?;
     let peer = preferred_peer(&peers).ok_or_else(|| {
-        "no approver is pinned; run 'passlane approvals enroll' first".to_string()
+        "no approver is pinned; pair the app ('passlane approvals pair') or enroll the approval \
+         page ('passlane approvals enroll') first"
+            .to_string()
     })?;
     let body = Body::ApprovalRequest {
         vault_id: vault.to_string(),
@@ -963,6 +975,45 @@ pub fn pin_approver(
     store_peers(dir, &peers)
 }
 
+/// Pin a paired app (passlane#84): like [`pin_approver`] but with two
+/// app-specific guarantees, both under the peers lock.
+///
+/// - a **different** approver already pinned under the same label is a
+///   hard error, not a silent replacement. The label comes from the
+///   device's `device.name` — nobody chose it — so two phones sharing a
+///   name must not quietly drop the first pin, whose `holder_kid` may be
+///   what vaults' registry entries reference. Same label with the same
+///   key is re-pairing the same device and stays an idempotent replace.
+/// - the **page base** the pairing rode on must persist: an app pin
+///   carries no WebAuthn origin to fall back to, so a lost page base
+///   would silently retarget its approval links to the configured
+///   default — possibly a domain this app is not associated with. (The
+///   page path keeps [`pin_approver`]'s best-effort map write: a pinned
+///   origin is its fallback.)
+pub fn pin_paired_app(dir: &std::path::Path, pin: PeerPin, page_base: &str) -> Result<(), String> {
+    let _guard = PeersLock::take(dir)?;
+    let mut peers = load_peers_pinned(dir)?;
+    if let Some(existing) = peers.iter().find(|p| p.label == pin.label)
+        && existing.enc_pub != pin.enc_pub
+    {
+        return Err(format!(
+            "a different approver is already pinned as '{}' — pairing would silently replace a \
+             pin that may hold vault keys. Remove it first ('passlane approvals remove {}'), or \
+             rename one of the devices and pair again.",
+            pin.label, pin.label
+        ));
+    }
+    // The page base lands before the pin is published: if it cannot be
+    // written, nothing is pinned and the pairing is reported as failed,
+    // instead of a "successful" pin whose links would target the wrong
+    // domain.
+    let kid = pin.enc_kid().map_err(|e| e.to_string())?;
+    remember_page_base(dir, &kid, page_base)?;
+    peers.retain(|p| p.label != pin.label);
+    peers.push(pin);
+    store_peers(dir, &peers)
+}
+
 /// Remove a pinned approver by label (same locked transaction as
 /// [`pin_approver`]).
 pub fn unpin_approver(dir: &std::path::Path, label: &str) -> Result<bool, String> {
@@ -1195,9 +1246,9 @@ mod tests {
 
     #[test]
     fn page_origin_parsing() {
-        let o = page_origin("https://approve.passlane.app").unwrap();
-        assert_eq!(o.rp_id, "approve.passlane.app");
-        assert_eq!(o.origin, "https://approve.passlane.app");
+        let o = page_origin(DEFAULT_PAGE).unwrap();
+        assert_eq!(o.rp_id, "approve.northernpeaks.dev");
+        assert_eq!(o.origin, DEFAULT_PAGE);
 
         // Paths/ports: rp id is the registrable host, origin keeps the port.
         let o = page_origin("https://local.test:8443/enroll").unwrap();
@@ -1207,9 +1258,9 @@ mod tests {
         // Browsers normalize clientDataJSON origins: the default https
         // port is dropped and hosts are lower-cased, so the pin must be
         // canonical or assertion origin checks would never match.
-        let o = page_origin("https://APPROVE.Passlane.APP:443").unwrap();
-        assert_eq!(o.origin, "https://approve.passlane.app");
-        assert_eq!(o.rp_id, "approve.passlane.app");
+        let o = page_origin("https://APPROVE.NorthernPeaks.DEV:443").unwrap();
+        assert_eq!(o.origin, DEFAULT_PAGE);
+        assert_eq!(o.rp_id, "approve.northernpeaks.dev");
 
         // WebAuthn needs https.
         assert!(page_origin("http://insecure.example").is_err());
@@ -1219,7 +1270,7 @@ mod tests {
 
     #[test]
     fn qr_renders_quiet_zoned_square_text() {
-        let qr = render_qr("https://approve.passlane.app/approve.html#UExBUA").unwrap();
+        let qr = render_qr(&format!("{DEFAULT_PAGE}/approve.html#UExBUA")).unwrap();
         let lines: Vec<&str> = qr.lines().collect();
         // Quiet zone of 4 modules = 2 leading/trailing space-only lines.
         assert!(lines.len() > 8, "a QR with quiet zone has padding rows");
@@ -1240,6 +1291,46 @@ mod tests {
         assert_eq!(a.len(), 32, "16 bytes as hex");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    /// The canonical domain (passlane#84): every link the CLI emits by
+    /// default — approval, enrollment, pairing — rides
+    /// `approve.northernpeaks.dev`.
+    #[test]
+    fn the_default_page_is_the_canonical_northernpeaks_domain() {
+        assert_eq!(DEFAULT_PAGE, "https://approve.northernpeaks.dev");
+        assert!(
+            approve_link(DEFAULT_PAGE, "UExBUA")
+                .starts_with("https://approve.northernpeaks.dev/approve.html#")
+        );
+        assert!(
+            enroll_link(DEFAULT_PAGE, "aabb", "04cd", "05ef")
+                .starts_with("https://approve.northernpeaks.dev/enroll.html#")
+        );
+        assert!(
+            pairing::pair_link(DEFAULT_PAGE, &"ab".repeat(32), "UExBUA")
+                .starts_with("https://approve.northernpeaks.dev/pair.html#")
+        );
+    }
+
+    /// `page_url` resolution: the flag, then `$PASSLANE_APPROVAL_PAGE`,
+    /// then the canonical default (passlane#84).
+    #[test]
+    fn page_url_resolves_flag_then_env_then_the_canonical_default() {
+        assert_eq!(page_url_from(None, None), DEFAULT_PAGE);
+        assert_eq!(
+            page_url_from(Some("https://example.com/passlane"), None),
+            "https://example.com/passlane"
+        );
+        assert_eq!(
+            page_url_from(None, Some("https://env.example")),
+            "https://env.example"
+        );
+        // An explicit flag outranks the environment.
+        assert_eq!(
+            page_url_from(Some("https://flag.example"), Some("https://env.example")),
+            "https://flag.example"
+        );
     }
 
     /// The full Phase 0 ask loop against a mocked page/approver:

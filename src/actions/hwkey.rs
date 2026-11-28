@@ -394,7 +394,10 @@ fn record_factor_to(
 
 /// The pinned approver that will hold the vault's key: the one named by
 /// `--approver`, else the only one pinned, else the person's choice — and
-/// when nothing is pinned at all, the pairing ceremony runs first.
+/// when nothing is pinned at all, the **app pairing** ceremony runs first
+/// (passlane#84). The page path stays explicit: a user without the app
+/// runs `passlane approvals enroll` beforehand, and this command then
+/// finds that pin here.
 ///
 /// A terminal is needed only where a prompt cannot be avoided: pairing,
 /// or choosing between several pinned approvers. With one pinned (or
@@ -410,7 +413,8 @@ fn choose_holder(
     if approver.is_none() && peers.len() != 1 && !std::io::stdin().is_terminal() {
         return Err(Error::new(&match peers.as_slice() {
             [] => "nothing is pinned yet, and pairing needs an interactive terminal: run \
-                   'passlane approvals enroll' at a terminal, then re-run this command"
+                   'passlane approvals pair' at a terminal — or 'passlane approvals enroll' \
+                   for the approval-page path — then re-run this command"
                 .to_string(),
             many => format!(
                 "several approvers are pinned ({}), and choosing needs an interactive \
@@ -432,7 +436,8 @@ fn choose_holder(
                 Error::new(&format!(
                     "No pinned approver labeled '{label}'. {}",
                     if known.is_empty() {
-                        "Nothing is pinned yet; run this without --approver to pair first."
+                        "Nothing is pinned yet; run this without --approver to pair the app \
+                         first (or 'passlane approvals enroll' for the approval page)."
                             .to_string()
                     } else {
                         format!("Pinned approvers: {}.", known.join(", "))
@@ -443,10 +448,11 @@ fn choose_holder(
     match peers.as_slice() {
         [] => {
             println!(
-                "No approver is pinned yet, so pair first: the device you enroll now will \
-                 hold the key for this vault."
+                "No approver is pinned yet, so pair first: the iOS app you pair now will hold \
+                 the key for this vault. (No app? Cancel here, run 'passlane approvals enroll' \
+                 to pin the approval page, then re-run this command.)"
             );
-            Ok(crate::actions::approvals::enroll_approver(page)?.0)
+            Ok(crate::actions::approvals::pair_approver(page)?)
         }
         [one] => {
             println!(

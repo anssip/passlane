@@ -619,7 +619,7 @@ pub(crate) fn holder_pin(dir: &Path, holder_kid: &str) -> Result<PeerPin, Error>
                     " Recovering needs the recovery sheet: 'passlane hwkey remove --secret' \
                      opens the vault without the holder and removes its key. Pairing again \
                      creates a new device identity that does not hold this vault's key, so \
-                     after recovering, pair ('passlane approvals enroll') and enroll the \
+                     after recovering, pair ('passlane approvals pair') and enroll the \
                      key again ('passlane hwkey add --phone').",
                 );
             } else {
@@ -634,7 +634,7 @@ pub(crate) fn holder_pin(dir: &Path, holder_kid: &str) -> Result<PeerPin, Error>
                     " Pinned approvers: {}. Pairing again creates a new device identity \
                      that does not hold this vault's key, so recovering needs the recovery \
                      sheet: 'passlane hwkey remove --secret', then pair ('passlane approvals \
-                     enroll') and enroll again ('passlane hwkey add --phone').",
+                     pair') and enroll again ('passlane hwkey add --phone').",
                     pinned.join(", ")
                 ));
             }
@@ -1679,7 +1679,7 @@ pub(crate) mod tests {
         let empty = tempfile::tempdir().unwrap();
         let err = holder_pin(empty.path(), "0000000000000000").unwrap_err();
         assert!(
-            err.message.contains("'passlane approvals enroll'"),
+            err.message.contains("'passlane approvals pair'"),
             "{}",
             err.message
         );

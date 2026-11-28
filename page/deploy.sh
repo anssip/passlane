@@ -5,6 +5,13 @@
 # anssipiirainen.com). The script is idempotent: re-running it only
 # re-uploads changed files and waits out pending resources.
 #
+# The default domain is the canonical approve.northernpeaks.dev
+# (passlane#84 — the CLI's default and the app's accept list); the first
+# deployment at approve.anssipiirainen.com stays live and is deployed
+# with --domain. First provisioning on a new domain needs a profile that
+# can request certificates, write Route 53 and create distributions
+# (e.g. AWS_PROFILE=anssi-admin); see deploy.md.
+#
 # Stages:
 #   1. S3 bucket (eu-north-1, public read via bucket policy) + upload of
 #      page/ with correct Content-Type per file (the apple-app-site-
@@ -24,7 +31,7 @@ set -euo pipefail
 PROFILE="${AWS_PROFILE:-anssipiirainen.com}"
 REGION="eu-north-1"              # S3 bucket region (matches the main site)
 CERT_REGION="us-east-1"          # CloudFront certs must live here
-DOMAIN="approve.anssipiirainen.com"
+DOMAIN="approve.northernpeaks.dev"
 PAGE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [[ $# -gt 0 ]]; do
@@ -340,7 +347,8 @@ check "/.well-known/apple-app-site-association" "application/json" || FAILURES=$
 if [[ "$FAILURES" -eq 0 ]]; then
   echo ""
   echo "Deployed: $URL"
-  echo "Enroll with: passlane approvals enroll --page $URL"
+  echo "Enroll the page with: passlane approvals enroll --page $URL"
+  echo "Pair the app with:    passlane approvals pair --page $URL"
   exit 0
 else
   echo "$FAILURES check(s) failed" >&2

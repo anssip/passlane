@@ -42,6 +42,7 @@ runs the exact same files.
 | ------------------- | ------------------------------------------------------------------ |
 | `/enroll.html#…`    | One-time enrollment (`passlane approvals enroll` prints the link). Fragment: `n=<nonce hex>&c=<CLI encryption public key hex>&s=<CLI verifying public key hex>`. |
 | `/approve.html#…`   | An approval request envelope (base64url in the fragment). Show, verify the CLI's signature, decide, paste the reply back into the terminal. Unlock/save/enrollment requests are answered with the vault's phone-held key; enrollment shows the recovery sheet first. Each produced response is labeled with the request it answers (purpose + short request id) and visibly expires when that request lapses — a stale blob is refused by the CLI, so the page stops offering it as current. |
+| `/pair.html#…`      | The iOS app's pairing entry (`passlane approvals pair` prints the link). Fragment: `s=<pairing secret hex>&e=<pairing request envelope>`. No page is served here — the path exists for the app, which iOS routes there through the domain's `apple-app-site-association`; the fragment never reaches the domain either way. |
 | `/test.html`        | In-browser self-test of the protocol layer against pinned vectors. |
 | `/`                 | Landing page for people who paste the domain.                      |
 
@@ -81,8 +82,12 @@ There is exactly one deployment choice you should not make lightly: the
 domain is pinned into every enrollment (`webauthn.rp_id` /
 `webauthn.origin` in the CLI's `approval_peers.json`). Moving the page to
 a new domain later means re-enrolling (`passlane approvals enroll`
-again). The default the CLI assumes is `https://approve.passlane.app`,
-overridable per enrollment with `--page` or `$PASSLANE_APPROVAL_PAGE`.
+again). The canonical domain is `https://approve.northernpeaks.dev`
+(passlane#84) — the CLI's default and the app's accept list agree on it;
+the first deployment lives on at `approve.anssipiirainen.com`, where
+page enrollment keeps working — overridable per enrollment with `--page`
+or `$PASSLANE_APPROVAL_PAGE`. See `deploy.md` for the provisioning
+runbook of the new zone.
 
 ## Testing
 

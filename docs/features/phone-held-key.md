@@ -1,7 +1,8 @@
 # The phone-held key (`passlane hwkey add --phone`)
 
 The vault's challenge-response secret lives on another device — the
-iPhone, or for now the [approval page](../../page/README.md) — and this
+iPhone, paired over the pairing QR (or the [approval
+page](../../page/README.md), pinned with `approvals enroll`) — and this
 computer only ever sees 20-byte answers. It is the same HMAC-SHA1
 challenge-response KeePass uses for YubiKeys, so the vault stays
 readable by a physical key programmed with the same secret, and the
@@ -9,7 +10,17 @@ recovery sheet works everywhere KeePass works.
 
 ```
 $ passlane hwkey add --phone
-Asking 'approval-page' to create the key for vault 'work'. On that device:
+No approver is pinned yet, so pair first: the iOS app you pair now will
+hold the key for this vault. (No app? Cancel here, run 'passlane
+approvals enroll' to pin the approval page, then re-run this command.)
+Pair with the passlane app — open this link there (scan or paste it):
+https://approve.northernpeaks.dev/pair.html#s=…&e=…   ← link (stdout)
+█████▀▀█▀ …                                          ← QR (stderr)
+Confirmation code: 123456-789012 — the app must show the same code …
+Paste the pairing response the app produced (leave empty to cancel): …
+Mutual confirmation code: 987654-321098 — does the app show the same
+code? y
+Asking 'anssi-iphone' to create the key for vault 'work'. On that device:
 print or save the recovery sheet it shows, then scan or type the secret
 back from that copy — the key is not enrolled until you do.
 This enrollment needs 2 approvals from that device: create the key, then
@@ -17,8 +28,8 @@ save the vault with it. Each approval answers its own fresh request —
 paste only the response the terminal is waiting for; a response from an
 earlier request is refused.
 Approval needed to creating a phone-held key for vault 'work' (request 4f2a…):
-https://approve.example/approve.html#UExBUA…        ← link (stdout)
-█████▀▀█▀ …                                       ← QR (stderr)
+https://approve.northernpeaks.dev/approve.html#UExBUA…  ← link (stdout)
+█████▀▀█▀ …                                           ← QR (stderr)
 ```
 
 On the phone (or the approval page in its browser): the request appears,
@@ -84,9 +95,15 @@ still works once an agent is running.
 
 ## Enrollment, in order
 
-1. The holder is the pinned approver (`passlane approvals enroll`
-   paired it). With none pinned, `hwkey add --phone` pairs first; with
-   several, `--approver <label>` picks one (choosing needs a terminal).
+1. The holder is the pinned approver — the app, paired with
+   `passlane approvals pair` (or this command, when nothing is pinned
+   yet). The approval page is the other path: `passlane approvals
+   enroll` pins it first, and this command then uses that pin. With
+   several pins, `--approver <label>` picks one (choosing needs a
+   terminal). Pairing itself is the SPEC §5 ceremony: the QR-borne
+   pairing secret, the CLI-side confirmation code, then the mutual code
+   the app shows from the response — the pin is stored only when both
+   match.
 2. The holder creates the secret and shows the **recovery sheet**. The
    enrollment request is not answered until the sheet's secret has been
    typed back from a copy — the page hides the sheet first. The secret
@@ -118,11 +135,11 @@ our older in-memory copy — and the enrollment simply did not happen.
   from the sheet secret opens the vault too, without removing anything.
 - **The holder is gone** (device lost, pin dropped): `hwkey remove
   --secret` from the sheet is the way in. Re-pairing does not restore
-  the pin: the approval page generates a fresh identity on every
-  pairing — even in the same browser profile — so the new pin holds no
-  key for the vault while the registry still references the old
-  holder. Recover from the sheet first, then pair
-  (`passlane approvals enroll`) and enroll the key again
+  the pin: the app generates a fresh identity on every pairing, so the
+  new pin holds no key for the vault while the registry still
+  references the old holder. Recover from the sheet first, then pair
+  (`passlane approvals pair`; the approval page's path is `passlane
+  approvals enroll`) and enroll the key again
   (`passlane hwkey add --phone`).
 
 ## Limits, honestly

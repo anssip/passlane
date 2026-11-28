@@ -165,9 +165,9 @@ impl fmt::Display for PublicKey {
 /// on the static approval page rather than (yet) the iOS app.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WebauthnPin {
-    /// The WebAuthn Relying Party id (a registrable domain), e.g. `approve.passlane.app`.
+    /// The WebAuthn Relying Party id (a registrable domain), e.g. `approve.northernpeaks.dev`.
     pub rp_id: String,
-    /// The origin the client data must carry, e.g. `https://approve.passlane.app`.
+    /// The origin the client data must carry, e.g. `https://approve.northernpeaks.dev`.
     pub origin: String,
 }
 /// A pinned peer: the keys this device trusts for the other end.
