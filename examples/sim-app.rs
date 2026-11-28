@@ -73,8 +73,10 @@ fn main() {
     }
 }
 
-/// The persisted app: its identity, the CLI it paired with, and the
-/// phone-held key secrets it created (by vault id).
+/// The persisted app: its identity, the CLI it paired with, the
+/// phone-held key secrets it created (by vault id), and the enrollment
+/// sheet it is currently showing (the secret it will hand the vault
+/// once the sheet's secret has been copied — the scan-back gate).
 #[derive(Default)]
 struct State {
     enc_secret: Vec<u8>,
@@ -82,6 +84,9 @@ struct State {
     cli_enc: Vec<u8>,
     cli_sig: Vec<u8>,
     keys: HashMap<String, Vec<u8>>,
+    /// The recovery sheet on the app's screen: the vault id and the
+    /// secret printed on it, retained until `--scan-back`.
+    pending: Option<(String, Vec<u8>)>,
 }
 
 impl State {
@@ -113,15 +118,28 @@ impl State {
                     .collect()
             })
             .unwrap_or_default();
+        let pending = doc
+            .get("pending")
+            .and_then(|p| p.as_object())
+            .and_then(|p| {
+                let vault = p.get("vault")?.as_str()?.to_string();
+                let secret = passlane_approval::encoding::hex_decode(p.get("secret")?.as_str()?)
+                    .expect("hex secret");
+                Some((vault, secret))
+            });
         Self {
             enc_secret: hex_field("enc_secret"),
             sig_secret: hex_field("sig_secret"),
             cli_enc: hex_field("cli_enc"),
             cli_sig: hex_field("cli_sig"),
             keys,
+            pending,
         }
     }
 
+    /// The state holds the app's identity and vault keys: owner-only
+    /// permissions, applied at creation and tightened on an existing
+    /// file (which may predate this).
     fn save(&self, path: &Path) {
         let doc = serde_json::json!({
             "enc_secret": passlane_approval::encoding::hex_encode(&self.enc_secret),
@@ -138,8 +156,28 @@ impl State {
                     )
                 })
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
+            "pending": self.pending.as_ref().map(|(vault, secret)| serde_json::json!({
+                "vault": vault,
+                "secret": passlane_approval::encoding::hex_encode(secret),
+            })),
         });
-        std::fs::write(path, serde_json::to_vec_pretty(&doc).unwrap()).expect("state writes");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path).expect("state writes");
+        use std::io::Write;
+        file.write_all(&serde_json::to_vec_pretty(&doc).unwrap())
+            .and_then(|()| file.sync_all())
+            .expect("state writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 
     fn identity(&self) -> IdentityKeys {
@@ -280,31 +318,65 @@ fn answer(link: &str, state: &mut State, state_path: &Path, scan_back: bool) -> 
         .map(|b| b.to_vec())
         .ok_or("no challenge in the request")?;
 
-    let created_sheet: Option<String>;
+    // The phone-held key the request is answered with, and the sheet
+    // state it leaves behind.
+    let created_sheet;
     let secret: Zeroizing<Vec<u8>> = match operation {
         Operation::EnrollKey => {
-            // The gate (SPEC §7): the key is created, its sheet shown,
-            // and no answer is sent until the sheet has been copied.
-            // The secret below is the one enrolled when the gate passes,
-            // so the sheet printed after it is the copy that matters.
-            let mut secret = Zeroizing::new(vec![0u8; 20]);
-            OsRng.fill_bytes(&mut secret);
+            // The gate (SPEC §7), modeled as the real app: the key is
+            // created, its recovery sheet shown, and no answer is sent
+            // until the sheet's secret has been copied. The sheet
+            // survives between invocations as the pending state, so the
+            // secret `--scan-back` acknowledges is the one the first
+            // invocation showed.
+            let (shown_now, secret) = match state.pending.take() {
+                Some((pending_vault, secret)) if pending_vault == *vault_id => {
+                    // The sheet from an earlier invocation is still on
+                    // the app's screen: re-show it (the same secret) and
+                    // hold it for the acknowledgement.
+                    (true, secret)
+                }
+                Some((other_vault, secret)) => {
+                    // A different vault's enrollment was left open; the
+                    // app shows one sheet at a time. Put it back.
+                    state.pending = Some((other_vault, secret));
+                    return Err(
+                        "EnrollKey: another vault's recovery sheet is still showing and not \
+                         acknowledged; answer or abandon that enrollment first"
+                            .into(),
+                    );
+                }
+                None => {
+                    let mut secret = Zeroizing::new(vec![0u8; 20]);
+                    OsRng.fill_bytes(&mut secret);
+                    (true, secret.to_vec())
+                }
+            };
+            if shown_now {
+                println!(
+                    "Recovery sheet — secret (hex): {}",
+                    passlane_approval::encoding::hex_encode(&secret)
+                );
+                println!("  (write this down: it is the only other copy of the key)");
+            }
+            // The sheet is now on the app's screen: retained (or
+            // re-retained) until the copy is acknowledged.
+            state.pending = Some((vault_id.clone(), secret.clone()));
             if !scan_back {
+                state.save(state_path);
                 return Err(
-                    "EnrollKey: the app is showing its recovery sheet and refuses to answer \
-                     until the secret has been copied. Re-run this command with --scan-back \
-                     to acknowledge the copy — the enrolled key's sheet is printed then."
+                    "EnrollKey: the sheet above is on the app's screen and the app refuses to \
+                     answer until its secret has been copied. Re-run this command with \
+                     --scan-back to acknowledge the copy — the enrolled key is the sheet's."
                         .into(),
                 );
             }
-            let sheet = passlane_approval::encoding::hex_encode(&secret);
-            println!("Recovery sheet — secret (hex): {sheet}");
-            println!("  (write this down: it is the only other copy of the key)");
-            created_sheet = Some(sheet);
-            secret
+            // Acknowledged: the sheet's secret becomes the vault's key.
+            created_sheet = true;
+            Zeroizing::new(secret)
         }
         _ => {
-            created_sheet = None;
+            created_sheet = false;
             Zeroizing::new(
                 state
                     .keys
@@ -336,7 +408,10 @@ fn answer(link: &str, state: &mut State, state_path: &Path, scan_back: bool) -> 
         vault_name,
         response.to_base64url()
     );
-    if created_sheet.is_some() {
+    if created_sheet {
+        // The enrolled key is kept for the vault's later save/unlock
+        // requests; the sheet it came from is consumed.
+        state.pending = None;
         state.keys.insert(vault_id.clone(), secret.to_vec());
         state.save(state_path);
     }

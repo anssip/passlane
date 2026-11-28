@@ -186,19 +186,43 @@ pub fn pair_app(
         ));
     }
 
-    let now = now_secs();
-    let mut nonces =
-        FileNonceStore::load(&nonce_store_path(dir)).map_err(|e| format!("replay store: {e}"))?;
-    // Pruning under the store's own lock, before the rewrite, keeps
-    // `.approval_nonces` bounded by the replay window — the same
-    // hygiene `passlane approve --response` applies.
-    nonces.prune(now);
-    let (_body, pin) =
-        open_pairing_response(&identity, &secret, &envelope, now, &policy, &mut nonces)
+    // Verification runs with the replay store's exclusive lock held —
+    // and ONLY that long: the store is dropped (its lock released)
+    // before the human question below, so an undecided prompt can never
+    // block another pairing or a `passlane approve --response` in
+    // another process.
+    let pin = {
+        let mut nonces = FileNonceStore::load(&nonce_store_path(dir))
+            .map_err(|e| format!("replay store: {e}"))?;
+        // The clock is read here, under the store's lock: a timestamp
+        // captured before waiting for it could accept a response that
+        // expired while this process waited (the same discipline
+        // `passlane approve --response` applies).
+        let now = now_secs();
+        // Pruning under the store's own lock, before the rewrite, keeps
+        // `.approval_nonces` bounded by the replay window.
+        nonces.prune(now);
+        // The decision must sit inside THIS ceremony's window, and the
+        // paste must arrive within its total-lifetime bound (SPEC §4's
+        // discipline, applied to pairing) — checked before the nonce is
+        // spent, like the rid: the response's own freshness alone would
+        // accept a response sealed long after this pairing request died.
+        policy
+            .validate_reply(
+                request.header().ts,
+                request.header().exp,
+                envelope.header(),
+                now,
+            )
             .map_err(|e| format!("the pairing response failed verification: {e}"))?;
-    nonces
-        .save()
-        .map_err(|e| format!("could not persist the replay store: {e}"))?;
+        let (_body, pin) =
+            open_pairing_response(&identity, &secret, &envelope, now, &policy, &mut nonces)
+                .map_err(|e| format!("the pairing response failed verification: {e}"))?;
+        nonces
+            .save()
+            .map_err(|e| format!("could not persist the replay store: {e}"))?;
+        pin
+    };
 
     // SPEC §5's second human check: the mutual code, computed here from
     // the decrypted response keys and on the app from the request. This
@@ -545,6 +569,64 @@ pub(crate) mod tests {
             verified.outcome,
             super::super::ApproveOutcome::Allowed { .. }
         ));
+    }
+
+    #[test]
+    fn a_response_decided_outside_this_ceremonys_window_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // The app answers this run's request, but its decision is
+        // stamped far in the past (a stale blob, or a lying clock):
+        // this ceremony's window governs, not the response's own
+        // freshness — a response sealed after the pairing request died
+        // must not pin anything.
+        let ui = ScriptedUi::new(
+            true,
+            Some(Box::new(|link| {
+                let fragment = link.split_once('#').unwrap().1;
+                let (s, e) = fragment.split_once("&e=").unwrap();
+                let secret = PairingSecret::from_bytes(
+                    &passlane_approval::encoding::hex_decode(s.trim_start_matches("s=")).unwrap(),
+                )
+                .unwrap();
+                let request = Envelope::from_base64url(e).unwrap();
+                let app = IdentityKeys::generate(&mut OsRng).unwrap();
+                let (_body, cli_pin) = open_pairing_request(
+                    &secret,
+                    &request,
+                    now_secs(),
+                    &Policy::default(),
+                    &mut InMemoryNonceStore::default(),
+                )
+                .unwrap();
+                // The decision predates the request beyond the skew window.
+                let stale_decision = now_secs().saturating_sub(1100);
+                let response = seal_pairing_response(
+                    &mut OsRng,
+                    &secret,
+                    &app,
+                    &cli_pin,
+                    &request,
+                    DeviceInfo {
+                        kind: "phone".into(),
+                        name: "anssi-iphone".into(),
+                        version: "1".into(),
+                    },
+                    stale_decision,
+                    &Policy::default(),
+                )
+                .unwrap();
+                Some(response.to_base64url())
+            })),
+        );
+
+        let err = pair_app(dir.path(), None, &ui).unwrap_err();
+        assert!(err.contains("failed verification"), "{err}");
+        // Refused before the nonce was spent or the human was asked.
+        assert!(load_peers(dir.path()).unwrap().is_empty());
+        assert!(
+            ui.confirmations.borrow().is_empty(),
+            "the mutual code is never offered for a dead response"
+        );
     }
 
     #[test]
